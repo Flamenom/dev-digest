@@ -1,7 +1,8 @@
 import 'dotenv/config';
 import { createDb, type Db } from './client.js';
 import * as t from './schema.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, desc, isNull } from 'drizzle-orm';
+import { estimateCost } from '../adapters';
 import {
   GENERAL_REVIEWER_PROMPT,
   SECURITY_REVIEWER_PROMPT,
@@ -218,6 +219,106 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
       .from(t.agents)
       .where(and(eq(t.agents.workspaceId, workspaceId), eq(t.agents.name, a.name)));
     if (!existing) await db.insert(t.agents).values(a);
+  }
+
+  // ---- demo agent runs (so the COST column / timeline show data on a fresh
+  // seed). Two completed runs on PR #482 with realistic tokens; cost is derived
+  // from the model price table — no model calls. Idempotent: skipped if runs
+  // already exist for the PR. The latest seeded review is linked to one run so
+  // the PR-list "latest review run's cost" resolves.
+  const [existingRun] = await db
+    .select({ id: t.agentRuns.id })
+    .from(t.agentRuns)
+    .where(and(eq(t.agentRuns.workspaceId, workspaceId), eq(t.agentRuns.prId, pr!.id)))
+    .limit(1);
+  if (!existingRun) {
+    const agentBy = new Map(
+      (
+        await db
+          .select({ id: t.agents.id, name: t.agents.name })
+          .from(t.agents)
+          .where(eq(t.agents.workspaceId, workspaceId))
+      ).map((a) => [a.name, a.id]),
+    );
+    const demoRuns = [
+      { name: 'Security Reviewer', tokensIn: 8000, tokensOut: 1119, durationMs: 8200, findingsCount: 3, blockers: 2, score: 38, grounding: '3/3 passed' },
+      { name: 'Performance Reviewer', tokensIn: 10500, tokensOut: 1511, durationMs: 6400, findingsCount: 2, blockers: 0, score: 64, grounding: '2/2 passed' },
+    ];
+    const insertedIds: string[] = [];
+    for (const r of demoRuns) {
+      const [row] = await db
+        .insert(t.agentRuns)
+        .values({
+          workspaceId,
+          agentId: agentBy.get(r.name) ?? null,
+          prId: pr!.id,
+          provider: DEFAULT_PROVIDER,
+          model: DEFAULT_MODEL,
+          durationMs: r.durationMs,
+          tokensIn: r.tokensIn,
+          tokensOut: r.tokensOut,
+          costUsd: estimateCost(DEFAULT_MODEL, r.tokensIn, r.tokensOut),
+          status: 'done',
+          source: 'local',
+          findingsCount: r.findingsCount,
+          grounding: r.grounding,
+          score: r.score,
+          blockers: r.blockers,
+        })
+        .returning({ id: t.agentRuns.id });
+      insertedIds.push(row!.id);
+    }
+    // Link the latest seeded review to the first run so the PR list can join to its cost.
+    const [review] = await db
+      .select({ id: t.reviews.id })
+      .from(t.reviews)
+      .where(and(eq(t.reviews.prId, pr!.id), eq(t.reviews.kind, 'review'), isNull(t.reviews.runId)))
+      .orderBy(desc(t.reviews.createdAt))
+      .limit(1);
+    if (review && insertedIds[0]) {
+      await db.update(t.reviews).set({ runId: insertedIds[0] }).where(eq(t.reviews.id, review.id));
+    }
+    // A minimal trace document for the Security run so the trace drawer's Stats
+    // (incl. the COST card) renders on a fresh seed, not just after a live run.
+    if (insertedIds[0]) {
+      await db
+        .insert(t.runTraces)
+        .values({
+          runId: insertedIds[0],
+          trace: {
+            config: { agent: 'Security Reviewer', version: '1', provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL, pr: 482, source: 'local' },
+            stats: {
+              duration_ms: 8200,
+              tokens_in: 8000,
+              tokens_out: 1119,
+              cost_usd: estimateCost(DEFAULT_MODEL, 8000, 1119),
+              findings: 3,
+              grounding: '3/3 passed',
+            },
+            prompt_assembly: { system: 'You are a security reviewer.', user: 'Review PR #482' },
+            tool_calls: [],
+            raw_output: '',
+            memory_pulled: [],
+            specs_read: [],
+            log: [],
+          },
+        })
+        .onConflictDoNothing();
+    }
+  }
+
+  // ---- backfill: any run missing a cost but with tokens gets one from the
+  // price table (no model calls). Covers runs created before this column existed.
+  const unpriced = await db
+    .select({ id: t.agentRuns.id, model: t.agentRuns.model, tokensIn: t.agentRuns.tokensIn, tokensOut: t.agentRuns.tokensOut })
+    .from(t.agentRuns)
+    .where(and(eq(t.agentRuns.workspaceId, workspaceId), isNull(t.agentRuns.costUsd)));
+  for (const run of unpriced) {
+    if (run.model == null || run.tokensIn == null || run.tokensOut == null) continue;
+    const cost = estimateCost(run.model, run.tokensIn, run.tokensOut);
+    if (cost != null) {
+      await db.update(t.agentRuns).set({ costUsd: cost }).where(eq(t.agentRuns.id, run.id));
+    }
   }
 
   return { workspaceId, userId };
