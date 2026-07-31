@@ -29,5 +29,5 @@ Pure engine: diff → prompt → LLM → grounded findings. No DB/GitHub/FS; onl
 - **`README.md`** — the pipeline diagram + public API list.
 - **`../server/src/vendor/shared/contracts/findings.ts`** — the Finding/Review contracts you must satisfy.
 - **`../docs/architecture.md`** — how the server drives the engine.
-- **`INSIGHTS.md`** — before changing prompt assembly or provider retry logic.
+- **`INSIGHTS.md`** — before changing prompt assembly or provider retry logic; read at session start, and capture substantial learnings at the end via `/engineering-insights` (insert-only).
 - **`specs/*.md`** — when implementing a lesson feature (map-reduce, memory slots, CI export…).

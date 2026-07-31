@@ -31,5 +31,5 @@ The DevDigest UI: repos, PRs, AI reviews, agent authoring. App Router + React 19
 - **`README.md`** — UI route map + API surface per screen.
 - **`../server/README.md`** — for the REST endpoints the hooks call.
 - **`../docs/architecture.md`** — for the end-to-end review flow.
-- **`INSIGHTS.md`** — before debugging hydration / SSE / number↔uuid issues.
+- **`INSIGHTS.md`** — before debugging hydration / SSE / number↔uuid issues; read at session start, and capture substantial learnings at the end via `/engineering-insights` (insert-only).
 - **`specs/*.md`** — when implementing a lesson screen (skills, eval, blast, memory…).

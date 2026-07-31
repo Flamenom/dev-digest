@@ -1,11 +1,17 @@
 # Insights — @devdigest/api
 
-Append gotchas, non-obvious decisions, and debugging learnings as you hit them.
-Newest first. When one keeps biting, promote a one-liner into `CLAUDE.md`.
+Read this before working here. Append only substantial, non-obvious learnings, and only if
+not already captured. Newest-first within each section. Each entry names a file:line.
+Cap ~5 new/session, ~80–100 lines/file (then prune/split). Promote persistent ones to CLAUDE.md.
 
-<!-- Format:
-## YYYY-MM-DD — short title
-**Symptom:** …  **Cause:** …  **Fix/Rule:** …
--->
+## What Works — patterns proven here
 
-_(empty)_
+## What Doesn't Work — antipatterns & mistakes
+
+## Codebase Patterns & Tool/Library Notes
+
+## Decisions — with the why
+
+## Recurring Errors & Fixes
+
+## Open Questions

@@ -25,4 +25,4 @@ Deterministic UI flows via Vercel agent-browser (Rust+CDP CLI). No Playwright, n
 - **`README.md`** — how a flow works, run modes, coverage table.
 - **`../client/README.md`** — the UI routes/text these flows assert against.
 - **`../docs/architecture.md`** — the end-to-end flow the journeys exercise.
-- **`INSIGHTS.md`** — before debugging flaky / wrong-repo flow failures.
+- **`INSIGHTS.md`** — before debugging flaky / wrong-repo flow failures; read at session start, and capture substantial learnings at the end via `/engineering-insights` (insert-only).

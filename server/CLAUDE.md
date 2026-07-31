@@ -32,5 +32,5 @@ Studio backend: runs AI reviews on GitHub PRs, backed by the repo-intel indexer.
 - **`src/modules/repo-intel/README.md`** — when touching indexing or review context.
 - **`../reviewer-core/README.md`** — when changing how a review is executed.
 - **`../docs/architecture.md`** — for cross-package wiring and the review flow.
-- **`INSIGHTS.md`** — before debugging runs/SSE/migrations/tenancy.
+- **`INSIGHTS.md`** — before debugging runs/SSE/migrations/tenancy; read at session start, and capture substantial learnings at the end via `/engineering-insights` (insert-only).
 - **`specs/*.md`** — when implementing a lesson module (skills, intent, blast, eval…).

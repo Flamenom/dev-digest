@@ -48,3 +48,12 @@ is shared via **tsconfig path aliases**, not npm.
 - **`docs/architecture.md`** — when changing the review pipeline / repo-intel / cross-package wiring.
 - **`server/CLAUDE.md` · `client/CLAUDE.md` · `reviewer-core/CLAUDE.md` · `e2e/CLAUDE.md`** — auto-load per folder; read before editing that package.
 - **`INSIGHTS.md`** — before debugging a cross-cutting issue.
+
+## Insights loop
+- **Session start:** before working a request, read the in-scope `INSIGHTS.md` (root or the
+  touched package) and confirm the top ~3 relevant points before touching code.
+- **Session end:** run `/engineering-insights` — record only something substantial and not
+  already present; if nothing substantial came up, write nothing. Always re-read the target
+  file first; insert-only, never overwrite existing entries.
+- Automatic end-of-session capture (a `Stop` hook) is a later lesson (L06); today capture is
+  manual via the skill.
