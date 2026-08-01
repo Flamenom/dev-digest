@@ -7,7 +7,7 @@ import * as t from '../../db/schema.js';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
 import { AppError, NotFoundError } from '../../platform/errors.js';
-import { deriveReviewStatus } from './status.js';
+import { deriveReviewStatus, rollupSeverities } from './status.js';
 
 /**
  * F1 — pulls module. PR import via Octokit (list + per-PR detail).
@@ -111,25 +111,79 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
       }
     }
 
-    // Latest-review SCORE per PR for the list's score ring. Computed on read
-    // from reviews (no FK denorm); the list is small, so one IN-query + JS
-    // grouping is cheap. (The per-severity FINDINGS breakdown is intentionally
-    // not surfaced on the list — findings live on the PR detail page.)
+    // SCORE + FINDINGS severity breakdown per PR for the list's score ring and
+    // findings column, aggregated across ALL agents that reviewed the PR (a PR is
+    // typically reviewed by several agents at once). We take each agent's LATEST
+    // review (a re-run replaces its prior review, never double-counts), then:
+    //   - FINDINGS = SUM of severities across those per-agent-latest reviews;
+    //   - SCORE    = the WORST (lowest) score among them, so one agent's blocker
+    //                isn't masked by another agent's clean 100.
+    // Computed on read (no FK denorm); the list is small, so IN-queries + JS
+    // grouping are cheap.
     const prIds = rows.map((r) => r.id);
-    const latestReviewByPr = new Map<string, { score: number | null }>();
+    // prId → worst score across agents; null when reviewed but unscored, absent
+    // when never reviewed (so the column reads "—").
+    const scoreByPr = new Map<string, number | null>();
     // Total review cost per PR = SUM of cost across ALL of the PR's agent runs
     // (every reviewer, not just the latest). null when the PR has no priced run
     // yet, so the column reads "—" rather than "$0.00".
     const costByPr = new Map<string, number | null>();
+    // prId → summed { CRITICAL, WARNING, SUGGESTION }; absent PRs read `null`.
+    const findingsByPr = new Map<
+      string,
+      { CRITICAL: number; WARNING: number; SUGGESTION: number }
+    >();
     if (prIds.length > 0) {
       const reviewRows = await container.db
-        .select({ prId: t.reviews.prId, score: t.reviews.score })
+        .select({
+          id: t.reviews.id,
+          prId: t.reviews.prId,
+          agentId: t.reviews.agentId,
+          score: t.reviews.score,
+        })
         .from(t.reviews)
         .where(and(inArray(t.reviews.prId, prIds), eq(t.reviews.kind, 'review')))
         .orderBy(desc(t.reviews.createdAt));
-      // Rows are newest-first → first seen per PR is the latest review.
+      // Rows are newest-first → first seen per (pr, agent) is that agent's latest
+      // review. Agent-less reviews key on their own id (each counts once).
+      const seenAgent = new Set<string>();
+      const latestReviews: { id: string; prId: string }[] = [];
       for (const rv of reviewRows) {
-        if (!latestReviewByPr.has(rv.prId)) latestReviewByPr.set(rv.prId, { score: rv.score });
+        const key = `${rv.prId}:${rv.agentId ?? rv.id}`;
+        if (seenAgent.has(key)) continue;
+        seenAgent.add(key);
+        latestReviews.push({ id: rv.id, prId: rv.prId });
+        // Worst (lowest) score across agents; null scores don't override a number.
+        if (rv.score != null) {
+          const cur = scoreByPr.get(rv.prId);
+          scoreByPr.set(rv.prId, cur == null ? rv.score : Math.min(cur, rv.score));
+        } else if (!scoreByPr.has(rv.prId)) {
+          scoreByPr.set(rv.prId, null);
+        }
+      }
+
+      // Sum findings severities across every per-agent-latest review of each PR.
+      const reviewIds = latestReviews.map((r) => r.id);
+      const reviewIdToPr = new Map(latestReviews.map((r) => [r.id, r.prId] as const));
+      if (reviewIds.length > 0) {
+        const findingRows = await container.db
+          .select({ reviewId: t.findings.reviewId, severity: t.findings.severity })
+          .from(t.findings)
+          .where(inArray(t.findings.reviewId, reviewIds));
+        const bySeverityForReview = new Map<string, { severity: string }[]>();
+        for (const fr of findingRows) {
+          const arr = bySeverityForReview.get(fr.reviewId) ?? [];
+          arr.push({ severity: fr.severity });
+          bySeverityForReview.set(fr.reviewId, arr);
+        }
+        for (const [reviewId, prId] of reviewIdToPr) {
+          const c = rollupSeverities(bySeverityForReview.get(reviewId) ?? []);
+          const agg = findingsByPr.get(prId) ?? { CRITICAL: 0, WARNING: 0, SUGGESTION: 0 };
+          agg.CRITICAL += c.critical;
+          agg.WARNING += c.warning;
+          agg.SUGGESTION += c.suggestion;
+          findingsByPr.set(prId, agg);
+        }
       }
 
       const runRows = await container.db
@@ -145,7 +199,6 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
 
     const now = Date.now();
     return rows.map((r) => {
-      const review = latestReviewByPr.get(r.id);
       return {
         id: r.id,
         number: r.number,
@@ -166,8 +219,9 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
         }),
         opened_at: r.openedAt?.toISOString() ?? null,
         updated_at: r.updatedAt?.toISOString() ?? null,
-        score: review ? review.score : null,
+        score: scoreByPr.get(r.id) ?? null,
         cost_usd: costByPr.get(r.id) ?? null,
+        findings: findingsByPr.get(r.id) ?? null,
       };
     });
   });

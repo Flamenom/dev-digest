@@ -48,7 +48,14 @@
     "cancelled": "cancelled",
     "running": "running",
     "findings": "{count} finding(s)",
+    "findingsInRun": "{count} findings in this run",
     "blockers": " · {count} blockers"
+  },
+  "findings": {
+    "heading": "{count} findings",
+    "more": "+{count} more",
+    "none": "No findings.",
+    "loading": "Loading findings…"
   },
   "smartDiff": {
     "coreLabel": "Core",
@@ -91,6 +98,7 @@
       "author": "Author",
       "size": "Size",
       "score": "Score",
+      "findings": "Findings",
       "status": "Status",
       "cost": "Cost",
       "updated": "Updated"

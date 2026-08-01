@@ -6,6 +6,13 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Icon, Avatar, Badge, CircularScore } from "@devdigest/ui";
 import type { PrMeta } from "@/lib/types";
+import { usePrReviews } from "@/lib/hooks/reviews";
+import {
+  FindingsHoverCard,
+  FindingsSeverityChips,
+  totalCount,
+  type SeverityCounts,
+} from "@/components/FindingsHoverCard";
 import { RunCostBadge } from "../RunCostBadge";
 import { SIZE_COLOR, STATUS_META } from "../../constants";
 import { relativeTime, sizeOf } from "../../helpers";
@@ -54,6 +61,9 @@ export function PRRow({ pr, repoId }: { pr: PrMeta; repoId: string }) {
           <span style={s.muted}>—</span>
         )}
       </div>
+      <div style={s.findingsCell} onClick={(e) => e.stopPropagation()}>
+        <PrFindingsCell prId={pr.id} counts={pr.findings ?? null} />
+      </div>
       <div>
         <Badge dot color={st.c} bg="transparent">
           {t(`list.status.${st.labelKey}`)}
@@ -64,5 +74,54 @@ export function PRRow({ pr, repoId }: { pr: PrMeta; repoId: string }) {
       </div>
       <div style={s.updatedCell}>{relativeTime(pr.updated_at)}</div>
     </div>
+  );
+}
+
+/**
+ * FINDINGS cell: severity chips for the latest review. Findings counts come from
+ * the list payload (`pr.findings`); the hover card lazily fetches the full
+ * findings via the existing reviews endpoint only once the pointer enters.
+ */
+function PrFindingsCell({
+  prId,
+  counts,
+}: {
+  prId: string | null | undefined;
+  counts: SeverityCounts | null;
+}) {
+  const t = useTranslations("prReview");
+  const [hover, setHover] = React.useState(false);
+  const reviews = usePrReviews(hover ? prId : null);
+
+  // Aggregate findings across every agent's LATEST review — mirrors the server's
+  // list rollup, so the hover card matches the summed chip counts (not one
+  // arbitrary agent's review).
+  const findings = React.useMemo(() => {
+    const revs = (reviews.data ?? []).filter((r) => r.kind === "review");
+    const latestPerAgent = new Map<string, (typeof revs)[number]>();
+    for (const rev of revs) {
+      const key = rev.agent_id ?? rev.id;
+      const cur = latestPerAgent.get(key);
+      // ISO timestamps compare lexicographically → newest wins.
+      if (!cur || rev.created_at > cur.created_at) latestPerAgent.set(key, rev);
+    }
+    return [...latestPerAgent.values()].flatMap((r) => r.findings);
+  }, [reviews.data]);
+
+  if (counts == null) return <span style={s.muted}>—</span>;
+
+  const total = totalCount(counts);
+  const chips = <FindingsSeverityChips counts={counts} />;
+  if (total === 0) return chips;
+
+  return (
+    <FindingsHoverCard
+      findings={findings}
+      loading={reviews.isLoading}
+      heading={t("findings.heading", { count: total })}
+      onHoverStart={() => setHover(true)}
+    >
+      {chips}
+    </FindingsHoverCard>
   );
 }

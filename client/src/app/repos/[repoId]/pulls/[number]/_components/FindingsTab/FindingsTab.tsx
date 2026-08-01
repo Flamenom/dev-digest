@@ -71,6 +71,17 @@ export function FindingsTab({
     setTarget((p) => ({ runId, n: (p?.n ?? 0) + 1 }));
   }, []);
 
+  // Join each timeline run to its persisted review's findings (by run_id) so the
+  // timeline can show a per-severity breakdown + hover card without any extra
+  // fetch — the reviews payload is already loaded here.
+  const findingsByRun = React.useMemo(() => {
+    const m = new Map<string, FindingRecord[]>();
+    for (const rev of runs) {
+      if (rev.run_id && rev.kind === "review") m.set(rev.run_id, rev.findings);
+    }
+    return m;
+  }, [runs]);
+
   return (
     <section>
       {liveRunIds.length > 0 && (
@@ -131,6 +142,7 @@ export function FindingsTab({
           <RunHistory
             runs={prRuns ?? []}
             commits={prCommits}
+            findingsByRun={findingsByRun}
             onOpenTrace={handleOpenTrace}
             onGoToReview={handleGoToReview}
             onDelete={handleDelete}
