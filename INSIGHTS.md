@@ -17,4 +17,6 @@ Cap ~5 new/session, ~80–100 lines/file (then prune/split). Promote persistent 
 
 ## Recurring Errors & Fixes
 
+- `ERR_MODULE_NOT_FOUND: Cannot find package 'openai' imported from reviewer-core/src/...` during `pnpm db:seed`, API boot, or server tests = reviewer-core deps not installed. reviewer-core is consumed as RAW source via a tsconfig alias, and its runtime deps (openai/zod) resolve from `reviewer-core/node_modules` — a SIBLING of `server/`, NOT an ancestor — so `server`'s own `openai` install can't satisfy them. Any step that loads reviewer-core must run `npm ci` in `reviewer-core/` FIRST (reviewer-core uses npm, not pnpm). Was ordered AFTER `db:seed` in e2e-web.yml → crash. Evidence: .github/workflows/e2e-web.yml (Install reviewer-core deps); server-integration.yml:56. Confidence: high. (2026-08-01)
+
 ## Open Questions

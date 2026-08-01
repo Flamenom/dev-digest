@@ -15,6 +15,8 @@ Cap ~5 new/session, ~80–100 lines/file (then prune/split). Promote persistent 
 
 ## Decisions — with the why
 
+- PR-list per-PR rollups (SCORE, FINDINGS) must aggregate across AGENTS, not pick "the latest review". A PR is typically reviewed by several agents at once, creating multiple `reviews` rows with the SAME `createdAt` — so `ORDER BY createdAt DESC` + first-seen returns an ARBITRARY agent (symptom: list showed score 100 / 0 findings while another agent had a blocker). Fix: take the latest review per `(prId, agentId)` (a re-run replaces, never double-counts), then SUM findings severities and take the MIN (worst) score across agents. Evidence: server/src/modules/pulls/routes.ts:114-176. Confidence: high. (2026-08-01)
+
 ## Recurring Errors & Fixes
 
 ## Open Questions
