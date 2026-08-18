@@ -90,13 +90,46 @@ export async function deleteAgentRun(
   return rows.length > 0;
 }
 
-/** Mark a still-running run as cancelled (no-op if it already finished). */
-export async function cancelRunIfRunning(db: Db, runId: string): Promise<boolean> {
+/**
+ * Mark a still-running run as cancelled (no-op if it already finished).
+ * Workspace-scoped: a run belonging to another workspace must not be cancellable
+ * by id alone. Still works for ORPHANED runs (whose process died) — those keep
+ * their workspace_id, so only the liveness signal is missing, not the tenancy.
+ */
+export async function cancelRunIfRunning(
+  db: Db,
+  workspaceId: string,
+  runId: string,
+): Promise<boolean> {
   const rows = await db
     .update(t.agentRuns)
     .set({ status: 'cancelled' })
-    .where(and(eq(t.agentRuns.id, runId), eq(t.agentRuns.status, 'running')))
+    .where(
+      and(
+        eq(t.agentRuns.id, runId),
+        eq(t.agentRuns.workspaceId, workspaceId),
+        eq(t.agentRuns.status, 'running'),
+      ),
+    )
     .returning({ id: t.agentRuns.id });
+  return rows.length > 0;
+}
+
+/**
+ * Whether a run id belongs to the given workspace (any status). The ownership
+ * check for operations addressed purely by runId — cancelling and subscribing to
+ * a run's live event stream — where there is no PR in the path to scope through.
+ */
+export async function runExistsInWorkspace(
+  db: Db,
+  workspaceId: string,
+  runId: string,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: t.agentRuns.id })
+    .from(t.agentRuns)
+    .where(and(eq(t.agentRuns.id, runId), eq(t.agentRuns.workspaceId, workspaceId)))
+    .limit(1);
   return rows.length > 0;
 }
 
@@ -184,7 +217,21 @@ export async function saveRunTrace(db: Db, runId: string, trace: RunTrace): Prom
     .onConflictDoUpdate({ target: t.runTraces.runId, set: { trace } });
 }
 
-export async function getRunTrace(db: Db, runId: string): Promise<RunTrace | undefined> {
-  const [row] = await db.select().from(t.runTraces).where(eq(t.runTraces.runId, runId));
+/**
+ * Fetch a run's trace, scoped to the workspace. `run_traces` carries no
+ * workspace_id of its own (its PK is the run id), so tenancy is enforced by
+ * joining the owning `agent_runs` row rather than trusting the id in the URL —
+ * a trace contains the full assembled prompt and raw model output.
+ */
+export async function getRunTrace(
+  db: Db,
+  workspaceId: string,
+  runId: string,
+): Promise<RunTrace | undefined> {
+  const [row] = await db
+    .select({ trace: t.runTraces.trace })
+    .from(t.runTraces)
+    .innerJoin(t.agentRuns, eq(t.agentRuns.id, t.runTraces.runId))
+    .where(and(eq(t.runTraces.runId, runId), eq(t.agentRuns.workspaceId, workspaceId)));
   return row ? (row.trace as RunTrace) : undefined;
 }

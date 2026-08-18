@@ -12,10 +12,22 @@ export const CLONE_DEPTH = 1;
 export const GITHUB_TOKEN_SECRET = 'GITHUB_TOKEN';
 
 /**
- * Parse `owner`/`repo` from a GitHub URL — supports both
- * `https://github.com/owner/repo(.git)` and `git@github.com:owner/repo.git`.
+ * SSH (scp-like) GitHub remote: `git@github.com:owner/repo.git`. This form is not
+ * a parseable URL, so it gets its own ANCHORED pattern. `^…$` matters: an
+ * unanchored pattern would accept any string that merely *contains* github.com.
  */
-export const GITHUB_URL_REGEX = /github\.com[/:]([^/]+)\/([^/.]+)(?:\.git)?\/?$/;
+export const GITHUB_SSH_URL_REGEX = /^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?\/?$/;
+
+/**
+ * Allowed characters in a GitHub owner (user/org) or repository name. GitHub
+ * itself permits only these, so anything else is rejected rather than passed to
+ * `git clone` or used as a filesystem path segment. Notably this excludes `/`,
+ * `\`, and the bare `.`/`..` traversal segments guarded below.
+ */
+export const GITHUB_NAME_REGEX = /^[A-Za-z0-9._-]+$/;
+
+/** Protocols accepted for an https GitHub clone URL. */
+export const ALLOWED_REPO_PROTOCOLS = ['https:'] as const;
 
 /** Username embedded into an authenticated https github.com clone URL. */
 export const GIT_TOKEN_USERNAME = 'x-access-token';
