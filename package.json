@@ -1,1 +1,13 @@
-{}
+{
+  "name": "dev-digest",
+  "private": true,
+  "description": "Repo-root dev toolchain only. The four packages are standalone (own package.json + lockfile); nothing here is a workspace root.",
+  "scripts": {
+    "lint": "eslint server/src server/test reviewer-core/src reviewer-core/test --no-warn-ignored",
+    "lint:fix": "eslint --fix server/src server/test reviewer-core/src reviewer-core/test --no-warn-ignored"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.5",
+    "typescript-eslint": "^8.67.0"
+  }
+}
