@@ -4,6 +4,7 @@
 export * from "./core";
 export * from "./use-query-param";
 export * from "./agents";
+export * from "./skills";
 export * from "./reviews";
 export * from "./trace";
 export * from "./repo-intel";

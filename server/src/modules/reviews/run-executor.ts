@@ -7,6 +7,7 @@ import type { AgentRow } from '../../db/rows.js';
 import type { ReviewRepository, FindingRow, PullRow, ReviewRow } from './repository.js';
 import { REVIEW_STRATEGY } from './constants.js';
 import { taskLine } from './helpers.js';
+import { splitEnabledSkills } from '../_shared/skill-prompt.js';
 import { loadDiff } from './diff-loader.js';
 
 /** Thrown by a run when the user cancels it mid-flight (between map files). */
@@ -183,6 +184,15 @@ export class ReviewRunExecutor {
 
       const task = taskLine(pull) + rankNote;
 
+      // L02 — resolve the agent's linked skills (ordered by agent_skills.order)
+      // and inject only the globally-ENABLED ones as `### <name>\n<body>` blocks
+      // (the engine assembles them into the `## Skills / rules` section). The
+      // log line always states the injected/skipped split — even at 0 — so the
+      // "enabled skill visible in logs, disabled not" acceptance holds.
+      const linkedSkills = await this.container.skillsRepo.resolveAgentSkills(agent.id);
+      const { injected: skillBlocks, skipped: skillsSkipped } = splitEnabledSkills(linkedSkills);
+      runLog.info(`Skills: ${skillBlocks.length} injected, ${skillsSkipped} skipped (disabled)`);
+
       // ---- Engine: assemble → single-pass → grounding -----------------------
       // The pure review pipeline lives in @devdigest/reviewer-core (shared with
       // the CI runner). The service owns only I/O: repo-intel context resolution
@@ -200,6 +210,9 @@ export class ReviewRunExecutor {
         ...(callersDigest ? { callers: callersDigest } : {}),
         // T3 — repo skeleton, same omit-when-empty contract.
         ...(repoMap ? { repoMap } : {}),
+        // L02 — linked + enabled skill bodies; omitted when empty (the engine
+        // then leaves the `## Skills / rules` section out entirely).
+        ...(skillBlocks.length > 0 ? { skills: skillBlocks } : {}),
         // PR author's description/body — untrusted; assemblePrompt wraps +
         // truncates it. Omitted when the PR has no body.
         ...(pull.body ? { prDescription: pull.body } : {}),

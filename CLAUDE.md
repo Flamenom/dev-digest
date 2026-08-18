@@ -46,6 +46,7 @@ is shared via **tsconfig path aliases**, not npm.
 ## Read when
 - **`README.md`** — first, for the end-to-end flow and quick start.
 - **`docs/architecture.md`** — when changing the review pipeline / repo-intel / cross-package wiring.
+- **`specs/02-skills-lab.md`** — when touching skills (server module, /skills UI, agent Skills tab, prompt injection).
 - **`server/CLAUDE.md` · `client/CLAUDE.md` · `reviewer-core/CLAUDE.md` · `e2e/CLAUDE.md`** — auto-load per folder; read before editing that package.
 - **`INSIGHTS.md`** — before debugging a cross-cutting issue.
 

@@ -7,7 +7,9 @@ import {
   GENERAL_REVIEWER_PROMPT,
   SECURITY_REVIEWER_PROMPT,
   PERFORMANCE_REVIEWER_PROMPT,
+  TEST_QUALITY_REVIEWER_PROMPT,
 } from './seed-prompts.js';
+import { SEED_SKILLS } from './seed-skills.js';
 
 /** Default provider/model for the built-in reviewer agents. */
 const DEFAULT_PROVIDER = 'openrouter' as const;
@@ -219,6 +221,72 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
       .from(t.agents)
       .where(and(eq(t.agents.workspaceId, workspaceId), eq(t.agents.name, a.name)));
     if (!existing) await db.insert(t.agents).values(a);
+  }
+
+  // ---- L02: skills + the Test Quality Reviewer agent ----
+  // Three manual skills (bodies in ./seed-skills.ts) with their v1 snapshots,
+  // plus one agent linked to them in order 0,1,2. Same name-guard idempotency
+  // as the agents above; version snapshots and links guard on their PKs. The
+  // 4th demo skill (flaky-test-patterns) is the import fixture, not seeded.
+  const skillIdByName = new Map<string, string>();
+  for (const s of SEED_SKILLS) {
+    let [skill] = await db
+      .select()
+      .from(t.skills)
+      .where(and(eq(t.skills.workspaceId, workspaceId), eq(t.skills.name, s.name)));
+    if (!skill) {
+      [skill] = await db
+        .insert(t.skills)
+        .values({
+          workspaceId,
+          name: s.name,
+          description: s.description,
+          type: s.type,
+          source: 'manual',
+          body: s.body,
+          enabled: true,
+          version: 1,
+        })
+        .returning();
+    }
+    skillIdByName.set(s.name, skill!.id);
+    await db
+      .insert(t.skillVersions)
+      .values({ skillId: skill!.id, version: 1, body: skill!.body, note: 'Initial version' })
+      .onConflictDoNothing();
+  }
+
+  let [tqAgent] = await db
+    .select()
+    .from(t.agents)
+    .where(and(eq(t.agents.workspaceId, workspaceId), eq(t.agents.name, 'Test Quality Reviewer')));
+  if (!tqAgent) {
+    [tqAgent] = await db
+      .insert(t.agents)
+      .values({
+        workspaceId,
+        name: 'Test Quality Reviewer',
+        description:
+          'Judges the diff’s tests: uncovered branches, missing corner cases, over-mocking, and flaky patterns.',
+        provider: DEFAULT_PROVIDER,
+        model: DEFAULT_MODEL,
+        systemPrompt: TEST_QUALITY_REVIEWER_PROMPT,
+        ciFailOn: 'warning',
+        enabled: true,
+        version: 1,
+        createdBy: userId,
+      })
+      .returning();
+  }
+  const tqSkillOrder = ['branch-coverage-rubric', 'corner-case-checklist', 'mock-overuse-gate'];
+  for (let i = 0; i < tqSkillOrder.length; i++) {
+    const skillId = skillIdByName.get(tqSkillOrder[i]!);
+    if (skillId) {
+      await db
+        .insert(t.agentSkills)
+        .values({ agentId: tqAgent!.id, skillId, order: i })
+        .onConflictDoNothing();
+    }
   }
 
   // ---- demo agent runs (so the COST column / timeline show data on a fresh

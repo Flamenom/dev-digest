@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
+import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import { FastifySSEPlugin } from 'fastify-sse-v2';
 import {
@@ -17,6 +18,7 @@ import { Container, type ContainerOverrides } from './platform/container.js';
 import { AppError } from './platform/errors.js';
 import { modules } from './modules/index.js';
 import { ReviewService } from './modules/reviews/service.js';
+import { ZIP_MAX_BYTES } from './modules/skills/constants.js';
 
 // Attach the DI container to every request/instance.
 declare module 'fastify' {
@@ -88,6 +90,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   // serves JSON only, so the default CSP is fine.
   await app.register(helmet);
   await app.register(cors, { origin: [config.webOrigin], credentials: true });
+  // L02 — skill-import uploads (POST /skills/import: one .md/.zip file). Hard
+  // transport cap of 2 MB / 1 file; the import parser re-enforces the
+  // format-specific limits (md ≤ 256 KB, SKILL.md entry ≤ 256 KB uncompressed).
+  await app.register(multipart, { limits: { files: 1, fileSize: ZIP_MAX_BYTES } });
   await app.register(FastifySSEPlugin);
 
   // Global rate limit. Disabled under test so integration suites can hammer
