@@ -13,7 +13,7 @@ import { TraceSection } from "../TraceSection";
 import { ToolCallRow } from "../ToolCallRow";
 import { PromptBlock } from "../PromptBlock";
 import { FindingsSection } from "../FindingsSection";
-import { RunCostBadge } from "../../../../../_components/RunCostBadge";
+import { RunCostBadge } from "@/app/repos/[repoId]/pulls/_components/RunCostBadge";
 import { Row, Stat } from "../atoms";
 
 export function TraceBody({ trace, findings }: { trace: RunTrace; findings: FindingRecord[] }) {

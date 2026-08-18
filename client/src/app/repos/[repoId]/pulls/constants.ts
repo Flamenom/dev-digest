@@ -1,4 +1,4 @@
-import type { PrMeta } from "../../../../lib/types";
+import type { PrMeta } from "@/lib/types";
 
 /** Constants for the PR list page (/repos/:repoId/pulls). */
 
@@ -58,3 +58,6 @@ export type SizeInfo = { size: PrSize; lines: number };
 
 /** Re-exported for helpers that consume PrMeta. */
 export type { PrMeta };
+
+/** Open PRs carry a derived review status; everything else is merged/closed. */
+export const OPEN_STATUSES = new Set(["needs_review", "reviewed", "stale"]);

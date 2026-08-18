@@ -161,28 +161,46 @@ export function useFindingAction() {
 }
 
 /**
- * Subscribe to a run's SSE event stream. Returns the accumulated RunEvents and a
- * `running` flag (true until the stream closes). Live status for the
- * RunReviewDropdown / Live Log. Multiple runIds are subscribed in parallel.
+ * Cap on the accumulated live-event buffer. A long review on a large PR can
+ * stream hundreds of events; each one previously appended to an unbounded
+ * array (re-rendering every consumer with an ever-growing prop). The Live Log
+ * only ever shows the tail, so older events are dropped past this cap.
+ */
+const MAX_RUN_EVENTS = 500;
+
+/**
+ * Subscribe to a run's SSE event stream. Returns the accumulated RunEvents
+ * (bounded to the newest MAX_RUN_EVENTS) and a `running` flag (true until the
+ * stream closes). Live status for the RunReviewDropdown / Live Log. Multiple
+ * runIds are subscribed in parallel.
  */
 export function useRunEvents(runIds: string[]) {
   const [events, setEvents] = React.useState<RunEvent[]>([]);
   const [running, setRunning] = React.useState(false);
+  // Callers rebuild the runIds array every render — key on its CONTENT so the
+  // effect re-subscribes only when the actual set of runs changes. The ids are
+  // re-derived from the key inside the effect, keeping its deps exhaustive
+  // (no lint suppression needed).
   const key = runIds.join(",");
 
   React.useEffect(() => {
-    if (runIds.length === 0) return;
+    const ids = key ? key.split(",") : [];
+    if (ids.length === 0) return;
     setEvents([]);
     setRunning(true);
     const sources: EventSource[] = [];
-    let open = runIds.length;
+    let open = ids.length;
 
-    for (const runId of runIds) {
+    for (const runId of ids) {
       const es = new EventSource(`${API_BASE}/runs/${runId}/events`);
       const onMsg = (ev: MessageEvent) => {
         try {
           const parsed = JSON.parse(ev.data) as RunEvent;
-          setEvents((prev) => [...prev, parsed]);
+          setEvents((prev) =>
+            prev.length >= MAX_RUN_EVENTS
+              ? [...prev.slice(prev.length - MAX_RUN_EVENTS + 1), parsed]
+              : [...prev, parsed],
+          );
           // Runtime agent failures arrive as SSE `error` events (not as a
           // mutation/query error), so the global error toast never sees them —
           // surface them here so the user gets a notification without a reload.
@@ -197,6 +215,10 @@ export function useRunEvents(runIds: string[]) {
       for (const kind of ["info", "tool", "result", "error"]) {
         es.addEventListener(kind, onMsg as EventListener);
       }
+      // NOTE: the server ends the stream when the run completes, and the
+      // browser surfaces that as `onerror` — so "done" and "connection lost"
+      // are indistinguishable here. Distinguishing them needs an explicit
+      // server-sent `done` event (server change; out of client-only scope).
       es.onerror = () => {
         es.close();
         open -= 1;
@@ -209,7 +231,6 @@ export function useRunEvents(runIds: string[]) {
       for (const es of sources) es.close();
       setRunning(false);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
   return { events, running };

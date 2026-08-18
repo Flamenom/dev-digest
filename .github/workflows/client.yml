@@ -46,4 +46,8 @@ jobs:
 
       - run: pnpm typecheck
 
+      # ESLint (eslint-config-next): react-hooks/exhaustive-deps, jsx-a11y and
+      # Next's RSC/link/image rules. Config: client/eslint.config.mjs.
+      - run: pnpm lint
+
       - run: pnpm test
