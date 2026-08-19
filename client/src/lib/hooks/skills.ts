@@ -52,6 +52,8 @@ export interface CreateSkillInput {
   body: string;
   enabled?: boolean;
   source?: SkillSource;
+  /** Provenance of extracted skills — the accepted conventions' evidence paths. */
+  evidence_files?: string[];
 }
 
 export function useCreateSkill() {

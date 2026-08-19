@@ -23,6 +23,7 @@ export interface InsertSkill {
   body: string;
   source?: SkillSource;
   enabled?: boolean;
+  evidenceFiles?: string[];
 }
 
 export interface UpdateSkillPatch {
@@ -87,6 +88,7 @@ export class SkillsRepository {
         source: values.source ?? 'manual',
         body: values.body,
         enabled: values.enabled ?? true,
+        ...(values.evidenceFiles !== undefined ? { evidenceFiles: values.evidenceFiles } : {}),
         version: INITIAL_SKILL_VERSION,
       })
       .returning();

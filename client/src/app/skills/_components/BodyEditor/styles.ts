@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 
-const LINE_HEIGHT = 20;
+export const LINE_HEIGHT = 20;
 
 /** Co-located styles for BodyEditor. Gutter and textarea share font metrics
     so line numbers stay aligned with the text. */
@@ -62,10 +62,35 @@ export const s = {
     background: "var(--bg-surface)",
     borderRight: "1px solid var(--border)",
     userSelect: "none",
+    height: "100%",
   } satisfies CSSProperties,
-  gutterLine: { padding: "0 10px" } satisfies CSSProperties,
+  // Height = the measured height of the SAME logical line in the mirror, so a
+  // wrapped line keeps one number and the following numbers stay aligned.
+  gutterLine: (height: number): CSSProperties => ({ padding: "0 10px", height }),
+  textWrap: {
+    position: "relative",
+    flex: 1,
+    minWidth: 0,
+    display: "flex",
+  } satisfies CSSProperties,
+  // Invisible copy of the textarea's text, one block per logical line, with
+  // identical width/font/wrapping — the gutter measures line heights from it.
+  mirror: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: 0,
+    visibility: "hidden",
+    pointerEvents: "none",
+    padding: "0 12px",
+    fontSize: 13,
+    lineHeight: `${LINE_HEIGHT}px`,
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+  } satisfies CSSProperties,
   textarea: {
     flex: 1,
+    minWidth: 0,
     resize: "none",
     overflow: "hidden",
     padding: "10px 12px",
@@ -75,6 +100,7 @@ export const s = {
     color: "var(--text-primary)",
     fontSize: 13,
     lineHeight: `${LINE_HEIGHT}px`,
-    whiteSpace: "pre",
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
   } satisfies CSSProperties,
 } as const;
