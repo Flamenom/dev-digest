@@ -24,6 +24,16 @@ export const s = {
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
+    marginRight: "auto",
+  } satisfies CSSProperties,
+  githubLink: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    fontSize: 11,
+    color: "var(--text-muted)",
+    textDecoration: "none",
+    whiteSpace: "nowrap",
   } satisfies CSSProperties,
   copyBtn: {
     display: "inline-flex",

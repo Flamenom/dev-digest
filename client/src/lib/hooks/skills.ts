@@ -1,5 +1,6 @@
 /* hooks/skills.ts — React Query hooks for the L02 Skills Lab (/skills).
-   Query keys: ["skills"], ["skill", id], ["skills-usage"], ["skill-versions", id].
+   Query keys: ["skills"], ["skill", id], ["skills-usage"], ["skill-versions", id],
+   ["skill-stats", id].
    Mutations that change skills also invalidate ["skills-usage"] (list-card and
    Stats-tab counts derive from it). */
 "use client";
@@ -11,6 +12,7 @@ import type {
   SkillType,
   SkillSource,
   SkillImportPreview,
+  SkillStats,
   SkillUsage,
   SkillVersionEntry,
 } from "@devdigest/shared";
@@ -34,6 +36,14 @@ export function useSkillsUsage() {
   return useQuery({
     queryKey: ["skills-usage"],
     queryFn: () => api.get<SkillUsage[]>("/skills/usage"),
+  });
+}
+
+export function useSkillStats(id: string | null | undefined) {
+  return useQuery({
+    queryKey: ["skill-stats", id],
+    queryFn: () => api.get<SkillStats>(`/skills/${id}/stats`),
+    enabled: !!id,
   });
 }
 
@@ -106,6 +116,7 @@ export function useUpdateSkill() {
       qc.invalidateQueries({ queryKey: ["skills"] });
       qc.invalidateQueries({ queryKey: ["skills-usage"] });
       qc.invalidateQueries({ queryKey: ["skill-versions", id] });
+      qc.invalidateQueries({ queryKey: ["skill-stats", id] });
     },
   });
 }
@@ -119,6 +130,25 @@ export function useDeleteSkill() {
       qc.invalidateQueries({ queryKey: ["skills-usage"] });
       qc.removeQueries({ queryKey: ["skill", id] });
       qc.removeQueries({ queryKey: ["skill-versions", id] });
+      qc.removeQueries({ queryKey: ["skill-stats", id] });
+    },
+  });
+}
+
+
+/** Re-apply an old body snapshot as the NEW head version (POST /skills/:id/restore). */
+export function useRestoreSkillVersion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, version }: { id: string; version: number }) =>
+      api.post<Skill>(`/skills/${id}/restore`, { version }),
+    onSuccess: (data) => {
+      qc.setQueryData(["skill", data.id], data);
+    },
+    onSettled: (_d, _e, { id }) => {
+      qc.invalidateQueries({ queryKey: ["skills"] });
+      qc.invalidateQueries({ queryKey: ["skill-versions", id] });
+      qc.invalidateQueries({ queryKey: ["skill-stats", id] });
     },
   });
 }

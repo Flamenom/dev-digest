@@ -8,8 +8,9 @@ import {
   SECURITY_REVIEWER_PROMPT,
   PERFORMANCE_REVIEWER_PROMPT,
   TEST_QUALITY_REVIEWER_PROMPT,
+  API_CONTRACT_REVIEWER_PROMPT,
 } from './seed-prompts.js';
-import { SEED_SKILLS } from './seed-skills.js';
+import { API_CONTRACT_SEED_SKILLS, SEED_SKILLS } from './seed-skills.js';
 
 /** Default provider/model for the built-in reviewer agents. */
 const DEFAULT_PROVIDER = 'openrouter' as const;
@@ -223,13 +224,13 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
     if (!existing) await db.insert(t.agents).values(a);
   }
 
-  // ---- L02: skills + the Test Quality Reviewer agent ----
+  // ---- L02: skills + the Test Quality / API Contract Reviewer agents ----
   // Three manual skills (bodies in ./seed-skills.ts) with their v1 snapshots,
   // plus one agent linked to them in order 0,1,2. Same name-guard idempotency
   // as the agents above; version snapshots and links guard on their PKs. The
   // 4th demo skill (flaky-test-patterns) is the import fixture, not seeded.
   const skillIdByName = new Map<string, string>();
-  for (const s of SEED_SKILLS) {
+  for (const s of [...SEED_SKILLS, ...API_CONTRACT_SEED_SKILLS]) {
     let [skill] = await db
       .select()
       .from(t.skills)
@@ -285,6 +286,41 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
       await db
         .insert(t.agentSkills)
         .values({ agentId: tqAgent!.id, skillId, order: i })
+        .onConflictDoNothing();
+    }
+  }
+
+  // ---- API Contract Reviewer (course feedback): breaking-change gatekeeper
+  // linked to the four API-contract skills in order 0-3. Same name-guard
+  // idempotency as the agents above.
+  let [acAgent] = await db
+    .select()
+    .from(t.agents)
+    .where(and(eq(t.agents.workspaceId, workspaceId), eq(t.agents.name, 'API Contract Reviewer')));
+  if (!acAgent) {
+    [acAgent] = await db
+      .insert(t.agents)
+      .values({
+        workspaceId,
+        name: 'API Contract Reviewer',
+        description:
+          'Flags breaking API changes: response-shape drift, status-code misuse, validation gaps, and edits to shared contracts.',
+        provider: DEFAULT_PROVIDER,
+        model: DEFAULT_MODEL,
+        systemPrompt: API_CONTRACT_REVIEWER_PROMPT,
+        ciFailOn: 'critical',
+        enabled: true,
+        version: 1,
+        createdBy: userId,
+      })
+      .returning();
+  }
+  for (let i = 0; i < API_CONTRACT_SEED_SKILLS.length; i++) {
+    const skillId = skillIdByName.get(API_CONTRACT_SEED_SKILLS[i]!.name);
+    if (skillId) {
+      await db
+        .insert(t.agentSkills)
+        .values({ agentId: acAgent!.id, skillId, order: i })
         .onConflictDoNothing();
     }
   }

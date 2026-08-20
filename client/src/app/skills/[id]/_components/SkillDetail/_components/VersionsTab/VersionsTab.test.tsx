@@ -13,17 +13,17 @@ const VERSIONS: SkillVersionEntry[] = [
   { skill_id: "sk1", version: 1, note: null, body: "old body", created_at: "2026-08-17T10:00:00Z" },
 ];
 
-const updateMutate = vi.fn();
+const restoreMutate = vi.fn();
 vi.mock("@/lib/hooks/skills", () => ({
   useSkillVersions: () => ({ data: VERSIONS, isLoading: false, isError: false, refetch: vi.fn() }),
-  useUpdateSkill: () => ({ mutate: updateMutate, isPending: false }),
+  useRestoreSkillVersion: () => ({ mutate: restoreMutate, isPending: false }),
 }));
 
 import { VersionsTab } from "./VersionsTab";
 
 afterEach(() => {
   cleanup();
-  updateMutate.mockClear();
+  restoreMutate.mockClear();
 });
 
 const SKILL: Skill = {
@@ -55,21 +55,16 @@ describe("VersionsTab", () => {
     expect(screen.getByText("Current")).toBeInTheDocument();
   });
 
-  it("restore confirms then PUTs the snapshot body with a Restored-from note", () => {
+  it("restore confirms then POSTs the version to /skills/:id/restore", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     renderTab();
     const restoreButtons = screen.getAllByRole("button", { name: /Restore/ });
     // first row (v2/head) is disabled; second row (v1) is the restorable one
     fireEvent.click(restoreButtons[1]!);
     expect(confirmSpy).toHaveBeenCalled();
-    expect(updateMutate).toHaveBeenCalledTimes(1);
-    const [vars] = updateMutate.mock.calls[0]!;
-    expect(vars).toEqual(
-      expect.objectContaining({
-        id: "sk1",
-        patch: { body: "old body", note: "Restored from v1" },
-      }),
-    );
+    expect(restoreMutate).toHaveBeenCalledTimes(1);
+    const [vars] = restoreMutate.mock.calls[0]!;
+    expect(vars).toEqual({ id: "sk1", version: 1 });
     confirmSpy.mockRestore();
   });
 

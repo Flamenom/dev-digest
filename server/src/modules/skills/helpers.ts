@@ -49,3 +49,8 @@ export function isBodyChange(
 
 // The run-side enabled/disabled split lives in `modules/_shared/skill-prompt.ts`
 // (shared with the review run-executor, which must not import this folder).
+
+/** The version note recorded when POST /skills/:id/restore re-applies vN. */
+export function restoreNote(version: number): string {
+  return `Restored from v${version}`;
+}

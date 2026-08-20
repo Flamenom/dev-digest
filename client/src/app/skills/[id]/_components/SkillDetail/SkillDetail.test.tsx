@@ -30,7 +30,9 @@ vi.mock("@/lib/hooks/skills", () => ({
   useUpdateSkill: () => ({ mutate: updateMutate, isPending: false }),
   useDeleteSkill: () => ({ mutate: vi.fn(), isPending: false }),
   useSkillsUsage: () => ({ data: [] }),
+  useSkillStats: () => ({ data: undefined }),
   useSkillVersions: () => ({ data: [], isLoading: false, isError: false, refetch: vi.fn() }),
+  useRestoreSkillVersion: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 import { SkillDetail } from "./SkillDetail";

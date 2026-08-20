@@ -33,10 +33,12 @@ function convention(overrides: Partial<Convention> = {}): Convention {
   };
 }
 
-function renderCard(c: Convention) {
+const REPO = { full_name: "acme/payments-api", default_branch: "main" };
+
+function renderCard(c: Convention, repo: typeof REPO | null = REPO) {
   render(
     <NextIntlClientProvider locale="en" messages={{ conventions: messages }}>
-      <ConventionCard convention={c} repoId="r1" />
+      <ConventionCard convention={c} repoId="r1" repo={repo} />
     </NextIntlClientProvider>,
   );
 }
@@ -49,6 +51,27 @@ describe("ConventionCard", () => {
     expect(screen.getByText("src/api/users.ts:23-31")).toBeInTheDocument();
     expect(screen.getByText("const user = await db.users.find(id);")).toBeInTheDocument();
     expect(screen.getByText("91%")).toBeInTheDocument();
+  });
+
+  it("links the evidence to GitHub with line anchors; no repo -> no link", () => {
+    renderCard(convention());
+    const link = screen.getByRole("link", { name: /GitHub/ });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://github.com/acme/payments-api/blob/main/src/api/users.ts#L23-L31",
+    );
+    expect(link).toHaveAttribute("target", "_blank");
+
+    cleanup();
+    renderCard(convention({ evidence_start_line: null, evidence_end_line: null }));
+    expect(screen.getByRole("link", { name: /GitHub/ })).toHaveAttribute(
+      "href",
+      "https://github.com/acme/payments-api/blob/main/src/api/users.ts",
+    );
+
+    cleanup();
+    renderCard(convention(), null);
+    expect(screen.queryByRole("link", { name: /GitHub/ })).not.toBeInTheDocument();
   });
 
   it("Accept fires a status mutation; clicking the active state toggles back to pending", () => {

@@ -182,6 +182,20 @@ export class SkillsRepository {
   }
 
   /**
+   * The agents linking one skill (GET /skills/:id/stats) — name-ordered.
+   * Not workspace-filtered here: the service resolves the skill workspace-scoped
+   * first, and agent_skills only links same-workspace rows.
+   */
+  async agentsUsing(skillId: string): Promise<Array<{ id: string; name: string }>> {
+    return this.db
+      .select({ id: t.agents.id, name: t.agents.name })
+      .from(t.agentSkills)
+      .innerJoin(t.agents, eq(t.agentSkills.agentId, t.agents.id))
+      .where(eq(t.agentSkills.skillId, skillId))
+      .orderBy(asc(t.agents.name));
+  }
+
+  /**
    * Run-time resolution (run-executor via container.skillsRepo): the skills
    * linked to an agent, ordered by `agent_skills.order`. Returns enabled AND
    * disabled rows — the caller splits them so it can log the skipped count.

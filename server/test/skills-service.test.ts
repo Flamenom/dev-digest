@@ -43,6 +43,17 @@ function makeFakeRepo(existing: SkillRow) {
     insert: vi.fn(async (values: Record<string, unknown>) =>
       skillRow({ ...values, id: 'new-skill', version: 1 } as Partial<SkillRow>),
     ),
+    getVersion: vi.fn(async (_id: string, version: number) => ({
+      skillId: existing.id,
+      version,
+      body: `v${version} body`,
+      note: null,
+      createdAt: new Date('2026-08-18T00:00:00Z'),
+    })),
+    listVersions: vi.fn(async () => [
+      { skillId: existing.id, version: existing.version, body: existing.body, note: null, createdAt: new Date('2026-08-19T00:00:00Z') },
+    ]),
+    agentsUsing: vi.fn(async () => [{ id: 'agent-1', name: 'API Contract Reviewer' }]),
   };
   return repo;
 }
@@ -149,5 +160,67 @@ describe('SkillsService versioning', () => {
     expect(repo.insert).toHaveBeenCalledWith(
       expect.objectContaining({ source: 'manual', enabled: false, workspaceId: 'ws-1' }),
     );
+  });
+});
+
+describe('SkillsService restore (POST /skills/:id/restore)', () => {
+  it('re-applies the snapshot body as a NEW head version with a "Restored from vN" note', async () => {
+    const repo = makeFakeRepo(skillRow({ body: 'v3 body', version: 3 }));
+    const service = makeService(repo);
+
+    const restored = await service.restore('ws-1', 'skill-1', 1);
+
+    expect(restored?.version).toBe(4); // new head, history untouched
+    expect(repo.getVersion).toHaveBeenCalledWith('skill-1', 1);
+    expect(repo.update).toHaveBeenCalledWith(
+      'ws-1',
+      'skill-1',
+      { body: 'v1 body' },
+      { nextVersion: 4, note: 'Restored from v1' },
+    );
+  });
+
+  it('restoring a snapshot identical to the current body is a no-op (no bump)', async () => {
+    const repo = makeFakeRepo(skillRow({ body: 'v2 body', version: 2 }));
+    const service = makeService(repo);
+    const restored = await service.restore('ws-1', 'skill-1', 2);
+    expect(restored?.version).toBe(2);
+    expect(repo.update.mock.calls[0]![3]).toBeUndefined();
+  });
+
+  it('unknown skill or unknown version returns undefined (route -> 404)', async () => {
+    const repo = makeFakeRepo(skillRow());
+    repo.getById.mockResolvedValueOnce(undefined as unknown as SkillRow);
+    expect(await makeService(repo).restore('ws-1', 'ghost', 1)).toBeUndefined();
+
+    const repo2 = makeFakeRepo(skillRow());
+    repo2.getVersion.mockResolvedValueOnce(undefined as never);
+    expect(await makeService(repo2).restore('ws-1', 'skill-1', 99)).toBeUndefined();
+    expect(repo2.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('SkillsService stats (GET /skills/:id/stats)', () => {
+  it('reports linking agents, version count, and the newest snapshot date', async () => {
+    const repo = makeFakeRepo(skillRow({ version: 2 }));
+    const service = makeService(repo);
+
+    const stats = await service.stats('ws-1', 'skill-1');
+
+    expect(stats).toEqual({
+      skill_id: 'skill-1',
+      used_by_agents: 1,
+      agents: [{ id: 'agent-1', name: 'API Contract Reviewer' }],
+      version_count: 1,
+      latest_version: 2,
+      last_updated_at: '2026-08-19T00:00:00.000Z',
+    });
+  });
+
+  it('unknown skill returns undefined (route -> 404)', async () => {
+    const repo = makeFakeRepo(skillRow());
+    repo.getById.mockResolvedValueOnce(undefined as unknown as SkillRow);
+    expect(await makeService(repo).stats('ws-1', 'ghost')).toBeUndefined();
+    expect(repo.agentsUsing).not.toHaveBeenCalled();
   });
 });

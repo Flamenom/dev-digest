@@ -2,12 +2,13 @@ import type { Container } from '../../platform/container.js';
 import type {
   Skill,
   SkillSource,
+  SkillStats,
   SkillType,
   SkillUsage,
   SkillVersionEntry,
 } from '@devdigest/shared';
 import { SkillsRepository } from './repository.js';
-import { isBodyChange, toSkillDto, toSkillVersionDto } from './helpers.js';
+import { isBodyChange, restoreNote, toSkillDto, toSkillVersionDto } from './helpers.js';
 import { DEFAULT_SKILL_SOURCE } from './constants.js';
 
 /**
@@ -130,6 +131,46 @@ export class SkillsService {
     if (!skill) return undefined;
     const row = await this.repo.getVersion(skillId, version);
     return row ? toSkillVersionDto(row) : undefined;
+  }
+
+  /**
+   * Restore an old body snapshot as the NEW head version (never a history
+   * rollback): re-applies the snapshot body through the normal update flow, so
+   * it bumps `version` and records a "Restored from vN" note. Restoring a body
+   * identical to the current one is a no-op (no bump). Undefined when the
+   * skill or the requested version is unknown (route -> 404).
+   */
+  async restore(workspaceId: string, id: string, version: number): Promise<Skill | undefined> {
+    const existing = await this.repo.getById(workspaceId, id);
+    if (!existing) return undefined;
+    const snapshot = await this.repo.getVersion(id, version);
+    if (!snapshot) return undefined;
+    return this.update(workspaceId, id, {
+      body: snapshot.body,
+      note: restoreNote(version),
+    });
+  }
+
+  /**
+   * Per-skill stats for the Stats tab in one request: the agents linking the
+   * skill, snapshot count, and the newest snapshot's date. Undefined when the
+   * skill isn't in this workspace (route -> 404).
+   */
+  async stats(workspaceId: string, id: string): Promise<SkillStats | undefined> {
+    const skill = await this.repo.getById(workspaceId, id);
+    if (!skill) return undefined;
+    const [agents, versions] = await Promise.all([
+      this.repo.agentsUsing(id),
+      this.repo.listVersions(id),
+    ]);
+    return {
+      skill_id: skill.id,
+      used_by_agents: agents.length,
+      agents: agents.map((a) => ({ id: a.id, name: a.name })),
+      version_count: versions.length,
+      latest_version: skill.version,
+      last_updated_at: versions[0]?.createdAt.toISOString() ?? null,
+    };
   }
 
   /**

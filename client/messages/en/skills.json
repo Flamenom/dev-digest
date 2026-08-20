@@ -161,7 +161,6 @@
     "diffEmpty": "No line changes between these versions.",
     "restore": "Restore",
     "restoreConfirm": "Restore the body from v{version}? It becomes the newest version.",
-    "restoreNote": "Restored from v{version}",
     "restoredToast": "Restored from v{version}",
     "empty": "No versions yet.",
     "loadError": "Could not load version history."

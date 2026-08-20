@@ -1,7 +1,8 @@
-/* StatsTab — minimal-honest (spec decision 8): only data derivable today.
-   Stat card "Used by: N agents" + the list of those agents with Open links.
-   Pull frequency / accept rate / findings-by-category need per-run skill
-   attribution that doesn't exist yet — rendered as disabled placeholders. */
+/* StatsTab — minimal-honest (spec decision 8): only data derivable today,
+   served per-skill by GET /skills/:id/stats. Stat card "Used by: N agents" +
+   the list of those agents with Open links. Pull frequency / accept rate /
+   findings-by-category need per-run skill attribution that doesn't exist yet
+   — rendered as disabled placeholders. */
 "use client";
 
 import React from "react";
@@ -9,15 +10,15 @@ import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { Card, Icon } from "@devdigest/ui";
 import type { Skill } from "@devdigest/shared";
-import { useSkillsUsage } from "@/lib/hooks/skills";
+import { useSkillStats } from "@/lib/hooks/skills";
 import { s } from "./styles";
 
 const PLACEHOLDERS = ["pullFrequency", "acceptRate", "findingsByCategory"] as const;
 
 export function StatsTab({ skill }: { skill: Skill }) {
   const t = useTranslations("skills");
-  const { data: usage } = useSkillsUsage();
-  const agents = usage?.find((u) => u.skill_id === skill.id)?.agents ?? [];
+  const { data: stats } = useSkillStats(skill.id);
+  const agents = stats?.agents ?? [];
 
   return (
     <div style={s.wrap}>

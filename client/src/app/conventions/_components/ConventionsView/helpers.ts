@@ -1,4 +1,4 @@
-import type { Convention } from "@devdigest/shared";
+import type { Convention, Repo } from "@devdigest/shared";
 
 /** Kebab-case slug of the first ~6 words of a rule ("## section" anchors). */
 export function slugifyRule(rule: string): string {
@@ -34,6 +34,25 @@ export function evidenceLabel(c: Convention): string {
       ? `-${c.evidence_end_line}`
       : "";
   return `${c.evidence_path}:${c.evidence_start_line}${end}`;
+}
+
+/**
+ * GitHub blob URL for a convention's evidence, with #L line anchors when the
+ * lines were resolved. Null without a repo (the card then renders no link).
+ */
+export function evidenceGitHubUrl(
+  repo: Pick<Repo, "full_name" | "default_branch"> | null | undefined,
+  c: Convention,
+): string | null {
+  if (!repo) return null;
+  let anchor = "";
+  if (c.evidence_start_line != null) {
+    anchor = `#L${c.evidence_start_line}`;
+    if (c.evidence_end_line != null && c.evidence_end_line !== c.evidence_start_line) {
+      anchor += `-L${c.evidence_end_line}`;
+    }
+  }
+  return `https://github.com/${repo.full_name}/blob/${repo.default_branch}/${c.evidence_path}${anchor}`;
 }
 
 const FENCE_LANG: Record<string, string> = {

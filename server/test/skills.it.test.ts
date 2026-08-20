@@ -248,4 +248,109 @@ d('skills module (integration)', () => {
       { order: 2, name: 'mock-overuse-gate', note: 'Initial version' },
     ]);
   });
+
+  it('POST /skills/:id/restore re-applies a snapshot as a new head; GET stats reflects it', async () => {
+    const app = await makeApp();
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/skills',
+      payload: {
+        name: 'restore-roundtrip-skill',
+        description: 'Directive description.',
+        type: 'convention',
+        body: 'v1 body',
+      },
+    });
+    const skill = created.json();
+
+    await app.inject({
+      method: 'PUT',
+      url: `/skills/${skill.id}`,
+      payload: { body: 'v2 body', note: 'Second pass' },
+    });
+
+    const restored = await app.inject({
+      method: 'POST',
+      url: `/skills/${skill.id}/restore`,
+      payload: { version: 1 },
+    });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json()).toMatchObject({ body: 'v1 body', version: 3 });
+
+    // History is untouched: v1..v3, newest first, with the restore note.
+    const versions = (
+      await app.inject({ method: 'GET', url: `/skills/${skill.id}/versions` })
+    ).json();
+    expect(versions.map((v: { version: number; note: string | null }) => [v.version, v.note])).toEqual([
+      [3, 'Restored from v1'],
+      [2, 'Second pass'],
+      [1, 'Initial version'],
+    ]);
+
+    // Unknown snapshot -> 404, nothing bumped.
+    const missing = await app.inject({
+      method: 'POST',
+      url: `/skills/${skill.id}/restore`,
+      payload: { version: 99 },
+    });
+    expect(missing.statusCode).toBe(404);
+
+    const stats = (await app.inject({ method: 'GET', url: `/skills/${skill.id}/stats` })).json();
+    expect(stats).toMatchObject({
+      skill_id: skill.id,
+      used_by_agents: 0,
+      agents: [],
+      version_count: 3,
+      latest_version: 3,
+    });
+    expect(stats.last_updated_at).toBeTruthy();
+  });
+
+  it('GET /skills/:id/stats lists the linking agents; GET /agents carries skill_count', async () => {
+    const app = await makeApp();
+    const { db } = pg.handle;
+    const [seededSkill] = await db
+      .select()
+      .from(t.skills)
+      .where(eq(t.skills.name, 'branch-coverage-rubric'));
+
+    const stats = (
+      await app.inject({ method: 'GET', url: `/skills/${seededSkill!.id}/stats` })
+    ).json();
+    expect(stats.used_by_agents).toBe(1);
+    expect(stats.agents.map((a: { name: string }) => a.name)).toEqual(['Test Quality Reviewer']);
+
+    const agents = (await app.inject({ method: 'GET', url: '/agents' })).json();
+    const byName = new Map(
+      agents.map((a: { name: string; skill_count: number }) => [a.name, a.skill_count]),
+    );
+    expect(byName.get('Test Quality Reviewer')).toBe(3);
+    expect(byName.get('API Contract Reviewer')).toBe(4);
+    // General Reviewer got one link from the /skills/usage test above (shared fixture).
+    expect(byName.get('Security Reviewer')).toBe(0);
+  });
+
+  it('seed created the API Contract Reviewer linked to its 4 skills in order 0-3 (idempotently)', async () => {
+    const { db } = pg.handle;
+    const [agent] = await db
+      .select()
+      .from(t.agents)
+      .where(eq(t.agents.name, 'API Contract Reviewer'));
+    expect(agent).toBeDefined();
+    expect(agent!.ciFailOn).toBe('critical');
+
+    const links = await db
+      .select({ order: t.agentSkills.order, name: t.skills.name })
+      .from(t.agentSkills)
+      .innerJoin(t.skills, eq(t.agentSkills.skillId, t.skills.id))
+      .where(eq(t.agentSkills.agentId, agent!.id))
+      .orderBy(t.agentSkills.order);
+    expect(links).toEqual([
+      { order: 0, name: 'breaking-change' },
+      { order: 1, name: 'response-schema' },
+      { order: 2, name: 'semver-discipline' },
+      { order: 3, name: 'deprecation-policy' },
+    ]);
+  });
 });

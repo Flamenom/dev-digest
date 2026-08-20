@@ -24,6 +24,8 @@ const VersionParams = z.object({
  *   POST   /skills                  → create (v1 snapshot in skill_versions)
  *   PUT    /skills/:id              → update; a BODY change bumps version (+note)
  *   DELETE /skills/:id              → delete (agent_skills links cascade)
+ *   GET    /skills/:id/stats        → per-skill stats (agents using it, versions)
+ *   POST   /skills/:id/restore      → re-apply an old body as a NEW head version
  *   GET    /skills/:id/versions     → body-snapshot history (newest first)
  *   GET    /skills/:id/versions/:v  → one snapshot
  *
@@ -41,6 +43,11 @@ const CreateSkillBody = z.object({
   source: SkillSource.optional(),
   /** Provenance of extracted skills — the accepted conventions' evidence paths. */
   evidence_files: z.array(z.string()).optional(),
+});
+
+/** POST /skills/:id/restore — which body snapshot to re-apply. */
+const RestoreSkillBody = z.object({
+  version: z.number().int().positive(),
 });
 
 const UpdateSkillBody = z.object({
@@ -127,6 +134,26 @@ export default async function skillsRoutes(appBase: FastifyInstance) {
     if (!ok) throw new NotFoundError('Skill not found');
     return { ok: true };
   });
+
+  app.get('/skills/:id/stats', { schema: { params: IdParams } }, async (req) => {
+    const { workspaceId } = await getContext(app.container, req);
+    const stats = await service.stats(workspaceId, req.params.id);
+    if (!stats) throw new NotFoundError('Skill not found');
+    return stats;
+  });
+
+  // Restore = re-apply a snapshot body as the NEW head version (with a
+  // "Restored from vN" note); history is immutable, nothing is rolled back.
+  app.post(
+    '/skills/:id/restore',
+    { schema: { params: IdParams, body: RestoreSkillBody } },
+    async (req) => {
+      const { workspaceId } = await getContext(app.container, req);
+      const skill = await service.restore(workspaceId, req.params.id, req.body.version);
+      if (!skill) throw new NotFoundError('Skill or version not found');
+      return skill;
+    },
+  );
 
   app.get('/skills/:id/versions', { schema: { params: IdParams } }, async (req) => {
     const { workspaceId } = await getContext(app.container, req);

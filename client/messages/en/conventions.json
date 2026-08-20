@@ -36,7 +36,8 @@
     "cancel": "Cancel",
     "copy": "Copy",
     "copied": "Copied",
-    "detectedIn": "Detected in"
+    "detectedIn": "Detected in",
+    "viewOnGitHub": "GitHub"
   },
   "modal": {
     "title": "Create skill from conventions",

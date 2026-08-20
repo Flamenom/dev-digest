@@ -1,14 +1,15 @@
 /* VersionsTab — version history, newest first: v{n} badge, note (fallback
    "Body updated"), date, Current chip on the head. Diff opens a client-side
-   line diff vs the previous version; Restore PUTs the snapshot body with a
-   "Restored from v{n}" note — it becomes the new head version. */
+   line diff vs the previous version; Restore calls POST /skills/:id/restore —
+   the server re-applies the snapshot body as the new head version with a
+   "Restored from v{n}" note. */
 "use client";
 
 import React from "react";
 import { useTranslations } from "next-intl";
 import { Badge, Button, Card, ErrorState, Skeleton } from "@devdigest/ui";
 import type { Skill, SkillVersionEntry } from "@devdigest/shared";
-import { useSkillVersions, useUpdateSkill } from "@/lib/hooks/skills";
+import { useRestoreSkillVersion, useSkillVersions } from "@/lib/hooks/skills";
 import { useToast } from "@/lib/toast";
 import { formatVersionDate } from "../../helpers";
 import { DiffModal } from "./_components/DiffModal";
@@ -18,7 +19,7 @@ export function VersionsTab({ skill }: { skill: Skill }) {
   const t = useTranslations("skills");
   const toast = useToast();
   const { data: versions, isLoading, isError, refetch } = useSkillVersions(skill.id);
-  const update = useUpdateSkill();
+  const restoreVersion = useRestoreSkillVersion();
   const [diffOf, setDiffOf] = React.useState<number | null>(null);
 
   const sorted = React.useMemo(
@@ -29,8 +30,8 @@ export function VersionsTab({ skill }: { skill: Skill }) {
 
   const restore = (entry: SkillVersionEntry) => {
     if (!window.confirm(t("versions.restoreConfirm", { version: entry.version }))) return;
-    update.mutate(
-      { id: skill.id, patch: { body: entry.body, note: t("versions.restoreNote", { version: entry.version }) } },
+    restoreVersion.mutate(
+      { id: skill.id, version: entry.version },
       { onSuccess: () => toast.success(t("versions.restoredToast", { version: entry.version })) },
     );
   };
@@ -83,7 +84,7 @@ export function VersionsTab({ skill }: { skill: Skill }) {
               kind="tertiary"
               size="sm"
               icon="History"
-              disabled={entry.version === head || update.isPending}
+              disabled={entry.version === head || restoreVersion.isPending}
               onClick={() => restore(entry)}
             >
               {t("versions.restore")}

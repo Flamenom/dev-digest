@@ -129,7 +129,7 @@ export function ConventionsView() {
 
         <div style={s.list}>
           {conventions.map((c) => (
-            <ConventionCard key={c.id} convention={c} repoId={repoId} />
+            <ConventionCard key={c.id} convention={c} repoId={repoId} repo={activeRepo} />
           ))}
         </div>
 
