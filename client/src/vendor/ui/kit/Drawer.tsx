@@ -1,5 +1,9 @@
+"use client";
+
 import React from "react";
+import { createPortal } from "react-dom";
 import { IconBtn } from "../primitives";
+import { useDialogBehavior } from "./dialog-behavior";
 
 export function Drawer({
   width = 720,
@@ -16,15 +20,26 @@ export function Drawer({
   children?: React.ReactNode;
   footer?: React.ReactNode;
 }) {
-  return (
+  // Escape / focus trap + restore / body scroll lock (WAI-ARIA dialog pattern).
+  const { panelRef, mounted } = useDialogBehavior(onClose);
+  const titleId = React.useId();
+
+  // Hydration safety: render NOTHING until after mount, then portal to <body>
+  // (same rationale as Modal).
+  if (!mounted) return null;
+
+  const node = (
     <div style={{ position: "fixed", inset: 0, display: "flex", justifyContent: "flex-end", zIndex: 50 }}>
       <div
         onClick={onClose}
         style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.45)", animation: "ddfadein .15s ease" }}
       />
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
+        tabIndex={-1}
         style={{
           position: "relative",
           width,
@@ -35,6 +50,7 @@ export function Drawer({
           display: "flex",
           flexDirection: "column",
           animation: "ddslidein .2s cubic-bezier(.2,.7,.3,1)",
+          outline: "none",
         }}
       >
         <div
@@ -47,7 +63,7 @@ export function Drawer({
           }}
         >
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-0.01em" }}>{title}</div>
+            <div id={titleId} style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-0.01em" }}>{title}</div>
             {subtitle && (
               <div style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 2 }}>{subtitle}</div>
             )}
@@ -63,4 +79,7 @@ export function Drawer({
       </div>
     </div>
   );
+
+  // Portalled to <body> — same rationale as Modal (see there).
+  return createPortal(node, document.body);
 }

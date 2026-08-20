@@ -17,5 +17,17 @@
     "title": "No repo selected",
     "body": "This repository isn't in your workspace — it may have been removed, or the link is stale. Add a repo or pick another from the switcher to get started.",
     "cta": "Add repository"
+  },
+  "errorBoundary": {
+    "title": "Something went wrong",
+    "body": "This screen hit an unexpected error. Trying again re-renders it — the rest of the studio keeps working.",
+    "retry": "Try again",
+    "home": "Back to overview",
+    "digest": "Error digest: {digest}"
+  },
+  "notFound": {
+    "title": "Page not found",
+    "body": "That URL doesn't match a screen in the studio. It may have been renamed, or the link is stale.",
+    "cta": "Back to overview"
   }
 }

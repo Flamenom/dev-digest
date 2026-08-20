@@ -81,12 +81,27 @@ export class ReviewService {
    * checkpoint AND marks the DB row cancelled + completes the bus immediately —
    * so cancel also works for ORPHANED runs (whose background process died on a
    * server restart) where signalling alone would do nothing.
+   *
+   * Workspace-scoped: the run is verified to belong to the caller's workspace
+   * BEFORE anything is signalled, so a foreign runId cannot be used to stop
+   * someone else's run (or to probe which run ids exist).
    */
-  async cancelRun(runId: string): Promise<void> {
+  async cancelRun(workspaceId: string, runId: string): Promise<void> {
+    if (!(await this.repo.runExistsInWorkspace(workspaceId, runId))) {
+      throw new NotFoundError('Run not found');
+    }
     this.publish(runId, 'info', 'Cancellation requested — stopping…');
     this.container.runBus.cancel(runId);
-    await this.repo.cancelRunIfRunning(runId);
+    await this.repo.cancelRunIfRunning(workspaceId, runId);
     this.container.runBus.complete(runId);
+  }
+
+  /**
+   * Whether a run belongs to the workspace. Used by the SSE route to authorize a
+   * subscription before streaming a run's live log.
+   */
+  async runBelongsToWorkspace(workspaceId: string, runId: string): Promise<boolean> {
+    return this.repo.runExistsInWorkspace(workspaceId, runId);
   }
 
   /** Reap runs left 'running' by a previous (now-dead) process. Called on boot. */
@@ -173,7 +188,7 @@ export class ReviewService {
     );
   }
 
-  async getRunTrace(runId: string): Promise<RunTrace | undefined> {
-    return this.repo.getRunTrace(runId);
+  async getRunTrace(workspaceId: string, runId: string): Promise<RunTrace | undefined> {
+    return this.repo.getRunTrace(workspaceId, runId);
   }
 }

@@ -8,6 +8,8 @@ Cap ~5 new/session, ~80–100 lines/file (then prune/split). Promote persistent 
 
 ## What Doesn't Work — antipatterns & mistakes
 
+- Nested dialogs (Modal opened from inside RunTraceDrawer's Drawer, e.g. PromptBlock) each add a `document`-level keydown listener — `stopPropagation()` does NOT stop other listeners on the same node, so one Escape closed every open layer, and per-dialog saved `body.overflow` re-locked scroll on close (sibling cleanup order runs the inner dialog's cleanup last, restoring its saved "hidden"). Fix: module-level dialog stack — only the topmost dialog handles Escape/Tab; the FIRST dialog saves body overflow, the LAST restores it. Evidence: client/src/vendor/ui/kit/dialog-behavior.ts (dialogStack, savedBodyOverflow); Modal.test.tsx (nested-Escape + scroll-lock tests). Confidence: high. (2026-08-18)
+
 - A hover/popover rendered inside the PR-list table with `position:absolute` gets CLIPPED — the table wrapper `s.tableCard` sets `overflow:hidden` (styles.ts:86). Render the floating panel with `position:fixed` + coords from the trigger's `getBoundingClientRect()` (no transformed ancestor exists, so `fixed` escapes the clip and isn't bound by the row). Clamp `left` to the viewport. Evidence: client/src/components/FindingsHoverCard/styles.ts (panel()); client/src/app/repos/[repoId]/pulls/styles.ts:86. Confidence: high. (2026-08-01)
 
 ## Codebase Patterns & Tool/Library Notes
@@ -19,5 +21,7 @@ Cap ~5 new/session, ~80–100 lines/file (then prune/split). Promote persistent 
 ## Decisions — with the why
 
 ## Recurring Errors & Fixes
+
+- Running `pnpm build` while `next dev` is up corrupts the shared `client/.next` for BOTH servers: dev starts 500ing and `next start` dies with `Cannot find module './vendor-chunks/recharts.js'` (or `./NNN.js`) from `.next/server/webpack-runtime.js`. Fix: stop the dev server FIRST (kill by port — `kill $(lsof -t -iTCP:3000 -sTCP:LISTEN)`; `pkill -f` can miss the detached node process), `rm -rf .next`, rebuild. Evidence: client/.next/server/webpack-runtime.js require-stack in the `next start` log. Confidence: high. (2026-08-18)
 
 ## Open Questions

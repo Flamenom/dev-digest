@@ -1,0 +1,58 @@
+import type { CSSProperties } from "react";
+
+export const s = {
+  frame: {
+    borderStyle: "solid",
+    borderWidth: 1,
+    borderColor: "var(--border)",
+    borderRadius: 8,
+    overflow: "hidden",
+    background: "var(--code-bg)",
+  } satisfies CSSProperties,
+  header: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    padding: "8px 12px",
+    borderBottom: "1px solid var(--border)",
+    background: "var(--bg-elevated)",
+  } satisfies CSSProperties,
+  label: {
+    fontSize: 12,
+    color: "var(--text-secondary)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    marginRight: "auto",
+  } satisfies CSSProperties,
+  githubLink: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    fontSize: 11,
+    color: "var(--text-muted)",
+    textDecoration: "none",
+    whiteSpace: "nowrap",
+  } satisfies CSSProperties,
+  copyBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    background: "none",
+    border: "none",
+    padding: 2,
+    cursor: "pointer",
+    color: "var(--text-muted)",
+  } satisfies CSSProperties,
+  pre: {
+    margin: 0,
+    padding: "12px 14px",
+    fontSize: 12,
+    lineHeight: 1.55,
+    color: "var(--text-primary)",
+    whiteSpace: "pre-wrap",
+    maxHeight: 180,
+    overflow: "auto",
+  } satisfies CSSProperties,
+} as const;

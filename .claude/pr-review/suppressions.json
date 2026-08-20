@@ -1,0 +1,4 @@
+{
+  "_doc": "Confirmed false positives of /pr-self-review. Findings matching (file, rule) are dropped and listed as suppressed in the report. Every entry needs a reason and an author.",
+  "suppressions": []
+}

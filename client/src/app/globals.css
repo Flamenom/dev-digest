@@ -1,15 +1,26 @@
 /* App global stylesheet.
    The design-system styles.css already does `@import "tailwindcss"` and defines
-   the @theme token layer + base resets, so we just re-export it here and add
-   web fonts. */
+   the @theme token layer + base resets, so we re-export it here and layer the
+   app-owned font concern on top (the vendored stylesheet stays untouched). */
 @import "../vendor/ui/styles.css";
 
-@font-face {
-  font-family: "Inter";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: local("Inter");
+/* Fonts are loaded by next/font in app/layout.tsx, which self-hosts them and
+   exposes each family as a CSS variable (--font-sans / --font-mono-loaded).
+   These two rules point the design system's font stack at those variables.
+   Previously globals.css declared `@font-face { src: local("Inter") }`, which
+   only resolves against a font INSTALLED on the viewer's machine — so anyone
+   without Inter silently fell through to the system sans-serif with no signal,
+   and the app rendered differently per machine. */
+body {
+  font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+:root {
+  --font-mono: var(--font-mono-loaded), ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.mono {
+  font-family: var(--font-mono);
 }
 
 @keyframes ddToastIn {

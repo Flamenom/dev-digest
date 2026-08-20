@@ -1,4 +1,11 @@
-import type { Agent, AgentVersion, CiFailOn, Provider, ReviewStrategy } from '@devdigest/shared';
+import type {
+  Agent,
+  AgentListItem,
+  AgentVersion,
+  CiFailOn,
+  Provider,
+  ReviewStrategy,
+} from '@devdigest/shared';
 import { AgentVersionConfig } from '@devdigest/shared';
 import type { AgentRow, AgentVersionRow } from './repository.js';
 
@@ -24,6 +31,11 @@ export function toAgentDto(row: AgentRow): Agent {
     ci_fail_on: row.ciFailOn as CiFailOn,
     repo_intel: row.repoIntel,
   };
+}
+
+/** GET /agents list item — the `Agent` DTO plus its linked-skill count. */
+export function toAgentListItemDto(row: AgentRow, skillCount: number): AgentListItem {
+  return { ...toAgentDto(row), skill_count: skillCount };
 }
 
 /**

@@ -33,7 +33,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     set(theme === "dark" ? "light" : "dark");
   }, [theme, set]);
 
-  return <ThemeCtx.Provider value={{ theme, toggle, set }}>{children}</ThemeCtx.Provider>;
+  // Memoized: this provider sits above the whole app, so an unstable value
+  // object would re-render every useTheme() consumer on each render.
+  const value = React.useMemo(() => ({ theme, toggle, set }), [theme, toggle, set]);
+
+  return <ThemeCtx.Provider value={value}>{children}</ThemeCtx.Provider>;
 }
 
 export function useTheme() {

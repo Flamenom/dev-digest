@@ -88,8 +88,8 @@ export class ReviewRepository {
   }
 
   /** Mark a still-running run as cancelled (no-op if it already finished). */
-  cancelRunIfRunning(runId: string): Promise<boolean> {
-    return runRepo.cancelRunIfRunning(this.db, runId);
+  cancelRunIfRunning(workspaceId: string, runId: string): Promise<boolean> {
+    return runRepo.cancelRunIfRunning(this.db, workspaceId, runId);
   }
 
   /** On boot: any run still 'running' is orphaned (its process died / restarted),
@@ -180,7 +180,12 @@ export class ReviewRepository {
     return runRepo.saveRunTrace(this.db, runId, trace);
   }
 
-  getRunTrace(runId: string): Promise<RunTrace | undefined> {
-    return runRepo.getRunTrace(this.db, runId);
+  getRunTrace(workspaceId: string, runId: string): Promise<RunTrace | undefined> {
+    return runRepo.getRunTrace(this.db, workspaceId, runId);
+  }
+
+  /** Ownership check for runId-addressed operations (cancel, SSE subscribe). */
+  runExistsInWorkspace(workspaceId: string, runId: string): Promise<boolean> {
+    return runRepo.runExistsInWorkspace(this.db, workspaceId, runId);
   }
 }
