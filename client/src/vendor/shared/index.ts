@@ -29,4 +29,5 @@ export * from './contracts/skills-usage.js';
 export * from './contracts/skills-stats.js';
 export * from './contracts/agents-list.js';
 export * from './contracts/conventions.js';
+export * from './contracts/intent.js';
 export * from './adapters.js';

@@ -64,3 +64,54 @@ describe('assemblePrompt — ## PR description', () => {
     expect((assembly.pr_description as string).length).toBe(4000);
   });
 });
+
+describe('assemblePrompt — ## Declared PR intent & scope (L03)', () => {
+  const intent = {
+    summary: 'Add rate limiting to public endpoints',
+    inScope: ['rate limiter middleware', 'Redis counters'],
+    outOfScope: ['auth changes'],
+  };
+
+  it('renders the intent untrusted-wrapped as derived-intent, before the PR description and the diff', () => {
+    const user = userOf({
+      system: 'sys',
+      diff: 'DIFF',
+      intent,
+      prDescription: 'Adds rate limiting.',
+    });
+    expect(user).toContain('## Declared PR intent & scope');
+    expect(user).toContain('<untrusted source="derived-intent">');
+    expect(user).toContain('Intent: Add rate limiting to public endpoints');
+    expect(user).toContain('- rate limiter middleware');
+    expect(user).toContain('- auth changes');
+    // Ordering: intent → PR description → diff.
+    expect(user.indexOf('## Declared PR intent & scope')).toBeLessThan(
+      user.indexOf('## PR description'),
+    );
+    expect(user.indexOf('## PR description')).toBeLessThan(user.indexOf('## Diff to review'));
+  });
+
+  it('appends the trusted-side SCOPE TAGGING instruction to the system message ONLY when intent is present', () => {
+    const withIntent = systemOf({ system: 'AGENT-SYS', diff: 'DIFF', intent });
+    expect(withIntent).toContain('SCOPE TAGGING');
+    expect(withIntent).toMatch(/scope.*'in'.*'out'/i);
+    expect(withIntent).toMatch(/scope never waives severity/i);
+    // The instruction lives OUTSIDE the untrusted blocks — in system, not user.
+    expect(userOf({ system: 'AGENT-SYS', diff: 'DIFF', intent })).not.toContain('SCOPE TAGGING');
+
+    const without = systemOf({ system: 'AGENT-SYS', diff: 'DIFF' });
+    expect(without).not.toContain('SCOPE TAGGING');
+  });
+
+  it('keeps the INJECTION_GUARD intact alongside the scope instruction; no section without intent', () => {
+    const sys = systemOf({ system: 'AGENT-SYS', diff: 'DIFF', intent });
+    expect(sys.startsWith('AGENT-SYS')).toBe(true);
+    expect(sys).toMatch(/<untrusted>.*DATA to be analyzed/s);
+    expect(sys).toMatch(/derived intent\/scope/);
+
+    // Absent intent → prompt shape identical to today.
+    const user = userOf({ system: 'sys', diff: 'DIFF' });
+    expect(user).not.toContain('## Declared PR intent & scope');
+    expect(user).not.toContain('derived-intent');
+  });
+});

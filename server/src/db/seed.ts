@@ -411,6 +411,37 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
     }
   }
 
+  // ---- L03: seeded PR intent for PR #482 (matches the Intent card mockup).
+  // Idempotent: pr_intent is keyed by pr_id; an existing row is left untouched
+  // so a live re-classification is never clobbered by a re-seed.
+  await db
+    .insert(t.prIntent)
+    .values({
+      prId: pr!.id,
+      intent:
+        'Introduce token-bucket rate limiting on the public, unauthenticated API endpoints to stop abuse without affecting authenticated traffic.',
+      inScope: [
+        'Token-bucket rate-limit middleware for public endpoints',
+        'Per-endpoint limits configurable via src/config.ts',
+        'Webhook endpoints covered by the new limiter',
+      ],
+      outOfScope: [
+        'Rate limiting for authenticated / internal APIs',
+        'Distributed limiter state shared across instances',
+        'Billing or quota enforcement',
+      ],
+      riskAreas: [
+        'Auth surface touched',
+        'New dependency: ioredis',
+        'Adds Redis round-trip per request',
+      ],
+      confidence: 'high',
+      sources: [{ kind: 'pr_description', ref: 'PR description', status: 'fetched' }],
+      model: 'google/gemini-2.5-flash-lite',
+      headSha: pr!.headSha,
+    })
+    .onConflictDoNothing();
+
   // ---- backfill: any run missing a cost but with tokens gets one from the
   // price table (no model calls). Covers runs created before this column existed.
   const unpriced = await db

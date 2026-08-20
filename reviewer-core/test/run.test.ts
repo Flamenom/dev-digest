@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { LLMProvider, StructuredResult } from '@devdigest/shared';
+import { Review as ReviewSchema, ScopedReview as ScopedReviewSchema } from '@devdigest/shared';
 import { MockLLMProvider, MockGitClient } from '../../server/src/adapters/mocks.js';
-import { reviewPullRequest } from '../src/index.js';
+import { reviewPullRequest, OUT_OF_SCOPE_KEPT_PREFIX } from '../src/index.js';
 
 /**
  * Engine-level test for reviewPullRequest (the core lifted out of the server's
@@ -102,6 +103,106 @@ describe('reviewPullRequest (engine)', () => {
         },
       }),
     ).rejects.toThrow('cancelled');
+  });
+
+  // ---- L03 — intent & scope filter ---------------------------------------
+
+  // All four findings cite line 11 (real in the MockGitClient diff), so ALL
+  // pass grounding — what happens next is purely the scope filter's doing.
+  const scopedFinding = (over: Record<string, unknown>) => ({
+    id: 'f',
+    severity: 'CRITICAL',
+    category: 'security',
+    title: 't',
+    file: 'src/config.ts',
+    start_line: 11,
+    end_line: 11,
+    rationale: 'grounded rationale',
+    confidence: 0.9,
+    kind: 'finding',
+    ...over,
+  });
+  const scopedFixture = {
+    verdict: 'request_changes',
+    summary: 'scoped review',
+    score: 7, // nonsense self-reported score — must be ignored
+    findings: [
+      scopedFinding({ id: 'f-in', scope: 'in', title: 'in-scope critical' }),
+      scopedFinding({ id: 'f-out-high', scope: 'out', confidence: 0.9, title: 'out survivor' }),
+      scopedFinding({ id: 'f-out-low', scope: 'out', confidence: 0.5, title: 'out critical dup' }),
+      scopedFinding({ id: 'f-out-warn', scope: 'out', severity: 'WARNING', title: 'out warning' }),
+    ],
+  };
+  const intent = {
+    summary: 'Add rate limiting to public endpoints',
+    inScope: ['rate limiter middleware'],
+    outOfScope: ['auth changes'],
+  };
+
+  it('with intent: ScopedReview schema requested, scope filter runs after grounding, score recomputed from the kept set, drops emitted', async () => {
+    const llm = new MockLLMProvider('openai', { structured: scopedFixture });
+    const diff = await new MockGitClient().diff();
+
+    const events: string[] = [];
+    const outcome = await reviewPullRequest({
+      systemPrompt: 'security reviewer',
+      model: 'gpt-4.1',
+      diff,
+      llm,
+      intent,
+      onEvent: (e) => events.push(e.msg),
+    });
+
+    // Scope-tagged superset schema requested; schemaName stays 'Review' so
+    // fixtures keyed on it keep working.
+    const req = llm.calls[0]!.req as { schema: unknown; schemaName: string };
+    expect(req.schema).toBe(ScopedReviewSchema);
+    expect(req.schemaName).toBe('Review');
+
+    // Kept: the in-scope finding + exactly ONE CRITICAL out-of-scope survivor.
+    expect(outcome.review.findings.map((f) => f.id)).toEqual(['f-in', 'f-out-high']);
+    const survivor = outcome.review.findings.find((f) => f.id === 'f-out-high')!;
+    expect(survivor.rationale).toBe(`${OUT_OF_SCOPE_KEPT_PREFIX}grounded rationale`);
+    // `scope` is stripped — the outcome carries frozen Findings only.
+    for (const f of outcome.review.findings) expect('scope' in f).toBe(false);
+
+    // Score recomputed from the POST-scope kept set (2 CRITICAL ⇒ 100 − 70),
+    // not the model's 7 and not the pre-filter 4-finding set.
+    expect(outcome.review.score).toBe(30);
+
+    // Every drop is an event — never silent.
+    expect(events.some((m) => m.includes('scope filter dropped "out critical dup"'))).toBe(true);
+    expect(events.some((m) => m.includes('scope filter dropped "out warning"'))).toBe(true);
+    expect(events.some((m) => m.includes('Scope filter: 2/4 kept'))).toBe(true);
+  });
+
+  it('without intent: plain Review schema, no scope filter — even model-emitted scope tags are inert', async () => {
+    // Same scoped fixture: Review parsing strips the unknown `scope` keys, so
+    // the no-intent path is byte-identical to pre-L03 behavior.
+    const llm = new MockLLMProvider('openai', { structured: scopedFixture });
+    const diff = await new MockGitClient().diff();
+
+    const events: string[] = [];
+    const outcome = await reviewPullRequest({
+      systemPrompt: 'security reviewer',
+      model: 'gpt-4.1',
+      diff,
+      llm,
+      onEvent: (e) => events.push(e.msg),
+    });
+
+    const req = llm.calls[0]!.req as { schema: unknown };
+    expect(req.schema).toBe(ReviewSchema);
+
+    // All 4 grounded findings survive — nothing is scope-dropped.
+    expect(outcome.review.findings).toHaveLength(4);
+    expect(events.some((m) => m.toLowerCase().includes('scope filter'))).toBe(false);
+    // Score still deterministic: 3×CRITICAL + 1×WARNING ⇒ max(0, 100 − 117) = 0.
+    expect(outcome.review.score).toBe(0);
+    // No rationale gained the out-of-scope prefix.
+    for (const f of outcome.review.findings) {
+      expect(f.rationale).toBe('grounded rationale');
+    }
   });
 
   it('forwards sessionId to every LLM call (OpenRouter session grouping)', async () => {

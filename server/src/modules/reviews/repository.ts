@@ -1,6 +1,13 @@
 import type { Db } from '../../db/client.js';
 import * as t from '../../db/schema.js';
-import type { Finding, Intent, RunSummary, RunTrace } from '@devdigest/shared';
+import type {
+  Finding,
+  Intent,
+  IntentDetailWrite,
+  RunSummary,
+  RunTrace,
+  StoredIntentDetail,
+} from '@devdigest/shared';
 
 /**
  * A2 — review data-access. The ONLY layer touching the DB for the review
@@ -133,6 +140,16 @@ export class ReviewRepository {
 
   getIntent(prId: string): Promise<Intent | undefined> {
     return pullRepo.getIntent(this.db, prId);
+  }
+
+  /** L03 — upsert the full classified intent (scope + sources + observability). */
+  upsertIntentDetail(prId: string, input: IntentDetailWrite): Promise<void> {
+    return pullRepo.upsertIntentDetail(this.db, prId, input);
+  }
+
+  /** L03 — the stored intent detail (`stale` is computed by the intent service). */
+  getIntentDetail(prId: string): Promise<StoredIntentDetail | undefined> {
+    return pullRepo.getIntentDetail(this.db, prId);
   }
 
   // ---- observability: agent_runs + run_traces ----------------------------
