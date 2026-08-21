@@ -21,6 +21,10 @@ interface FindingsTabProps {
   /** owner/repo + head sha — used to deep-link a finding's file:line to GitHub. */
   repoFullName?: string | null;
   headSha?: string | null;
+  /** Deep-link target from the Smart Diff view (?finding=…): open the containing
+   *  review's accordion and focus that exact FindingCard, then consume. */
+  targetFindingId?: string | null;
+  onFindingTargetConsumed?: () => void;
   onOpenTrace: (id: string) => void;
   onDelete: (id: string) => void;
   onRunDone: () => void;
@@ -37,6 +41,8 @@ export function FindingsTab({
   cancelMutation,
   repoFullName,
   headSha,
+  targetFindingId,
+  onFindingTargetConsumed,
   onOpenTrace,
   onDelete,
   onRunDone,
@@ -49,13 +55,33 @@ export function FindingsTab({
     if (liveRunIds[0]) onOpenTrace(liveRunIds[0]);
   }, [liveRunIds, onOpenTrace]);
 
-  // Timeline → Review-runs navigation: clicking an agent name in the timeline
-  // opens + scrolls to that run's accordion below. The nonce re-triggers the
-  // scroll even when the same run is clicked twice.
-  const [target, setTarget] = React.useState<{ runId: string; n: number } | null>(null);
-  const handleGoToReview = useCallback((runId: string) => {
-    setTarget((p) => ({ runId, n: (p?.n ?? 0) + 1 }));
-  }, []);
+  // Timeline / Smart-Diff → Review-runs navigation: opens + scrolls to the
+  // target review's accordion below (keyed by review.id — run_id can be null),
+  // optionally focusing one finding inside it. The nonce re-triggers the scroll
+  // even when the same target is dispatched twice.
+  const [target, setTarget] = React.useState<{
+    reviewId: string;
+    findingId: string | null;
+    n: number;
+  } | null>(null);
+  const handleGoToReview = useCallback(
+    (runId: string) => {
+      const review = runs.find((r) => r.run_id === runId);
+      if (!review) return;
+      setTarget((p) => ({ reviewId: review.id, findingId: null, n: (p?.n ?? 0) + 1 }));
+    },
+    [runs],
+  );
+
+  // Consume the ?finding deep-link: locate the containing review, dispatch the
+  // open+focus target, then clear the URL param so a repeat click re-navigates.
+  React.useEffect(() => {
+    if (!targetFindingId) return;
+    const review = runs.find((r) => r.findings.some((f) => f.id === targetFindingId));
+    if (!review) return; // reviews may still be loading — retry on the next runs change
+    setTarget((p) => ({ reviewId: review.id, findingId: targetFindingId, n: (p?.n ?? 0) + 1 }));
+    onFindingTargetConsumed?.();
+  }, [targetFindingId, runs, onFindingTargetConsumed]);
 
   // Join each timeline run to its persisted review's findings (by run_id) so the
   // timeline can show a per-severity breakdown + hover card without any extra
@@ -160,7 +186,8 @@ export function FindingsTab({
             defaultOpen={i === 0}
             repoFullName={repoFullName}
             headSha={headSha}
-            targetRunId={target?.runId ?? null}
+            targetReviewId={target?.reviewId ?? null}
+            targetFindingId={target?.findingId ?? null}
             targetNonce={target?.n ?? 0}
           />
         ))

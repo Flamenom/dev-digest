@@ -9,3 +9,5 @@ export * from "./reviews";
 export * from "./trace";
 export * from "./repo-intel";
 export * from "./conventions";
+export * from "./intent";
+export * from "./smart-diff";

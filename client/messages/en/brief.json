@@ -10,6 +10,19 @@
   "overlap": "{count} overlap",
   "unavailable": "Brief not available yet.",
   "unavailableHint": "Run a review or open the PR to compute it.",
+  "intent": {
+    "inScope": "In scope",
+    "outOfScope": "Out of scope",
+    "riskAreas": "Risk areas",
+    "empty": "No intent classified yet.",
+    "emptyHint": "Classify this PR to derive its declared intent and scope for reviews.",
+    "classifyCta": "Classify intent",
+    "classifying": "Classifying…",
+    "recompute": "Recompute intent",
+    "lowConfidence": "Low confidence",
+    "missingContext": "Missing context: {refs}",
+    "stale": "Stale — head moved"
+  },
   "why": {
     "title": "git-why",
     "blame": "blame",

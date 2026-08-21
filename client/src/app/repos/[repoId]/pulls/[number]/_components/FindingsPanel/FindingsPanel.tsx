@@ -17,11 +17,17 @@ export function FindingsPanel({
   prId,
   repoFullName,
   headSha,
+  targetFindingId,
+  targetNonce = 0,
 }: {
   findings: FindingRecord[];
   prId: string;
   repoFullName?: string | null;
   headSha?: string | null;
+  /** Focus + scroll this finding's card (Smart Diff deep-link). The nonce
+   *  re-triggers the scroll when the same finding is targeted again. */
+  targetFindingId?: string | null;
+  targetNonce?: number;
 }) {
   const t = useTranslations("prReview");
   const action = useFindingAction();
@@ -29,6 +35,32 @@ export function FindingsPanel({
   const [focusIdx, setFocusIdx] = React.useState(0);
 
   const shown = React.useMemo(() => visibleFindings(findings, hideLow), [findings, hideLow]);
+
+  // Deep-link focus (external DOM sync): set focusIdx to the target's index in
+  // `shown` and scroll its card into view. If "hide low confidence" filters the
+  // target out, flip the filter off first and finish on the re-run once `shown`
+  // includes it. A consumed token keeps later `shown` changes (e.g. the user
+  // toggling the filter) from re-scrolling.
+  const consumedRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!targetFindingId) return;
+    const token = `${targetFindingId}:${targetNonce}`;
+    if (consumedRef.current === token) return;
+    const idx = shown.findIndex((f) => f.id === targetFindingId);
+    if (idx === -1) {
+      if (hideLow && findings.some((f) => f.id === targetFindingId)) setHideLow(false);
+      return;
+    }
+    consumedRef.current = token;
+    setFocusIdx(idx);
+    const el = document.querySelector<HTMLElement>(
+      `[data-finding-id="${CSS.escape(targetFindingId)}"]`,
+    );
+    if (el) {
+      el.style.scrollMarginTop = "16px";
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [targetFindingId, targetNonce, shown, hideLow, findings]);
 
   // j/k navigation + a/d shortcuts on the focused finding (keyboard).
   React.useEffect(() => {

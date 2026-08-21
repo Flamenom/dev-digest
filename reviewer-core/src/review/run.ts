@@ -6,10 +6,12 @@ import type {
   RunEventKind,
   UnifiedDiff,
 } from '@devdigest/shared';
-import { Review as ReviewSchema } from '@devdigest/shared';
+import { Review as ReviewSchema, ScopedReview as ScopedReviewSchema } from '@devdigest/shared';
+import type { ScopedFinding } from '@devdigest/shared';
 import { assemblePrompt } from '../prompt.js';
 import { groundFindings, groundingSummary } from '../grounding.js';
 import { reduceReviews, scoreFromFindings, sliceDiff } from './reduce.js';
+import { applyScopeFilter } from './scope.js';
 
 /**
  * reviewPullRequest — the review engine entry point.
@@ -71,6 +73,13 @@ export interface ReviewInput {
   /** PR author's description/body (untrusted; truncated + delimiter-wrapped in
       the prompt). Empty/undefined → section omitted. */
   prDescription?: string;
+  /**
+   * Declared PR intent & scope (L03). Untrusted (derived from author sources);
+   * when present the model is asked to tag each finding `scope: 'in' | 'out'`
+   * and the scope filter runs after grounding (one CRITICAL out-of-scope
+   * signal always survives). Absent → behavior byte-identical to today.
+   */
+  intent?: { summary: string; inScope: string[]; outOfScope: string[] };
   /** Task framing line, e.g. "Review PR #482 …". */
   task?: string;
   /** Override the structured-output retry budget. */
@@ -135,6 +144,7 @@ export async function reviewPullRequest(input: ReviewInput): Promise<ReviewOutco
     callers: input.callers,
     repoMap: input.repoMap,
     prDescription: input.prDescription,
+    intent: input.intent,
     task: input.task,
   };
 
@@ -171,9 +181,12 @@ export async function reviewPullRequest(input: ReviewInput): Promise<ReviewOutco
     );
     const a = assemblePrompt({ ...promptParts, diff: chunk.diffText });
     if (mode === 'single-pass') assembly = a.assembly;
+    // With intent present, request the scope-tagged superset schema. The
+    // schemaName stays 'Review' so mock fixtures keyed on it keep working;
+    // ScopedFinding.scope is nullish, so both shapes parse either way.
     const res = await input.llm.completeStructured<Review>({
       model: input.model,
-      schema: ReviewSchema,
+      schema: input.intent ? ScopedReviewSchema : ReviewSchema,
       schemaName: 'Review',
       messages: a.messages,
       maxRetries,
@@ -201,11 +214,29 @@ export async function reviewPullRequest(input: ReviewInput): Promise<ReviewOutco
   }
   emit('result', `Citation grounding: ${grounding}`);
 
-  // Score is derived from the findings that SURVIVED grounding (not the model's
-  // self-reported number, and not the pre-grounding set) so the score, the
-  // findings list, and the deterministic event always agree.
+  // L03 — scope filter: runs AFTER grounding (it can never bypass the gate) and
+  // BEFORE the deterministic re-score, only when a declared intent was injected.
+  // Every drop is emitted as an event (grounding precedent — never silent) and
+  // the `scope` key is stripped from kept findings.
+  let keptFindings = ground.kept;
+  if (input.intent) {
+    const scoped = applyScopeFilter(ground.kept as ScopedFinding[]);
+    for (const d of scoped.dropped) {
+      emit('info', `scope filter dropped "${d.finding.title}": ${d.reason}`);
+    }
+    emit(
+      'result',
+      `Scope filter: ${scoped.kept.length}/${ground.kept.length} kept (${scoped.dropped.length} out-of-scope dropped)`,
+    );
+    keptFindings = scoped.kept;
+  }
+
+  // Score is derived from the findings that SURVIVED grounding (and, when
+  // intent is present, the scope filter) — not the model's self-reported
+  // number — so the score, the findings list, and the deterministic event
+  // always agree.
   return {
-    review: { ...merged, findings: ground.kept, score: scoreFromFindings(ground.kept) },
+    review: { ...merged, findings: keptFindings, score: scoreFromFindings(keptFindings) },
     grounding,
     dropped: ground.dropped,
     mode,

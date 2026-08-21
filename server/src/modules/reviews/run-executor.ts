@@ -1,5 +1,5 @@
 import type { Container } from '../../platform/container.js';
-import type { Provider, Review, RunTrace, UnifiedDiff } from '@devdigest/shared';
+import type { IntentDetail, Provider, Review, RunTrace, UnifiedDiff } from '@devdigest/shared';
 import { reviewPullRequest, countBlockers } from '@devdigest/reviewer-core';
 import { RunLogger } from '../../platform/run-logger.js';
 import * as schema from '../../db/schema.js';
@@ -105,6 +105,26 @@ export class ReviewRunExecutor {
     }
     runLog.info(`Diff ready — ${diff.files.length} changed file(s); starting ${jobs.length} agent run(s)`);
 
+    // L03 — shared pre-work: resolve (or derive) the PR intent once. Strictly
+    // best-effort: any failure is logged and the review proceeds WITHOUT intent
+    // (degrades to today's behavior). Only model/confidence/source statuses are
+    // logged — never source bodies.
+    let intent: IntentDetail | undefined;
+    try {
+      intent = await runLog.step(
+        'Resolving PR intent',
+        () => this.container.intent.getOrDeriveFresh(workspaceId, pull, logger),
+        { kind: 'tool' },
+      );
+      runLog.info(
+        `Intent ready — model=${intent.model ?? 'unknown'}, confidence=${intent.confidence}, sources: ${
+          intent.sources.map((s) => `${s.kind}:${s.status}`).join(', ') || 'none'
+        }`,
+      );
+    } catch (err) {
+      runLog.info(`Intent unavailable — proceeding without it: ${(err as Error).message}`);
+    }
+
     for (const { agent, runId } of jobs) {
       const agentStart = Date.now();
       logger?.info(
@@ -112,7 +132,7 @@ export class ReviewRunExecutor {
         `review: agent "${agent.name}" started (${agent.provider}/${agent.model})`,
       );
       try {
-        const outcome = await this.runOneAgent(workspaceId, pull, repo, diff, agent, runId, runLog);
+        const outcome = await this.runOneAgent(workspaceId, pull, repo, diff, agent, runId, runLog, intent);
         logger?.info(
           {
             runId,
@@ -144,6 +164,7 @@ export class ReviewRunExecutor {
     agent: AgentRow,
     runId: string,
     parentLog: RunLogger,
+    intent?: IntentDetail,
   ): Promise<RunOutcome> {
     const start = Date.now();
     // Narrow the fanned-out pre-work logger to THIS run; the shared diff/intent
@@ -216,6 +237,17 @@ export class ReviewRunExecutor {
         // PR author's description/body — untrusted; assemblePrompt wraps +
         // truncates it. Omitted when the PR has no body.
         ...(pull.body ? { prDescription: pull.body } : {}),
+        // L03 — declared PR intent & scope (best-effort shared pre-work above).
+        // Omitted when classification failed → prompt identical to today's.
+        ...(intent
+          ? {
+              intent: {
+                summary: intent.intent,
+                inScope: intent.in_scope,
+                outOfScope: intent.out_of_scope,
+              },
+            }
+          : {}),
         task,
         sessionId: `${repo.owner}/${repo.name}#${pull.number}:${agent.name}`,
         onEvent: (e) => runLog.event(e.kind, e.msg, e.data),

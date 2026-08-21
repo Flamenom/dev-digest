@@ -33,6 +33,16 @@ export function wrapUntrusted(label: string, content: string): string {
   return `<untrusted source="${label}">\n${safe}\n</untrusted>`;
 }
 
+// Trusted-side scope-tagging instruction (L03). Appended to the system message
+// ONLY when a declared intent is present — it must live OUTSIDE the untrusted
+// blocks so author-controlled text can never rewrite it.
+const SCOPE_INSTRUCTION =
+  'SCOPE TAGGING. A "Declared PR intent & scope" section is included (untrusted, derived ' +
+  "from the PR's own description/links). For EVERY finding, set its `scope` field: 'in' " +
+  "when the finding concerns the declared intent / in-scope items, 'out' when it falls " +
+  'outside the declared scope. Scope NEVER waives severity: a real defect keeps its true ' +
+  'severity and must still be reported even when out of the declared scope.';
+
 /** Cap the PR description so a huge author body can't blow the token budget. */
 const MAX_PR_DESCRIPTION_CHARS = 4000;
 
@@ -66,6 +76,14 @@ export interface PromptParts {
    * undefined → section omitted.
    */
   prDescription?: string;
+  /**
+   * Declared PR intent & scope (L03) — derived from author-controlled sources,
+   * therefore UNTRUSTED: delimiter-wrapped, rendered before the PR description.
+   * When present, a trusted-side system instruction asks the model to tag each
+   * finding `scope: 'in' | 'out'` (scope never waives severity). Absent →
+   * prompt byte-identical to the no-intent shape.
+   */
+  intent?: { summary: string; inScope: string[]; outOfScope: string[] };
   /** The unified diff / user task (untrusted content). */
   diff: string;
   /** Optional task framing line, e.g. "Review PR #482 '…'". */
@@ -83,7 +101,9 @@ export interface AssembledPrompt {
  * appended to the system message.
  */
 export function assemblePrompt(parts: PromptParts): AssembledPrompt {
-  const system = `${parts.system}\n\n${INJECTION_GUARD}`;
+  const system = parts.intent
+    ? `${parts.system}\n\n${INJECTION_GUARD}\n\n${SCOPE_INSTRUCTION}`
+    : `${parts.system}\n\n${INJECTION_GUARD}`;
 
   const skillsBlock =
     parts.skills && parts.skills.length > 0 ? parts.skills.join('\n\n') : undefined;
@@ -101,8 +121,25 @@ export function assemblePrompt(parts: PromptParts): AssembledPrompt {
       ? parts.prDescription.slice(0, MAX_PR_DESCRIPTION_CHARS)
       : undefined;
 
+  // Built once so the run trace records the exact intent block the model saw
+  // (PromptAssembly.intent); null/omitted when no intent was derived.
+  let intentBlock: string | undefined;
+  if (parts.intent) {
+    const intentLines = [`Intent: ${parts.intent.summary}`];
+    if (parts.intent.inScope.length > 0) {
+      intentLines.push(`In scope:\n${parts.intent.inScope.map((x) => `- ${x}`).join('\n')}`);
+    }
+    if (parts.intent.outOfScope.length > 0) {
+      intentLines.push(
+        `Out of scope:\n${parts.intent.outOfScope.map((x) => `- ${x}`).join('\n')}`,
+      );
+    }
+    intentBlock = `## Declared PR intent & scope\n${wrapUntrusted('derived-intent', intentLines.join('\n'))}`;
+  }
+
   const userSections: string[] = [];
   if (parts.task) userSections.push(parts.task);
+  if (intentBlock) userSections.push(intentBlock);
   if (prDescription) {
     userSections.push(`## PR description\n${wrapUntrusted('pr-description', prDescription)}`);
   }
@@ -134,6 +171,7 @@ export function assemblePrompt(parts: PromptParts): AssembledPrompt {
     callers: parts.callers ?? null,
     repo_map: parts.repoMap ?? null,
     pr_description: prDescription ?? null,
+    intent: intentBlock ?? null,
     user,
   };
 

@@ -1,12 +1,14 @@
 /* FileCard — one collapsible file in the diff: header (path, +/- stat, comment
-   count) and, when open, its parsed lines plus any outdated comments. */
+   count) and, when open, its parsed lines plus any outdated comments. Smart
+   order adds optional finding overlays per NEW line, a header badge, and a
+   large-file header tint — all opt-in props; existing callers are unchanged. */
 "use client";
 
 import React from "react";
 import { useTranslations } from "next-intl";
 import { Icon } from "@devdigest/ui";
 import type { PrFile } from "@/lib/types";
-import { AUTO_EXPAND_MAX_LINES } from "../constants";
+import { AUTO_EXPAND_MAX_LINES, type LineFinding } from "../constants";
 import { parsePatch, type Line } from "../helpers";
 import {
   buildThreads,
@@ -15,7 +17,7 @@ import {
   type CommentThread,
   type DiffCommentApi,
 } from "../comments";
-import { s, chevronFor } from "../styles";
+import { s, chevronFor, fileHeaderLarge } from "../styles";
 import { CodeLine } from "../CodeLine";
 import { OutdatedComments } from "../OutdatedComments";
 
@@ -30,10 +32,30 @@ function threadsForLine(ln: Line, matched: Map<string, CommentThread[]>): Commen
   return out;
 }
 
-export function FileCard({ file, commenting }: { file: PrFile; commenting?: DiffCommentApi }) {
+export function FileCard({
+  file,
+  commenting,
+  defaultOpen,
+  lineFindings,
+  headerBadge,
+  onFindingClick,
+  highlightLarge,
+}: {
+  file: PrFile;
+  commenting?: DiffCommentApi;
+  /** Overrides the auto-expand-by-size initial state (user can still toggle). */
+  defaultOpen?: boolean;
+  /** Finding overlays keyed by NEW line number (severity join done upstream). */
+  lineFindings?: Map<number, LineFinding>;
+  /** Extra node(s) rendered in the header (e.g. the "N findings" badge). */
+  headerBadge?: React.ReactNode;
+  onFindingClick?: (findingId: string) => void;
+  /** Tint the header for large files (changed lines above the caller's threshold). */
+  highlightLarge?: boolean;
+}) {
   const t = useTranslations("shell");
   const [open, setOpen] = React.useState(
-    (file.additions ?? 0) + (file.deletions ?? 0) <= AUTO_EXPAND_MAX_LINES
+    defaultOpen ?? (file.additions ?? 0) + (file.deletions ?? 0) <= AUTO_EXPAND_MAX_LINES
   );
   const lines = React.useMemo(() => parsePatch(file.patch), [file.patch]);
 
@@ -54,7 +76,10 @@ export function FileCard({ file, commenting }: { file: PrFile; commenting?: Diff
 
   return (
     <div style={s.fileCard}>
-      <div onClick={() => setOpen((o) => !o)} style={s.fileHeader}>
+      <div
+        onClick={() => setOpen((o) => !o)}
+        style={highlightLarge ? { ...s.fileHeader, ...fileHeaderLarge } : s.fileHeader}
+      >
         <Icon.ChevronRight size={13} style={chevronFor(open)} />
         <Icon.FileText size={14} style={s.fileIcon} />
         <span className="mono" style={s.filePath}>
@@ -72,6 +97,7 @@ export function FileCard({ file, commenting }: { file: PrFile; commenting?: Diff
             {commentCount}
           </span>
         )}
+        {headerBadge}
       </div>
       {open && (
         <div style={s.fileBody}>
@@ -85,6 +111,8 @@ export function FileCard({ file, commenting }: { file: PrFile; commenting?: Diff
                 path={file.path}
                 threads={threadsForLine(ln, matched)}
                 commenting={commenting}
+                finding={ln.newNo != null ? lineFindings?.get(ln.newNo) : undefined}
+                onFindingClick={onFindingClick}
               />
             ))
           )}

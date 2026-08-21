@@ -15,6 +15,8 @@ import {
   Settings,
   Repo,
   PrDetail,
+  IntentDetail,
+  ScopedReview,
 } from '@devdigest/shared';
 
 /**
@@ -152,6 +154,94 @@ describe('AI contracts parse fixtures', () => {
         sources: [{ pr: 401, context: 'ctx' }],
       }),
     ).not.toThrow();
+  });
+
+  it('IntentDetail (L03) — full row and one with nullish keys omitted', () => {
+    // Frozen Intent's summary field is named `intent` (contracts/brief.ts).
+    const full = IntentDetail.parse({
+      pr_id: '3e2a2b52-3b8c-4b34-9a34-0a4c8e2b1c11',
+      intent: 'Introduce per-IP rate limiting on the public API endpoints.',
+      in_scope: ['Token-bucket middleware'],
+      out_of_scope: ['Auth changes'],
+      risk_areas: ['New dependency: ioredis'],
+      confidence: 'high',
+      sources: [
+        { kind: 'pr_description', ref: 'PR description', status: 'fetched' },
+        { kind: 'linked_issue', ref: '#471', title: 'Rate limit API', status: 'fetched' },
+        { kind: 'external_url', ref: 'https://example.com/doc', status: 'unavailable' },
+      ],
+      model: 'google/gemini-2.5-flash-lite',
+      head_sha: 'a1b2c3d4',
+      generated_at: '2026-08-21T00:00:00.000Z',
+      stale: false,
+    });
+    expect(full.intent).toContain('rate limiting');
+    expect(full.sources).toHaveLength(3);
+
+    // `.nullish()` keys (model, head_sha, source title) may be OMITTED entirely.
+    expect(() =>
+      IntentDetail.parse({
+        pr_id: 'pr-1',
+        intent: 'x',
+        in_scope: [],
+        out_of_scope: [],
+        risk_areas: [],
+        confidence: 'low',
+        sources: [{ kind: 'repo_doc', ref: 'docs/a.md', status: 'unavailable' }],
+        generated_at: '2026-08-21T00:00:00.000Z',
+        stale: true,
+      }),
+    ).not.toThrow();
+
+    // confidence/status are closed enums.
+    expect(
+      IntentDetail.safeParse({
+        pr_id: 'pr-1',
+        intent: 'x',
+        in_scope: [],
+        out_of_scope: [],
+        risk_areas: [],
+        confidence: 'medium',
+        sources: [],
+        generated_at: '2026-08-21T00:00:00.000Z',
+        stale: false,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('ScopedReview (L03) — findings may carry scope in/out or omit it', () => {
+    const finding = {
+      id: 'f1',
+      severity: 'CRITICAL',
+      category: 'security',
+      title: 'Hardcoded secret',
+      file: 'src/config.ts',
+      start_line: 11,
+      end_line: 11,
+      rationale: 'literal key in diff',
+      confidence: 0.98,
+      kind: 'finding',
+    };
+    const review = ScopedReview.parse({
+      verdict: 'request_changes',
+      summary: 's',
+      score: 40,
+      findings: [
+        { ...finding, scope: 'out' },
+        { ...finding, id: 'f2', scope: 'in' },
+        { ...finding, id: 'f3' }, // scope is nullish — may be omitted
+      ],
+    });
+    expect(review.findings.map((f) => f.scope ?? null)).toEqual(['out', 'in', null]);
+
+    expect(
+      ScopedReview.safeParse({
+        verdict: 'approve',
+        summary: 's',
+        score: 100,
+        findings: [{ ...finding, scope: 'sideways' }],
+      }).success,
+    ).toBe(false);
   });
 
   it('RunTrace (data2.jsx TRACE single-document)', () => {

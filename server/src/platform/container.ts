@@ -28,6 +28,9 @@ import { SkillsRepository } from '../modules/skills/repository.js';
 import { ReviewRepository } from '../modules/reviews/repository.js';
 import type { RepoIntel } from '../modules/repo-intel/types.js';
 import { RepoIntelService } from '../modules/repo-intel/service.js';
+import { createIntentDeriver, type IntentDeriver } from '../modules/reviews/intent-deriver.js';
+import { SmartDiffService } from '../modules/smart-diff/service.js';
+import { resolveFeatureModel } from '../modules/settings/feature-models.js';
 import { type DepGraph, DepCruiseGraph } from '../adapters/depgraph/index.js';
 import { type Tokenizer, TiktokenTokenizer } from '../adapters/tokenizer/index.js';
 
@@ -75,6 +78,8 @@ export class Container {
   private _skillsRepo?: SkillsRepository;
   private _reviewRepo?: ReviewRepository;
   private _repoIntel?: RepoIntel;
+  private _intent?: IntentDeriver;
+  private _smartDiffService?: SmartDiffService;
   private _depgraph?: DepGraph;
   private _tokenizer?: Tokenizer;
   private _priceBook?: PriceBook;
@@ -126,6 +131,34 @@ export class Container {
     if (this.overrides.repoIntel) return this.overrides.repoIntel;
     this._repoIntel ??= new RepoIntelService(this);
     return this._repoIntel;
+  }
+
+  /**
+   * L03 — Intent Layer derivation: the free functions of
+   * reviews/intent-deriver.ts bound over an EXPLICIT deps object (not the
+   * Container itself), so the derivation stays in the application ring;
+   * adapters resolve lazily per call. The intent routes AND the reviews
+   * executor consume the binding here (no sibling-module imports).
+   */
+  get intent(): IntentDeriver {
+    this._intent ??= createIntentDeriver({
+      repo: this.reviewRepo,
+      github: () => this.github(),
+      git: this.git,
+      llm: (id) => this.llm(id),
+      resolveModel: (workspaceId) => resolveFeatureModel(this, workspaceId, 'review_intent'),
+    });
+    return this._intent;
+  }
+
+  /**
+   * L0x — Smart Diff service (risk-ordered PR files, computed on read; no
+   * LLM). Explicit deps object; cross-module review data flows through the
+   * shared reviewRepo, never a sibling module's folder.
+   */
+  get smartDiffService(): SmartDiffService {
+    this._smartDiffService ??= new SmartDiffService({ repo: this.reviewRepo });
+    return this._smartDiffService;
   }
 
   /** Import-graph builder (dependency-cruiser). T3 indexer pipeline only. */
