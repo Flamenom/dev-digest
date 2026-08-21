@@ -1,11 +1,14 @@
 /* CodeLine — one rendered diff line: gutter number, +/- sign, text, plus the
-   hover "+" affordance, any anchored comment threads, and an inline composer. */
+   hover "+" affordance, any anchored comment threads, an inline composer, and
+   (Smart order only) a finding overlay: severity-tinted row + clickable badge. */
 "use client";
 
 import React from "react";
+import { SeverityBadge, type Severity } from "@devdigest/ui";
 import { commentTargetFor, type CommentThread, type DiffCommentApi, cs } from "../comments";
 import { type Line } from "../helpers";
-import { s, lineRowFor, lineSignFor } from "../styles";
+import type { LineFinding } from "../constants";
+import { s, lineRowFor, lineSignFor, findingRowFor, findingBadgeBtn } from "../styles";
 import { CommentThreadView } from "../CommentThreadView";
 import { InlineComposer } from "../InlineComposer";
 
@@ -14,11 +17,16 @@ export function CodeLine({
   path,
   threads,
   commenting,
+  finding,
+  onFindingClick,
 }: {
   ln: Line;
   path: string;
   threads: CommentThread[];
   commenting?: DiffCommentApi;
+  /** Finding anchored to this line (matched by NEW line number upstream). */
+  finding?: LineFinding;
+  onFindingClick?: (findingId: string) => void;
 }) {
   const [hover, setHover] = React.useState(false);
   const [composing, setComposing] = React.useState(false);
@@ -41,7 +49,7 @@ export function CodeLine({
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      <div style={lineRowFor(ln.kind)}>
+      <div style={finding ? findingRowFor(ln.kind, finding.severity) : lineRowFor(ln.kind)}>
         <span className="mono tnum" style={{ ...s.lineNo, position: "relative" }}>
           {showAdd && target && (
             <button
@@ -62,6 +70,17 @@ export function CodeLine({
         <span className="mono" style={s.lineText}>
           {ln.text || " "}
         </span>
+        {finding && (
+          <button
+            type="button"
+            title="Open this finding in Agent runs"
+            aria-label={`Open this ${finding.severity} finding in Agent runs`}
+            onClick={() => onFindingClick?.(finding.findingId)}
+            style={findingBadgeBtn}
+          >
+            <SeverityBadge severity={finding.severity as Severity} compact />
+          </button>
+        )}
       </div>
 
       {commenting &&

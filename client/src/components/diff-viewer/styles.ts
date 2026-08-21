@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import type { Line } from "./helpers";
+import { SEV_LINE_COLOR, SEV_LINE_COLOR_FALLBACK } from "./constants";
 
 /** Co-located styles for the DiffViewer (extracted from inline styles). */
 export const s = {
@@ -90,3 +91,32 @@ export function lineSignFor(kind: Line["kind"]): CSSProperties {
     flexShrink: 0,
   };
 }
+
+/** Finding-annotated line row: severity-tinted background + severity-coloured
+ *  left border (drawn as an inset shadow so annotated lines don't shift text). */
+export function findingRowFor(kind: Line["kind"], severity: string): CSSProperties {
+  const sev = SEV_LINE_COLOR[severity] ?? SEV_LINE_COLOR_FALLBACK;
+  return {
+    ...lineRowFor(kind),
+    background: sev.bg,
+    boxShadow: `inset 3px 0 0 0 ${sev.color}`,
+  };
+}
+
+/** Bare button wrapper around the inline SeverityBadge on an annotated line. */
+export const findingBadgeBtn: CSSProperties = {
+  background: "none",
+  border: "none",
+  padding: 0,
+  marginRight: 10,
+  cursor: "pointer",
+  display: "inline-flex",
+  alignItems: "center",
+  alignSelf: "center",
+  flexShrink: 0,
+};
+
+/** FileCard header tint for large files (changed lines above the threshold). */
+export const fileHeaderLarge: CSSProperties = {
+  background: "var(--warn-bg)",
+};

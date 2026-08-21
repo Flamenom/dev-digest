@@ -14,7 +14,7 @@ import { OverviewTab } from "./_components/OverviewTab";
 import { FindingsTab } from "./_components/FindingsTab";
 import { DiffTab } from "./_components/DiffTab";
 import RunTraceDrawer from "./_components/RunTraceDrawer";
-import { usePullDetail, usePulls, useQueryParam } from "@/lib/hooks";
+import { usePullDetail, usePulls, useQueryParam, useSetQueryParams } from "@/lib/hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { usePrReviews, useCancelRun, usePrActiveRuns, usePrRuns, useDeleteRun } from "@/lib/hooks/reviews";
 import { useActiveRepo, useRepoNotFound } from "@/lib/repo-context";
@@ -56,6 +56,12 @@ export default function PRDetailPage() {
 
   const [tab, setTab] = useQueryParam("tab", "overview");
   const [traceRunId, setTraceRunId] = useQueryParam("trace");
+  // Smart Diff → Findings deep-link: ?finding=<id> targets one FindingCard.
+  // Both keys must land in ONE URL write (same-tick different-key setters lose
+  // the first write — see use-query-param.ts), hence the batched setter.
+  const [findingTarget, setFindingTarget] = useQueryParam("finding");
+  const setParams = useSetQueryParams();
+  const goToFinding = (id: string) => setParams({ tab: "findings", finding: id });
 
   // Reviews come newest-first; each is its own run (grouped into accordions).
   // Derived during render, not memoized: flattening a handful of reviews is not
@@ -137,6 +143,8 @@ export default function PRDetailPage() {
             prCommits={pr.commits}
             repoFullName={repoFullName}
             headSha={pr.head_sha}
+            targetFindingId={findingTarget || null}
+            onFindingTargetConsumed={() => setFindingTarget(null)}
             cancelMutation={cancel}
             onOpenTrace={setTraceRunId}
             onDelete={(id) => {
@@ -147,6 +155,8 @@ export default function PRDetailPage() {
               invalidateActiveRuns();
               invalidateRunHistory();
               refetchReviews();
+              // Smart Diff joins findings onto diff lines — refresh it too.
+              if (prId) qc.invalidateQueries({ queryKey: ["pr-smart-diff", prId] });
             }}
           />
         )}
@@ -157,6 +167,8 @@ export default function PRDetailPage() {
             filesCount={pr.files_count}
             files={pr.files}
             canComment={pr.status === "open"}
+            reviews={runs}
+            onGoToFinding={goToFinding}
           />
         )}
       </div>

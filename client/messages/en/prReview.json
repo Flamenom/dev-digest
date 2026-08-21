@@ -65,7 +65,15 @@
     "largeBody": "Consider splitting it into smaller, focused PRs for easier review:",
     "filesCount": "{count} files",
     "findingLines": "{count} finding-lines",
-    "groupedByRole": "Smart Diff · grouped by role"
+    "groupedByRole": "Smart Diff · grouped by role",
+    "orderSmart": "Smart order",
+    "orderOriginal": "Original order",
+    "coreSub": "The substance of the change — review closely",
+    "wiringSub": "Hooks the core into the app",
+    "boilerplateSub": "Generated / mechanical — skim",
+    "fileFindings": "{count} finding(s)",
+    "largeFileHint": "Large file — {lines} changed lines",
+    "statLine": "{count} files +{additions} −{deletions}"
   },
   "list": {
     "breadcrumb": "Pull Requests",

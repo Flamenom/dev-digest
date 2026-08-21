@@ -64,6 +64,14 @@ describe('routes (no DB)', () => {
     await app.close();
   });
 
+  it('smart-diff route (L0x) validates :id at the edge — non-uuid → 422, no DB touched', async () => {
+    const app = await buildApp({ config });
+    const res = await app.inject({ method: 'GET', url: '/pulls/not-a-uuid/smart-diff' });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe('validation_error');
+    await app.close();
+  });
+
   it('returns 422 structured error on invalid body', async () => {
     const app = await buildApp({ config });
     const res = await app.inject({

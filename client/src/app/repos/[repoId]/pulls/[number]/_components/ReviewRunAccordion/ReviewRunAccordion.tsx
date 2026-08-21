@@ -29,7 +29,8 @@ export function ReviewRunAccordion({
   defaultOpen = false,
   repoFullName,
   headSha,
-  targetRunId = null,
+  targetReviewId = null,
+  targetFindingId = null,
   targetNonce = 0,
 }: {
   review: ReviewRecord;
@@ -37,19 +38,24 @@ export function ReviewRunAccordion({
   defaultOpen?: boolean;
   repoFullName?: string | null;
   headSha?: string | null;
-  /** When this matches review.run_id, the accordion opens and scrolls into view
-   *  (driven from the Timeline: clicking an agent name navigates here). */
-  targetRunId?: string | null;
+  /** When this matches review.id, the accordion opens and scrolls into view
+   *  (driven from the Timeline or a Smart Diff finding click). Matched by
+   *  review.id — run_id can be null on older reviews. */
+  targetReviewId?: string | null;
+  /** Optional finding inside the target review to focus (Smart Diff deep-link);
+   *  forwarded to FindingsPanel, which focuses + scrolls the exact card. */
+  targetFindingId?: string | null;
   targetNonce?: number;
 }) {
   const [open, setOpen] = React.useState(defaultOpen);
   const rootRef = React.useRef<HTMLDivElement | null>(null);
+  const isTarget = review.id === targetReviewId;
   React.useEffect(() => {
-    if (review.run_id && review.run_id === targetRunId) {
+    if (isTarget) {
       setOpen(true);
       rootRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     }
-  }, [targetRunId, targetNonce, review.run_id]);
+  }, [isTarget, targetNonce]);
   const del = useDeleteReview(prId);
   const findings = review.findings;
   const blockers = findings.filter((f) => f.severity === "CRITICAL" && !f.dismissed_at).length;
@@ -151,6 +157,8 @@ export function ReviewRunAccordion({
             prId={prId}
             repoFullName={repoFullName}
             headSha={headSha}
+            targetFindingId={isTarget ? targetFindingId : null}
+            targetNonce={targetNonce}
           />
         </div>
       )}

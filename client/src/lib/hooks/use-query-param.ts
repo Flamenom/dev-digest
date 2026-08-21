@@ -48,6 +48,33 @@ export function useQueryParam(
 }
 
 /**
+ * Batched multi-key URL writer — the remedy for the same-tick limitation
+ * documented in `useQueryParam` above: two different-key setters fired in one
+ * tick both read the same pre-navigation location, so the first write loses.
+ * This builds ONE URLSearchParams from the live URL, applies every update, and
+ * commits ONE router.replace. `null`/`""` removes the key.
+ */
+export function useSetQueryParams(): (updates: Record<string, string | null>) => void {
+  const router = useRouter();
+
+  return React.useCallback(
+    (updates: Record<string, string | null>) => {
+      const sp = new URLSearchParams(window.location.search);
+      for (const [key, next] of Object.entries(updates)) {
+        if (next == null || next === "") sp.delete(key);
+        else sp.set(key, next);
+      }
+      const qs = sp.toString();
+      router.replace(
+        `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash}`,
+        { scroll: false },
+      );
+    },
+    [router],
+  );
+}
+
+/**
  * useQueryParam for TEXT INPUTS. A controlled input backed directly by the
  * (async-updating) URL drops keystrokes under fast typing, so this variant
  * echoes changes into local state immediately and syncs the URL debounced.
