@@ -87,19 +87,17 @@ export function IntentCard({
           </div>
         )}
 
-        {stale && (
-          <div style={s.badgeRow}>
-            <Button
-              kind="secondary"
-              size="sm"
-              icon="RefreshCw"
-              loading={classify.isPending}
-              onClick={() => classify.mutate()}
-            >
-              {classify.isPending ? t("intent.classifying") : t("intent.reclassify")}
-            </Button>
-          </div>
-        )}
+        <div style={s.badgeRow}>
+          <Button
+            kind="secondary"
+            size="sm"
+            icon="RefreshCw"
+            loading={classify.isPending}
+            onClick={() => classify.mutate()}
+          >
+            {classify.isPending ? t("intent.classifying") : t("intent.recompute")}
+          </Button>
+        </div>
       </div>
     </section>
   );

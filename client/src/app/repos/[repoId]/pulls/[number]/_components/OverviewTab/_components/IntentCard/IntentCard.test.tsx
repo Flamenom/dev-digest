@@ -71,11 +71,32 @@ describe("IntentCard", () => {
     expect(screen.getByText("Auth surface touched")).toBeInTheDocument();
     expect(screen.getByText("New dependency: ioredis")).toBeInTheDocument();
 
-    // High-confidence, fresh, fully-sourced → no warning badges, no re-classify.
+    // High-confidence, fresh, fully-sourced → no warning badges; the manual
+    // recompute button is always available on a populated card.
     expect(screen.queryByText("Low confidence")).not.toBeInTheDocument();
     expect(screen.queryByText("Stale — head moved")).not.toBeInTheDocument();
     expect(screen.queryByText(/Missing context/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Re-classify/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Recompute intent/ })).toBeInTheDocument();
+  });
+
+  it("recompute on a fresh card triggers the mutation and re-renders the result", async () => {
+    (api.get as Mock).mockResolvedValue(INTENT);
+    (api.post as Mock).mockResolvedValue({
+      ...INTENT,
+      intent: "Recomputed: per-IP rate limiting on public endpoints.",
+    });
+    renderCard();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Recompute intent/ }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith("/pulls/pr-1/intent");
+    });
+    expect(api.post).toHaveBeenCalledTimes(1);
+    // onSuccess seeds the cache with the fresh classification.
+    expect(
+      await screen.findByText(/Recomputed: per-IP rate limiting on public endpoints\./),
+    ).toBeInTheDocument();
   });
 
   it("empty state (404): shows the CTA, click POSTs the classification and renders the result", async () => {
@@ -104,7 +125,7 @@ describe("IntentCard", () => {
     expect(screen.queryByText("No intent classified yet.")).not.toBeInTheDocument();
   });
 
-  it("low-confidence, missing-context and stale badges show; Re-classify triggers the mutation and clears stale", async () => {
+  it("low-confidence, missing-context and stale badges show; recompute triggers the mutation and clears stale", async () => {
     const staleIntent: IntentDetail = {
       ...INTENT,
       confidence: "low",
@@ -123,17 +144,18 @@ describe("IntentCard", () => {
     expect(screen.getByText("Stale — head moved")).toBeInTheDocument();
     expect(screen.getByText("Missing context: https://example.com/doc")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /Re-classify/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Recompute intent/ }));
 
     await waitFor(() => {
       expect(api.post).toHaveBeenCalledWith("/pulls/pr-1/intent");
     });
     expect(api.post).toHaveBeenCalledTimes(1);
-    // Fresh classification matches the current head → badges and button go away.
+    // Fresh classification matches the current head → badges go away; the
+    // recompute button stays (always available on a populated card).
     await waitFor(() => {
       expect(screen.queryByText("Stale — head moved")).not.toBeInTheDocument();
     });
     expect(screen.queryByText("Low confidence")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Re-classify/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Recompute intent/ })).toBeInTheDocument();
   });
 });

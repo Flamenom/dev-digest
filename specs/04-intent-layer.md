@@ -145,7 +145,8 @@ Models picker already renders the entry; no UI work.
   `SectionLabel` "INTENT" header, quoted italic summary, columns **IN SCOPE** (check
   bullets) / **OUT OF SCOPE** (x bullets, dimmed), **RISK AREAS** chip row. Badges:
   low-confidence, missing-context (lists `unavailable` source refs), stale
-  (`head_sha` mismatch → "Re-classify" button). Empty state: "Classify intent" CTA;
+  (`head_sha` mismatch). A "Recompute intent" button is always available on the
+  populated card for manual re-classification. Empty state: "Classify intent" CTA;
   mutation `isPending` drives loading. Styles = `styles.ts` `CSSProperties` + `var(--…)`
   tokens, no Tailwind; strings via next-intl `brief` namespace (extend with `intent.*`).
 - `page.tsx` passes `prId` + `headSha` into `OverviewTab`.
@@ -183,7 +184,7 @@ live re-classification on seed data degrades to title/body/paths by design.
   `scope` stripped); plus `run.test.ts` (score recomputed post-scope; no-intent path
   byte-identical) and `prompt.test.ts` (intent section wrapped, guard intact).
 - Client `IntentCard.test.tsx`: populated card (summary/columns/chips); empty → CTA →
-  POST → renders result; low-confidence + stale badges + Re-classify flow.
+  POST → renders result; low-confidence + stale badges + recompute flow.
 - Contracts: parse fixtures for `IntentDetail`/`ScopedReview` in `contracts.test.ts`;
   routes added to `routes-smoke.test.ts`.
 
@@ -223,7 +224,7 @@ live re-classification on seed data degrades to title/body/paths by design.
 | "Severe" out-of-scope | `CRITICAL` only | widen predicate in `scope.ts` |
 | Scope judgment | reviewer model tags per-finding `scope` (extended output schema) | path-matching vs free-text `in_scope[]` — rejected (unreliable) |
 | Classification execution | sync POST (one cheap LLM call) | job + 202 + poll |
-| Staleness | `head_sha` compare + manual Re-classify | auto re-classify on sync |
+| Staleness | `head_sha` compare + always-available manual recompute | auto re-classify on sync |
 | Trace slot | none — intent visible inside `assembly.user` | `PromptAssembly.intent` (needs contracts-owner call) |
 | Model routing | `resolveFeatureModel('review_intent')` | unused `model-router.ts` — deliberately ignored |
 

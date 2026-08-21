@@ -18,7 +18,7 @@
     "emptyHint": "Classify this PR to derive its declared intent and scope for reviews.",
     "classifyCta": "Classify intent",
     "classifying": "Classifying…",
-    "reclassify": "Re-classify",
+    "recompute": "Recompute intent",
     "lowConfidence": "Low confidence",
     "missingContext": "Missing context: {refs}",
     "stale": "Stale — head moved"
