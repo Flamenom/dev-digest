@@ -1,5 +1,5 @@
 import type { IntentConfidence, IntentDetail, IntentSource, StoredIntentDetail } from '@devdigest/shared';
-import { MAX_EXTERNAL_URLS, MAX_REPO_DOCS } from './constants.js';
+import { MAX_EXTERNAL_URLS, MAX_REPO_DOCS } from './intent-constants.js';
 
 /**
  * Pure helpers for the intent classifier: source extraction from the PR body,

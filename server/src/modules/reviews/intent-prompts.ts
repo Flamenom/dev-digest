@@ -5,7 +5,7 @@ import {
   MAX_FILES_LISTED,
   MAX_HUNK_HEADERS_PER_FILE,
   MAX_ISSUE_CHARS,
-} from './constants.js';
+} from './intent-constants.js';
 
 /**
  * Intent classification — one structured LLM call.

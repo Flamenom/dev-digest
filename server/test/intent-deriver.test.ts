@@ -1,17 +1,22 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { IntentDetailWrite, RepoRef, StoredIntentDetail } from '@devdigest/shared';
-import { IntentService, type IntentServiceDeps, type IntentPull } from '../src/modules/intent/service.js';
+import {
+  deriveIntent,
+  getOrDeriveIntentFresh,
+  type IntentDeriverDeps,
+  type IntentPull,
+} from '../src/modules/reviews/intent-deriver.js';
 import { MockLLMProvider } from '../src/adapters/mocks.js';
 
 /**
- * Hermetic tests for the L03 Intent Layer service (no DB, no network):
+ * Hermetic tests for the L03 intent deriver free functions (no DB, no network):
  * deterministic confidence, honest `unavailable` source marking (missing repo
  * doc / external URL — never fabricated), the hunk-headers-only prompt
  * projection (diff bodies never reach the classifier), the no-source-bodies
- * structured log line, and the getOrClassifyFresh head_sha short-circuit.
+ * structured log line, and the getOrDeriveIntentFresh head_sha short-circuit.
  *
  * NOTE (server/INSIGHTS.md): the shared MockGitClient.readFile returns '' for
- * missing files — the service's "throw ⇒ unavailable" semantics require a
+ * missing files — the deriver's "throw ⇒ unavailable" semantics require a
  * custom fake GitClient that THROWS, so we inject one here.
  */
 
@@ -40,11 +45,11 @@ interface DepsOptions {
   docs?: Record<string, string>;
   /** getIssue behavior: an issue payload, or 'fail' to reject. */
   issue?: { title: string; body: string | null } | 'fail';
-  /** Pre-stored intent row (for getOrClassifyFresh short-circuit). */
+  /** Pre-stored intent row (for getOrDeriveIntentFresh short-circuit). */
   stored?: StoredIntentDetail;
 }
 
-function makeService(opts: DepsOptions = {}) {
+function makeDeps(opts: DepsOptions = {}) {
   const pull: IntentPull = {
     id: PR_ID,
     repoId: 'repo-1',
@@ -75,7 +80,7 @@ function makeService(opts: DepsOptions = {}) {
     structuredBySchema: { IntentClassification: CLASSIFICATION_FIXTURE },
   });
 
-  const repo: IntentServiceDeps['repo'] = {
+  const repo: IntentDeriverDeps['repo'] = {
     getPull: vi.fn(async () => pull),
     getRepo: vi.fn(async () => ({ owner: 'acme', name: 'payments-api' })),
     getPrFiles: vi.fn(async () => opts.files ?? []),
@@ -97,7 +102,7 @@ function makeService(opts: DepsOptions = {}) {
     getIntentDetail: vi.fn(async () => stored),
   };
 
-  const deps: IntentServiceDeps = {
+  const deps: IntentDeriverDeps = {
     repo,
     github: async () => ({ getIssue }),
     git: { readFile },
@@ -106,7 +111,7 @@ function makeService(opts: DepsOptions = {}) {
   };
 
   return {
-    service: new IntentService(deps),
+    deps,
     pull,
     llm,
     repo,
@@ -124,11 +129,11 @@ function userMessageOf(llm: MockLLMProvider): string {
   return messages.find((m) => m.role === 'user')!.content;
 }
 
-describe('IntentService.classify — sources & confidence', () => {
+describe('deriveIntent — sources & confidence', () => {
   it('empty PR body → no sources, deterministic low confidence', async () => {
-    const { service, savedWrite } = makeService({ body: null });
+    const { deps,savedWrite } = makeDeps({ body: null });
 
-    const detail = await service.classify('ws-1', PR_ID);
+    const detail = await deriveIntent(deps, 'ws-1', PR_ID);
 
     expect(detail.confidence).toBe('low');
     expect(detail.sources).toEqual([]);
@@ -138,12 +143,12 @@ describe('IntentService.classify — sources & confidence', () => {
   });
 
   it('missing repo doc (fake git THROWS) → unavailable source + low confidence; present doc is fetched', async () => {
-    const { service, readFile } = makeService({
+    const { deps,readFile } = makeDeps({
       body: 'Implements specs/04-intent-layer.md; see also docs/missing.md.',
       docs: { 'specs/04-intent-layer.md': '# Intent Layer spec\nClassifier details.' },
     });
 
-    const detail = await service.classify('ws-1', PR_ID);
+    const detail = await deriveIntent(deps, 'ws-1', PR_ID);
 
     expect(detail.sources).toContainEqual({
       kind: 'repo_doc',
@@ -164,12 +169,12 @@ describe('IntentService.classify — sources & confidence', () => {
   });
 
   it('linked issue fetched via the GitHub adapter → fetched source + high confidence', async () => {
-    const { service, getIssue } = makeService({
+    const { deps,getIssue } = makeDeps({
       body: 'Adds a limiter to the public API. Fixes #471.',
       issue: { title: 'Rate limit the public API', body: 'Please add per-IP limits.' },
     });
 
-    const detail = await service.classify('ws-1', PR_ID);
+    const detail = await deriveIntent(deps, 'ws-1', PR_ID);
 
     expect(getIssue).toHaveBeenCalledWith({ owner: 'acme', name: 'payments-api' }, 471);
     expect(detail.sources).toContainEqual({
@@ -187,12 +192,12 @@ describe('IntentService.classify — sources & confidence', () => {
   });
 
   it('linked issue fetch failure → unavailable source, never fabricated', async () => {
-    const { service, llm } = makeService({
+    const { deps,llm } = makeDeps({
       body: 'Closes #99.',
       issue: 'fail',
     });
 
-    const detail = await service.classify('ws-1', PR_ID);
+    const detail = await deriveIntent(deps, 'ws-1', PR_ID);
 
     expect(detail.sources).toContainEqual({ kind: 'linked_issue', ref: '#99', status: 'unavailable' });
     expect(detail.confidence).toBe('low');
@@ -202,11 +207,11 @@ describe('IntentService.classify — sources & confidence', () => {
 
   it('external URL → unavailable source; content never fetched, listed as NOT-fetched only', async () => {
     const url = 'https://example.com/design-doc';
-    const { service, llm } = makeService({
+    const { deps,llm } = makeDeps({
       body: `Implements the design at ${url}. Details: ${url}.`,
     });
 
-    const detail = await service.classify('ws-1', PR_ID);
+    const detail = await deriveIntent(deps, 'ws-1', PR_ID);
 
     // Deduped to one source, always unavailable (v1 locked decision).
     const external = detail.sources.filter((s) => s.kind === 'external_url');
@@ -220,9 +225,9 @@ describe('IntentService.classify — sources & confidence', () => {
   });
 });
 
-describe('IntentService.classify — prompt projection & observability', () => {
+describe('deriveIntent — prompt projection & observability', () => {
   it('LLM messages carry file paths + bare `@@ …@@` hunk headers, never patch bodies', async () => {
-    const { service, llm } = makeService({
+    const { deps,llm } = makeDeps({
       body: 'Adds rate limiting.',
       files: [
         { path: 'src/config.ts', patch: PATCH },
@@ -230,7 +235,7 @@ describe('IntentService.classify — prompt projection & observability', () => {
       ],
     });
 
-    await service.classify('ws-1', PR_ID);
+    await deriveIntent(deps, 'ws-1', PR_ID);
 
     const user = userMessageOf(llm);
     expect(user).toContain('src/config.ts');
@@ -249,14 +254,14 @@ describe('IntentService.classify — prompt projection & observability', () => {
     const docContent = 'SECRET-DOC-CONTENT: classifier details.';
     const prBody = 'Adds a limiter. Fixes #471. See specs/04-intent-layer.md.';
     const logs: unknown[] = [];
-    const { service } = makeService({
+    const { deps } = makeDeps({
       body: prBody,
       issue: { title: 'Rate limit the public API', body: issueBody },
       docs: { 'specs/04-intent-layer.md': docContent },
       files: [{ path: 'src/config.ts', patch: PATCH }],
     });
 
-    await service.classify('ws-1', PR_ID, { info: (obj) => logs.push(obj) });
+    await deriveIntent(deps, 'ws-1', PR_ID, { info: (obj) => logs.push(obj) });
 
     expect(logs).toHaveLength(1);
     const line = logs[0] as {
@@ -285,7 +290,7 @@ describe('IntentService.classify — prompt projection & observability', () => {
   });
 });
 
-describe('IntentService.getOrClassifyFresh — head_sha short-circuit', () => {
+describe('getOrDeriveIntentFresh — head_sha short-circuit', () => {
   const STORED: StoredIntentDetail = {
     pr_id: PR_ID,
     intent: 'Stored intent summary',
@@ -300,9 +305,9 @@ describe('IntentService.getOrClassifyFresh — head_sha short-circuit', () => {
   };
 
   it('matching head_sha → returns the stored intent WITHOUT an LLM call', async () => {
-    const { service, pull, llm } = makeService({ body: 'Adds a limiter.', stored: STORED });
+    const { deps,pull, llm } = makeDeps({ body: 'Adds a limiter.', stored: STORED });
 
-    const detail = await service.getOrClassifyFresh('ws-1', pull);
+    const detail = await getOrDeriveIntentFresh(deps, 'ws-1', pull);
 
     expect(detail.intent).toBe('Stored intent summary');
     expect(detail.stale).toBe(false);
@@ -310,12 +315,12 @@ describe('IntentService.getOrClassifyFresh — head_sha short-circuit', () => {
   });
 
   it('head_sha mismatch → re-classifies inline (one LLM call, fresh head_sha persisted)', async () => {
-    const { service, pull, llm, savedWrite } = makeService({
+    const { deps,pull, llm, savedWrite } = makeDeps({
       body: 'Adds a limiter.',
       stored: { ...STORED, head_sha: 'older-sha' },
     });
 
-    const detail = await service.getOrClassifyFresh('ws-1', pull);
+    const detail = await getOrDeriveIntentFresh(deps, 'ws-1', pull);
 
     expect(llm.calls.filter((c) => c.method === 'completeStructured')).toHaveLength(1);
     expect(detail.intent).toBe(CLASSIFICATION_FIXTURE.summary);

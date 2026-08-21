@@ -105,14 +105,16 @@ export class ReviewRunExecutor {
     }
     runLog.info(`Diff ready — ${diff.files.length} changed file(s); starting ${jobs.length} agent run(s)`);
 
-    // L03 — shared pre-work: resolve (or classify) the PR intent once. Strictly
+    // L03 — shared pre-work: resolve (or derive) the PR intent once. Strictly
     // best-effort: any failure is logged and the review proceeds WITHOUT intent
     // (degrades to today's behavior). Only model/confidence/source statuses are
     // logged — never source bodies.
     let intent: IntentDetail | undefined;
     try {
-      intent = await runLog.step('Resolving PR intent', () =>
-        this.container.intentService.getOrClassifyFresh(workspaceId, pull, logger),
+      intent = await runLog.step(
+        'Resolving PR intent',
+        () => this.container.intent.getOrDeriveFresh(workspaceId, pull, logger),
+        { kind: 'tool' },
       );
       runLog.info(
         `Intent ready — model=${intent.model ?? 'unknown'}, confidence=${intent.confidence}, sources: ${

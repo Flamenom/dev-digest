@@ -327,7 +327,8 @@ Parallel lanes: **{1→2} server** ∥ **{3, 4, 6} client foundations**; 5 joins
 
 ## 9. Tests (summary)
 
-- Server hermetic: `smart-diff-helpers.test.ts` (classifier matrix + builder rules).
+- Server hermetic: `smart-diff-helpers.test.ts` (classifier matrix + builder rules);
+  one-shot wrapper `pnpm verify:l03` (server/package.json) runs exactly this file.
 - Server smoke: `routes-smoke.test.ts` — non-uuid `:id` → 422, no DB.
 - Server integration: `smart-diff.it.test.ts` — persist → GET → `SmartDiffResponse.parse`;
   latest-per-agent; dismissed excluded; unique repo fullName.
@@ -382,10 +383,11 @@ Parallel lanes: **{1→2} server** ∥ **{3, 4, 6} client foundations**; 5 joins
 ## 12. Verification (execution order)
 
 1. `cd reviewer-core && npm ci` (server test prerequisite — package itself untouched)
-2. `cd server && pnpm typecheck && pnpm test`
-3. `cd server && pnpm arch` — 0 errors, no NEW warnings vs baseline
-4. `cd client && pnpm typecheck && pnpm test`
-5. Manual: `./scripts/dev.sh` → a PR → Files changed → toggle Smart order: groups
+2. `cd server && pnpm verify:l03` — classifier-only quick gate (no UI clicking)
+3. `cd server && pnpm typecheck && pnpm test`
+4. `cd server && pnpm arch` — 0 errors, no NEW warnings vs baseline
+5. `cd client && pnpm typecheck && pnpm test`
+6. Manual: `./scripts/dev.sh` → a PR → Files changed → toggle Smart order: groups
    render (no findings pre-review); run a review; overlays + badges appear after
    `onRunDone`; click a finding line badge → lands on `?tab=findings&finding=…`, the
    right accordion opens and the exact FindingCard is focused; Original order shows no

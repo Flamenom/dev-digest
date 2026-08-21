@@ -121,8 +121,9 @@ export function assemblePrompt(parts: PromptParts): AssembledPrompt {
       ? parts.prDescription.slice(0, MAX_PR_DESCRIPTION_CHARS)
       : undefined;
 
-  const userSections: string[] = [];
-  if (parts.task) userSections.push(parts.task);
+  // Built once so the run trace records the exact intent block the model saw
+  // (PromptAssembly.intent); null/omitted when no intent was derived.
+  let intentBlock: string | undefined;
   if (parts.intent) {
     const intentLines = [`Intent: ${parts.intent.summary}`];
     if (parts.intent.inScope.length > 0) {
@@ -133,10 +134,12 @@ export function assemblePrompt(parts: PromptParts): AssembledPrompt {
         `Out of scope:\n${parts.intent.outOfScope.map((x) => `- ${x}`).join('\n')}`,
       );
     }
-    userSections.push(
-      `## Declared PR intent & scope\n${wrapUntrusted('derived-intent', intentLines.join('\n'))}`,
-    );
+    intentBlock = `## Declared PR intent & scope\n${wrapUntrusted('derived-intent', intentLines.join('\n'))}`;
   }
+
+  const userSections: string[] = [];
+  if (parts.task) userSections.push(parts.task);
+  if (intentBlock) userSections.push(intentBlock);
   if (prDescription) {
     userSections.push(`## PR description\n${wrapUntrusted('pr-description', prDescription)}`);
   }
@@ -168,6 +171,7 @@ export function assemblePrompt(parts: PromptParts): AssembledPrompt {
     callers: parts.callers ?? null,
     repo_map: parts.repoMap ?? null,
     pr_description: prDescription ?? null,
+    intent: intentBlock ?? null,
     user,
   };
 

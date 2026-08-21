@@ -11,7 +11,7 @@ import { buildSmartDiff, type SmartDiffFindingInput } from './helpers.js';
 
 // Structural projections of the rows the service consumes — the repository's
 // Drizzle row types satisfy these without leaking $inferSelect inward
-// (intent/service.ts precedent).
+// (reviews/intent-deriver.ts precedent).
 export interface SmartDiffPull {
   id: string;
 }

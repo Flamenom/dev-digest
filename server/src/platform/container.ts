@@ -28,7 +28,7 @@ import { SkillsRepository } from '../modules/skills/repository.js';
 import { ReviewRepository } from '../modules/reviews/repository.js';
 import type { RepoIntel } from '../modules/repo-intel/types.js';
 import { RepoIntelService } from '../modules/repo-intel/service.js';
-import { IntentService } from '../modules/intent/service.js';
+import { createIntentDeriver, type IntentDeriver } from '../modules/reviews/intent-deriver.js';
 import { SmartDiffService } from '../modules/smart-diff/service.js';
 import { resolveFeatureModel } from '../modules/settings/feature-models.js';
 import { type DepGraph, DepCruiseGraph } from '../adapters/depgraph/index.js';
@@ -78,7 +78,7 @@ export class Container {
   private _skillsRepo?: SkillsRepository;
   private _reviewRepo?: ReviewRepository;
   private _repoIntel?: RepoIntel;
-  private _intentService?: IntentService;
+  private _intent?: IntentDeriver;
   private _smartDiffService?: SmartDiffService;
   private _depgraph?: DepGraph;
   private _tokenizer?: Tokenizer;
@@ -134,20 +134,21 @@ export class Container {
   }
 
   /**
-   * L03 — Intent Layer service. The intent routes AND the reviews executor
-   * consume it here (no sibling-module imports). Built with an EXPLICIT deps
-   * object (not the Container itself), so the service stays in the application
-   * ring; adapters resolve lazily per call.
+   * L03 — Intent Layer derivation: the free functions of
+   * reviews/intent-deriver.ts bound over an EXPLICIT deps object (not the
+   * Container itself), so the derivation stays in the application ring;
+   * adapters resolve lazily per call. The intent routes AND the reviews
+   * executor consume the binding here (no sibling-module imports).
    */
-  get intentService(): IntentService {
-    this._intentService ??= new IntentService({
+  get intent(): IntentDeriver {
+    this._intent ??= createIntentDeriver({
       repo: this.reviewRepo,
       github: () => this.github(),
       git: this.git,
       llm: (id) => this.llm(id),
       resolveModel: (workspaceId) => resolveFeatureModel(this, workspaceId, 'review_intent'),
     });
-    return this._intentService;
+    return this._intent;
   }
 
   /**

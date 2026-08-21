@@ -4,6 +4,9 @@
  *   GET  /pulls/:id/intent → IntentDetail (404 until first classification)
  *   POST /pulls/:id/intent → synchronous re/classification (one cheap LLM call —
  *                            conventions sync-POST precedent)
+ *
+ * Derivation itself lives in reviews/intent-deriver.ts (free functions); this
+ * module consumes the container's `intent` binding — no sibling-module import.
  */
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
@@ -14,13 +17,13 @@ import { NotFoundError } from '../../platform/errors.js';
 export default async function intentRoutes(appBase: FastifyInstance) {
   const app = appBase.withTypeProvider<ZodTypeProvider>();
   const { container } = app;
-  const service = container.intentService;
+  const intent = container.intent;
 
   app.get('/pulls/:id/intent', { schema: { params: IdParams } }, async (req) => {
     const { workspaceId } = await getContext(container, req);
-    const intent = await service.get(workspaceId, req.params.id);
-    if (!intent) throw new NotFoundError('Intent not found');
-    return intent;
+    const detail = await intent.get(workspaceId, req.params.id);
+    if (!detail) throw new NotFoundError('Intent not found');
+    return detail;
   });
 
   // Tight per-route limit: each call is an LLM classification.
@@ -29,7 +32,7 @@ export default async function intentRoutes(appBase: FastifyInstance) {
     { schema: { params: IdParams }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
     async (req) => {
       const { workspaceId } = await getContext(container, req);
-      return service.classify(workspaceId, req.params.id, req.log);
+      return intent.derive(workspaceId, req.params.id, req.log);
     },
   );
 }

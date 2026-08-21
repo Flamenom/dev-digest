@@ -91,6 +91,15 @@ describe('assemblePrompt — ## Declared PR intent & scope (L03)', () => {
     expect(user.indexOf('## PR description')).toBeLessThan(user.indexOf('## Diff to review'));
   });
 
+  it('records the rendered intent block in PromptAssembly.intent; null when absent', () => {
+    const { assembly } = assemblePrompt({ system: 'sys', diff: 'DIFF', intent });
+    expect(assembly.intent).toContain('## Declared PR intent & scope');
+    expect(assembly.intent).toContain('<untrusted source="derived-intent">');
+    expect(assembly.intent).toContain('Intent: Add rate limiting to public endpoints');
+
+    expect(assemblePrompt({ system: 'sys', diff: 'DIFF' }).assembly.intent ?? null).toBeNull();
+  });
+
   it('appends the trusted-side SCOPE TAGGING instruction to the system message ONLY when intent is present', () => {
     const withIntent = systemOf({ system: 'AGENT-SYS', diff: 'DIFF', intent });
     expect(withIntent).toContain('SCOPE TAGGING');

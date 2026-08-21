@@ -1,7 +1,8 @@
 # 04 — Intent Layer (L03): PR intent → classify → persist → scoped review
 
-Status: **planned** (2026-08-21). Cross-package (server + client + shared contracts +
-reviewer-core). Gives the reviewer a structured explanation of WHY a PR exists and what is
+Status: **implemented** (2026-08-21; amended per PR review — trace slot, free-function
+deriver, tool-kind executor step; see §13). Cross-package (server + client + shared
+contracts + reviewer-core). Gives the reviewer a structured explanation of WHY a PR exists and what is
 in/out of its scope: a cheap flash-class model (via OpenRouter) classifies intent from PR
 metadata + linked sources, the intent is persisted per PR, injected into the reviewer
 prompt, out-of-scope findings are filtered (one severe signal always survives), and an
@@ -62,55 +63,61 @@ rows from applied `0000` survive. Generated via `pnpm db:generate`; applied SQL 
 New repo methods `upsertIntentDetail` / `getIntentDetail` beside the existing pair
 (untouched); row→domain mapping at the repository boundary.
 
-## 4. Server module `modules/intent/`
+## 4. Server: derivation in `modules/reviews/`, thin `modules/intent/` routes
 
-`constants` · `prompts` · `helpers` · `service` · `routes`; registered in
-`modules/index.ts` (comment there already reserves `intent`). Modeled on
-`modules/conventions/` — the existing non-reviewer LLM feature.
+**PR-review amendment:** intent derivation lives in the REVIEWS module as free
+functions (`reviews/intent-deriver.ts`), NOT a service class. `modules/intent/` keeps
+only the HTTP edge (`routes.ts`), registered in `modules/index.ts`. The deriver's pure
+companions sit beside it (`reviews/intent-{prompts,helpers,constants}.ts`) so no
+sibling-module import — and no new `pnpm arch` warning — is introduced. Prompting still
+modeled on `modules/conventions/` — the existing non-reviewer LLM feature.
 
-- `prompts.ts`: module-local `INJECTION_GUARD` + `wrapUntrusted` (conventions precedent).
+- `intent-prompts.ts`: module-local `INJECTION_GUARD` + `wrapUntrusted` (conventions precedent).
   Every author-controlled block (PR body, issue text, doc excerpts) is untrusted-wrapped.
   File list rendered as `path` + `@@ -a,b +c,d @@` hunk headers only — **diff bodies are
   never sent to the classifier**.
-- `helpers.ts` (pure): `extractIssueRef` (closes/fixes/resolves #N), `extractRepoDocPaths`
+- `intent-helpers.ts` (pure): `extractIssueRef` (closes/fixes/resolves #N), `extractRepoDocPaths`
   (repo-relative `specs/*.md` / `docs/*.md` mentions), `extractExternalUrls`,
   `hunkHeadersFromPatch` (empty patch → path only), `computeConfidence`, `toIntentDetail`
   (`stale = row.head_sha !== pull.headSha`).
 - **Confidence is deterministic in code, never model-self-reported**: `low` when
   (body empty AND no source fetched) OR any referenced source is `unavailable`; else `high`.
-- `service.ts`: `IntentService` with an **explicit deps object** built in the container
-  (`{ reviewRepo, github, git, llm, resolveModel }` — not `constructor(container)`; no new
-  arch-backlog entries). Methods:
-  - `get(workspaceId, prId)` → `IntentDetail | null`
-  - `classify(workspaceId, prId)` — gather sources (body → `fetched` when non-empty;
-    linked issue via `getIssue`, failure ⇒ `unavailable`; repo docs via `git.readFile`,
-    throw ⇒ `unavailable`; external URLs ⇒ `unavailable`, v1 locked decision); one
-    `completeStructured({ schema: IntentClassification, schemaName: 'IntentClassification',
-    model })` with `resolveFeatureModel(ws, 'review_intent')`; compute confidence; upsert
-    with `head_sha`, tokens, cost from `StructuredResult`.
-  - `getOrClassifyFresh(workspaceId, pull)` — stored intent with matching `head_sha` →
-    return; else classify inline (persisting).
+- `intent-deriver.ts`: FREE FUNCTIONS taking an **explicit deps object** as the first
+  argument (`IntentDeriverDeps = { repo, github, git, llm, resolveModel }` — never the
+  `Container`; no new arch-backlog entries):
+  - `getIntent(deps, workspaceId, prId)` → `IntentDetail | null`
+  - `deriveIntent(deps, workspaceId, prId, logger?)` — gather sources (body → `fetched`
+    when non-empty; linked issue via `getIssue`, failure ⇒ `unavailable`; repo docs via
+    `git.readFile`, throw ⇒ `unavailable`; external URLs ⇒ `unavailable`, v1 locked
+    decision); one `completeStructured({ schema: IntentClassification, schemaName:
+    'IntentClassification', model })` with `resolveFeatureModel(ws, 'review_intent')`;
+    compute confidence; upsert with `head_sha`, tokens, cost from `StructuredResult`.
+  - `getOrDeriveIntentFresh(deps, workspaceId, pull, logger?)` — stored intent with
+    matching `head_sha` → return; else derive inline (persisting).
 - `routes.ts` (thin, `ZodTypeProvider`, tenancy via `getContext`):
   - `GET /pulls/:id/intent` → `IntentDetail`; 404 when none (client 4xx-silent convention).
   - `POST /pulls/:id/intent` → synchronous re/classification (one cheap LLM call —
     conventions sync-POST precedent).
-- Container: lazy getter `container.intentService` (repoIntel-facade precedent); routes and
-  the reviews executor both consume it — no sibling module imports.
+- Container: lazy getter `container.intent` = `createIntentDeriver(deps)` — the free
+  functions bound over one deps object in the composition root; routes and the reviews
+  executor both consume the binding — no sibling module imports.
 
 ## 5. Review-pipeline integration
 
 - **Executor** (`run-executor.ts`): after the diff step, best-effort
-  `runLog.step('Resolving PR intent', () => intentService.getOrClassifyFresh(...))` in
-  try/catch — **intent failure never fails a review** (degrades to today's no-intent
-  behavior). Resolved model + confidence + source statuses go to the run log (no bodies).
+  `runLog.step('Resolving PR intent', () => container.intent.getOrDeriveFresh(...),
+  { kind: 'tool' })` in try/catch — tool-kind so the Live Log highlights the step amber
+  (PR-review amendment); **intent failure never fails a review** (degrades to today's
+  no-intent behavior). Resolved model + confidence + source statuses go to the run log (no bodies).
   Passed to `reviewPullRequest` via the `...(intent ? { intent: {...} } : {})` idiom.
 - **reviewer-core prompt** (`prompt.ts`): new optional `intent` in `PromptParts` +
   `ReviewInput`; section `## Declared PR intent & scope` rendered inside
   `wrapUntrusted('derived-intent', …)` before the PR description; a **trusted-side**
   instruction (outside untrusted blocks) tells the model to tag each finding
   `scope: 'in' | 'out'` and restates that scope never waives severity.
-  `PromptAssembly` (`trace.ts`) is deliberately NOT extended — the section is visible
-  inside `assembly.user`.
+  `PromptAssembly` (`trace.ts`) gains an additive `intent: z.string().nullish()` slot
+  (PR-review amendment, both vendored copies in lockstep): `assemblePrompt` records the
+  exact rendered intent block in the run trace; `null` when no intent was derived.
 - **reviewer-core output**: with intent present, `completeStructured<ScopedReview>` keeping
   `schemaName: 'Review'` (mock fixtures keyed on `'Review'` keep working). Without intent,
   behavior is byte-identical to today.
@@ -170,7 +177,7 @@ live re-classification on seed data degrades to title/body/paths by design.
 
 ## 10. Tests
 
-- Server hermetic `test/intent-service.test.ts`: `MockLLMProvider` with
+- Server hermetic `test/intent-deriver.test.ts`: `MockLLMProvider` with
   `structuredBySchema.IntentClassification`; empty body → `low` confidence; missing repo
   doc (fake GitClient that THROWS — the shared mock returns `''`) → `unavailable` + low;
   linked issue fetched → `fetched` + high; external URL → `unavailable`, never fabricated;
@@ -182,7 +189,8 @@ live re-classification on seed data degrades to title/body/paths by design.
 - reviewer-core `test/scope.test.ts`: all-in-scope unchanged; non-critical out dropped
   with reasons; multiple CRITICAL out → exactly one kept (correct pick, rationale marker,
   `scope` stripped); plus `run.test.ts` (score recomputed post-scope; no-intent path
-  byte-identical) and `prompt.test.ts` (intent section wrapped, guard intact).
+  byte-identical) and `prompt.test.ts` (intent section wrapped, guard intact, rendered
+  block recorded in `assembly.intent` / null when absent).
 - Client `IntentCard.test.tsx`: populated card (summary/columns/chips); empty → CTA →
   POST → renders result; low-confidence + stale badges + recompute flow.
 - Contracts: parse fixtures for `IntentDetail`/`ScopedReview` in `contracts.test.ts`;
@@ -198,7 +206,8 @@ live re-classification on seed data degrades to title/body/paths by design.
 - **SSRF**: zero arbitrary HTTP in v1 (locked decision) — only Octokit + repo-local
   `git.readFile`.
 - **Frozen-contract lockstep**: new shapes only in the new file, vendored ×2, verified by
-  `diff -r` on touched contract files; `trace.ts` untouched.
+  `diff -r` on touched contract files; `trace.ts` extended ADDITIVELY only (`intent`
+  `.nullish()` slot, both copies in lockstep — old traces still parse).
 - **Executor coupling**: intent is best-effort shared pre-work; failures degrade cleanly.
 - **Env gotchas** (INSIGHTS): `npm ci` in `reviewer-core/` before any server step loading
   it; `npx pnpm@11` for adds inside `server/`; `pnpm arch` Node version constraint.
@@ -212,7 +221,8 @@ live re-classification on seed data degrades to title/body/paths by design.
 5. `cd client && pnpm typecheck && pnpm test`
 6. Manual: `./scripts/dev.sh` → PR #482 Overview shows seeded IntentCard above
    Description; POST re-classify with an OpenRouter key; run a review → "Resolving PR
-   intent" step + scope-drop events in the Live Log.
+   intent" step (tool-kind → amber) + scope-drop events in the Live Log; the run trace's
+   prompt assembly carries the intent block.
 7. `diff -r` the touched files under `server/src/vendor/shared` vs
    `client/src/vendor/shared` — byte-identical.
 
@@ -225,7 +235,8 @@ live re-classification on seed data degrades to title/body/paths by design.
 | Scope judgment | reviewer model tags per-finding `scope` (extended output schema) | path-matching vs free-text `in_scope[]` — rejected (unreliable) |
 | Classification execution | sync POST (one cheap LLM call) | job + 202 + poll |
 | Staleness | `head_sha` compare + always-available manual recompute | auto re-classify on sync |
-| Trace slot | none — intent visible inside `assembly.user` | `PromptAssembly.intent` (needs contracts-owner call) |
+| Trace slot | `PromptAssembly.intent` — additive `.nullish()` slot (contracts-owner call made in PR review) | none / `assembly.user`-only (original plan) |
+| Derivation shape | free `deriveIntent()` in `reviews/intent-deriver.ts`, container binds via `createIntentDeriver` (PR review) | `IntentService` class in `modules/intent/` (original plan) |
 | Model routing | `resolveFeatureModel('review_intent')` | unused `model-router.ts` — deliberately ignored |
 
 ## 14. Out of scope / follow-ups
