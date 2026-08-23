@@ -1,0 +1,25 @@
+{
+  "name": "@devdigest/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local stdio MCP server for Claude Code — thin HTTP proxy to the DevDigest API at :3001.",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "inspect": "cd .. && mcp-inspector --web --config .mcp.json",
+    "inspect:cli": "cd .. && mcp-inspector --cli --config .mcp.json --server devdigest",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/inspector": "^2.3.0",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}
