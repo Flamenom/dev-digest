@@ -24,13 +24,47 @@ interface DiffTabProps {
   reviews?: ReviewRecord[];
   /** Navigate to a finding's card in the Findings tab (Smart order only). */
   onGoToFinding?: (findingId: string) => void;
+  /** Blast-card deep-link: scroll this file (and line, when in the patch) into
+   *  view once after render, in either mode, then report consumption. */
+  fileTarget?: { file: string; line?: number } | null;
+  onFileTargetConsumed?: () => void;
 }
 
-export function DiffTab({ prId, filesCount, files, canComment, reviews, onGoToFinding }: DiffTabProps) {
+export function DiffTab({
+  prId,
+  filesCount,
+  files,
+  canComment,
+  reviews,
+  onGoToFinding,
+  fileTarget,
+  onFileTargetConsumed,
+}: DiffTabProps) {
   const t = useTranslations("prReview");
   // Smart order is the DEFAULT when the tab opens (user-confirmed decision).
   const [mode, setMode] = React.useState<DiffMode>("smart");
   const smart = usePrSmartDiff(prId, mode === "smart");
+  const containerRef = React.useRef<HTMLElement>(null);
+
+  // One-shot scroll to the targeted FileCard (and its exact line when it is in
+  // the rendered patch). Waits for the smart payload in Smart mode; the URL
+  // params are cleared after the attempt so the jump never replays.
+  const smartReady = mode !== "smart" || smart.data != null;
+  React.useEffect(() => {
+    if (!fileTarget || !smartReady) return;
+    const root = containerRef.current;
+    if (root) {
+      const card = root.querySelector(`[data-file-path="${CSS.escape(fileTarget.file)}"]`);
+      const lineEl =
+        fileTarget.line != null && card
+          ? card.querySelector(`[data-line-no="${fileTarget.line}"]`)
+          : null;
+      const el = lineEl ?? card;
+      el?.scrollIntoView?.({ behavior: "smooth", block: lineEl ? "center" : "start" });
+    }
+    onFileTargetConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileTarget, smartReady]);
 
   const { data: comments } = usePrComments(prId);
   const create = useCreatePrComment(prId);
@@ -57,7 +91,7 @@ export function DiffTab({ prId, filesCount, files, canComment, reviews, onGoToFi
   };
 
   return (
-    <section>
+    <section ref={containerRef}>
       <SectionLabel
         icon="Code"
         right={
@@ -98,7 +132,7 @@ export function DiffTab({ prId, filesCount, files, canComment, reviews, onGoToFi
 
       {mode === "original" ? (
         // Original order: today's viewer untouched — commenting kept, NO finding overlays.
-        <DiffViewer files={files} commenting={commenting} />
+        <DiffViewer files={files} commenting={commenting} expandedPath={fileTarget?.file ?? null} />
       ) : smart.isLoading ? (
         <Skeleton height={200} />
       ) : smart.isError ? (
@@ -113,6 +147,7 @@ export function DiffTab({ prId, filesCount, files, canComment, reviews, onGoToFi
           files={files}
           reviews={reviews ?? []}
           onFindingClick={onGoToFinding}
+          expandedPath={fileTarget?.file ?? null}
         />
       ) : null}
     </section>

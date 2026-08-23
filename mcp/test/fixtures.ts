@@ -4,6 +4,7 @@
 
 import type {
   AgentListItem,
+  BlastResponse,
   Convention,
   ConventionListResponse,
   PrMeta,
@@ -159,6 +160,33 @@ export function makeConvention(overrides: Partial<Convention> = {}): Convention 
     ...overrides,
   };
 }
+
+export const BLAST_RESPONSE: BlastResponse = {
+  status: 'ok',
+  reason: null,
+  counts: { symbols: 1, callers: 1, endpoints: 1, crons: 0 },
+  symbols: [
+    {
+      symbol: { name: 'roundCents', file: 'src/pay.ts', kind: 'function' },
+      callers: [
+        { file: 'src/routes/checkout.ts', line: 42, symbol: 'checkoutHandler', rank: 0.7 },
+      ],
+      endpoints_affected: ['POST /checkout'],
+      crons_affected: [],
+    },
+  ],
+  endpoints: [{ endpoint: 'POST /checkout', file: 'src/routes/checkout.ts', depth: 1 }],
+  prior_prs: [
+    {
+      number: 471,
+      title: 'Refactor payment rounding',
+      author: 'dev',
+      status: 'merged',
+      files_overlap: ['src/pay.ts'],
+    },
+  ],
+  summary: null,
+};
 
 export const CONVENTIONS_RESPONSE: ConventionListResponse = {
   conventions: [makeConvention()],

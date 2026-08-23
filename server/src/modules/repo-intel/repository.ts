@@ -13,7 +13,7 @@
  * raw-SQL probes below MUST swallow `undefined_table` (Postgres 42P01) so the
  * facade keeps returning degraded — never throws.
  */
-import { and, asc, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import * as t from '../../db/schema.js';
 import { clampIndexedName } from '../../db/schema/context.js';
@@ -428,6 +428,18 @@ export class RepoIntelRepository {
   // T3 — reads (facade + repo-map).
   // -------------------------------------------------------------------------
 
+  /**
+   * Reverse edges: who imports any of `toFiles`? One indexed lookup
+   * (`file_edges_repo_to_idx` on (repo_id, to_file)) per BFS level.
+   */
+  async getReverseEdges(repoId: string, toFiles: string[]): Promise<IndexerEdgeRow[]> {
+    if (toFiles.length === 0) return [];
+    return this.db
+      .select({ fromFile: t.fileEdges.fromFile, toFile: t.fileEdges.toFile })
+      .from(t.fileEdges)
+      .where(and(eq(t.fileEdges.repoId, repoId), inArray(t.fileEdges.toFile, toFiles)));
+  }
+
   /** All import edges for a repo (rank graph build + critical-paths). */
   async getEdges(repoId: string): Promise<IndexerEdgeRow[]> {
     return this.db
@@ -526,6 +538,9 @@ export class RepoIntelRepository {
           eq(t.references.repoId, repoId),
           inArray(t.references.declFile, declFiles),
           inArray(t.references.toSymbol, names),
+          // A reference inside the declaring file is not a caller (matches the
+          // ripgrep path's fromPath !== decl exclusion).
+          ne(t.references.fromPath, t.references.declFile),
         ),
       );
   }

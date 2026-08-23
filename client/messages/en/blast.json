@@ -1,4 +1,5 @@
 {
+  "title": "Blast Radius",
   "stat": {
     "symbols": "symbols",
     "callers": "callers",
@@ -9,10 +10,29 @@
     "tree": "tree",
     "graph": "graph"
   },
+  "viewToggle": "Blast radius view",
   "callerCount": "{count} callers",
+  "silentSymbols": "{count, plural, one {# symbol} other {# symbols}} with no external callers",
   "noDownstream": "{count} changed symbol(s), no downstream callers found.",
   "graph": {
     "empty": "No downstream callers to graph.",
     "ariaLabel": "Blast radius graph"
+  },
+  "columns": {
+    "symbols": "Changed symbols",
+    "callers": "Caller files",
+    "impact": "Endpoints / crons"
+  },
+  "indirect": "via imports:",
+  "empty": "No symbols declared in changed files.",
+  "unavailable": "Blast radius is not available for this PR.",
+  "banner": {
+    "partial": "Partial index — results may be incomplete.",
+    "degraded": "Blast radius unavailable.",
+    "degradedHint": "Index the repository (repo-intel) to compute the blast radius."
+  },
+  "priorPrs": {
+    "title": "Prior PRs touching these files",
+    "overlap": "{count} shared files"
   }
 }

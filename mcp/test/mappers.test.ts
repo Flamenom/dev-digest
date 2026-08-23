@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   AgentsOutput,
+  BlastRadiusOutput,
   ConventionsOutput,
   FindingsOutput,
   RunOutput,
   mapAgents,
+  mapBlast,
   mapConventions,
   mapFindings,
   mapRunDone,
@@ -12,6 +14,7 @@ import {
 import {
   AGENT,
   AGENT_2,
+  BLAST_RESPONSE,
   CONVENTIONS_RESPONSE,
   makeConvention,
   makeFinding,
@@ -137,6 +140,69 @@ describe('mapRunDone', () => {
     expect(out.findings[0]!.severity).toBe('CRITICAL'); // sorted before slicing
     expect(out.findings[0]!.rationale).toBeUndefined(); // concise
     expect(out.truncated).toBe(true);
+  });
+});
+
+describe('mapBlast — edge cases (the happy path lives in server.test.ts)', () => {
+  it('caps caller strings at 10 per symbol, keeping order, and reports callers_total', () => {
+    const callers = Array.from({ length: 14 }, (_, i) => ({
+      file: `src/c${i}.ts`,
+      line: i + 1,
+      symbol: `fn${i}`,
+      rank: 14 - i, // already rank-desc from the server
+    }));
+    const resp = {
+      ...BLAST_RESPONSE,
+      symbols: [{ ...BLAST_RESPONSE.symbols[0]!, callers }],
+    };
+
+    const out = mapBlast('acme/payments-api', 482, resp);
+    expect(BlastRadiusOutput.parse(out)).toEqual(out);
+    expect(out.symbols[0]!.callers).toHaveLength(10);
+    expect(out.symbols[0]!.callers_total).toBe(14);
+    // Order preserved (server sends rank-desc) + "file:line (caller)" format.
+    expect(out.symbols[0]!.callers[0]).toBe('src/c0.ts:1 (fn0)');
+    expect(out.symbols[0]!.callers[9]).toBe('src/c9.ts:10 (fn9)');
+  });
+
+  it('dedups the endpoint union across files and depths', () => {
+    const resp = {
+      ...BLAST_RESPONSE,
+      endpoints: [
+        { endpoint: 'GET /x', file: 'src/a.ts', depth: 1 },
+        { endpoint: 'GET /x', file: 'src/b.ts', depth: 2 }, // same route, other file
+        { endpoint: 'POST /y', file: 'src/a.ts', depth: 1 },
+      ],
+    };
+    const out = mapBlast('acme/payments-api', 482, resp);
+    expect(out.endpoints).toEqual(['GET /x', 'POST /y']);
+  });
+
+  it.each(['degraded', 'partial', 'empty'] as const)(
+    '%s is a NORMAL result: status + reason mapped, output still conforms',
+    (status) => {
+      const resp = {
+        ...BLAST_RESPONSE,
+        status,
+        reason: `the index says ${status}.`,
+        counts: { symbols: 0, callers: 0, endpoints: 0, crons: 0 },
+        symbols: [],
+        endpoints: [],
+        prior_prs: [],
+      };
+      const out = mapBlast('acme/payments-api', 482, resp);
+      expect(BlastRadiusOutput.parse(out)).toEqual(out);
+      expect(out.status).toBe(status);
+      expect(out.reason).toBe(`the index says ${status}.`);
+      expect(out.symbols).toEqual([]);
+      expect(out.endpoints).toEqual([]);
+    },
+  );
+
+  it('nullish reason maps to undefined (kept out of the payload)', () => {
+    const out = mapBlast('acme/payments-api', 482, { ...BLAST_RESPONSE, reason: null });
+    expect(out.reason).toBeUndefined();
+    expect(BlastRadiusOutput.parse(out)).toEqual(out);
   });
 });
 

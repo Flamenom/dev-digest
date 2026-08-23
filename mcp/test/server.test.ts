@@ -6,9 +6,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { DevDigestApi } from '../src/api.js';
-import { AgentsOutput } from '../src/mappers.js';
+import { AgentsOutput, BlastRadiusOutput } from '../src/mappers.js';
 import { buildServer } from '../src/server.js';
-import { AGENT, AGENT_2, REPO, downApi, fakeApi } from './fixtures.js';
+import { AGENT, AGENT_2, BLAST_RESPONSE, PULL, REPO, downApi, fakeApi } from './fixtures.js';
 
 async function connect(api: DevDigestApi): Promise<Client> {
   const server = buildServer(api);
@@ -84,19 +84,58 @@ describe('devdigest MCP server', () => {
     );
   });
 
-  it('devdigest_get_blast_radius returns a non-error not_implemented stub', async () => {
-    const client = await connect(fakeApi({}));
+  it('devdigest_get_blast_radius resolves repo+PR and returns the mapped blast', async () => {
+    const client = await connect(
+      fakeApi({
+        '/repos': [REPO],
+        [`/repos/${REPO.id}/pulls`]: [PULL],
+        [`/pulls/${PULL.id}/blast`]: BLAST_RESPONSE,
+      }),
+    );
     const result = (await client.callTool({
       name: 'devdigest_get_blast_radius',
       arguments: { repo: 'acme/payments-api', pr: 482 },
     })) as CallToolResult;
 
     expect(result.isError).toBeFalsy();
-    expect(result.structuredContent).toEqual({
-      status: 'not_implemented',
-      message:
-        'Blast radius analysis is not implemented yet. Use devdigest_get_findings for per-file review findings.',
-    });
+    const parsed = BlastRadiusOutput.parse(result.structuredContent);
+    expect(parsed.repo).toBe(REPO.full_name);
+    expect(parsed.pr_number).toBe(482);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.counts.symbols).toBe(1);
+    expect(parsed.symbols[0]?.callers).toEqual(['src/routes/checkout.ts:42 (checkoutHandler)']);
+    expect(parsed.endpoints).toEqual(['POST /checkout']);
+    expect(textOf(result)).toBe(JSON.stringify(result.structuredContent));
+  });
+
+  it('devdigest_get_blast_radius degraded blast → NORMAL result (not isError), reason carried', async () => {
+    const client = await connect(
+      fakeApi({
+        '/repos': [REPO],
+        [`/repos/${REPO.id}/pulls`]: [PULL],
+        [`/pulls/${PULL.id}/blast`]: {
+          ...BLAST_RESPONSE,
+          status: 'degraded',
+          reason: 'the repository index is not built yet — index the repository first.',
+          counts: { symbols: 0, callers: 0, endpoints: 0, crons: 0 },
+          symbols: [],
+          endpoints: [],
+          prior_prs: [],
+        },
+      }),
+    );
+    const result = (await client.callTool({
+      name: 'devdigest_get_blast_radius',
+      arguments: { repo: 'acme/payments-api', pr: 482 },
+    })) as CallToolResult;
+
+    // degraded/partial explain themselves via `reason` — never an MCP error.
+    expect(result.isError).toBeFalsy();
+    const parsed = BlastRadiusOutput.parse(result.structuredContent);
+    expect(parsed.status).toBe('degraded');
+    expect(parsed.reason).toMatch(/index the repository first/);
+    expect(parsed.counts).toEqual({ symbols: 0, callers: 0, endpoints: 0, crons: 0 });
+    expect(parsed.symbols).toEqual([]);
   });
 
   it('API down (ECONNREFUSED) → dev.sh guidance from every tool', async () => {

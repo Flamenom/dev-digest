@@ -39,6 +39,7 @@ import type {
   RefRow,
   RepoIntel,
   RepoMapResult,
+  ReverseDependentRow,
   SignatureRow,
   SymbolRow,
 } from './types.js';
@@ -217,7 +218,11 @@ export class RepoIntelService implements RepoIntel {
    * every caller gets `rank: 0` and HTTP impact is detected by re-reading the
    * clone (not the index). T2 promotes this path to the persistent layer.
    */
-  async getBlastRadius(repoId: string, changedFiles: string[]): Promise<BlastResult> {
+  async getBlastRadius(
+    repoId: string,
+    changedFiles: string[],
+    opts?: { persistentOnly?: boolean },
+  ): Promise<BlastResult> {
     // T3: serve from the persistent index when it's built. Falls through to the
     // ripgrep best-effort below when the flag is off / index is absent.
     if (this.container.config.repoIntelEnabled && changedFiles.length > 0) {
@@ -232,6 +237,10 @@ export class RepoIntelService implements RepoIntel {
       degraded: true,
       reason: 'no_data',
     };
+
+    // persistentOnly callers (blast requests) never pay for the clone-parsing
+    // fallback — a usable persistent index or nothing.
+    if (opts?.persistentOnly) return empty;
 
     const repo = await this.repo.getRepoBasics(repoId);
     if (!repo || !repo.clonePath || changedFiles.length === 0) return empty;
@@ -371,6 +380,19 @@ export class RepoIntelService implements RepoIntel {
     }
     callers.sort((a, b) => b.rank - a.rank);
 
+    // Cap PER changed symbol (the constant's contract): the list is already
+    // rank-desc, so keeping the first N per viaSymbol keeps each group's
+    // highest-ranked callers. A global slice here used to starve every symbol
+    // after the first when one symbol had a large fan-out.
+    const perSymbolCount = new Map<string, number>();
+    const cappedCallers: BlastCallerRow[] = [];
+    for (const c of callers) {
+      const n = perSymbolCount.get(c.viaSymbol) ?? 0;
+      if (n >= MAX_CALLERS_PER_SYMBOL) continue;
+      perSymbolCount.set(c.viaSymbol, n + 1);
+      cappedCallers.push(c);
+    }
+
     // Precomputed facts per caller file (endpoints + crons), so consumers can
     // attribute them to the changed symbol whose callers live in that file.
     const facts = await this.repo.getFileFacts(repoId, callerFiles);
@@ -383,11 +405,55 @@ export class RepoIntelService implements RepoIntel {
 
     return {
       changedSymbols,
-      callers: callers.slice(0, MAX_CALLERS_PER_SYMBOL),
+      callers: cappedCallers,
       impactedEndpoints: [...endpoints],
       factsByFile,
       degraded: false,
     };
+  }
+
+  /**
+   * Reverse-import BFS over the persistent `file_edges` graph: which files
+   * (transitively, up to `maxDepth` hops) import any of `files`, and which of
+   * them expose endpoints/crons (`file_facts`). One indexed query per BFS
+   * level (`file_edges_repo_to_idx`), zero clone parsing. Only files that
+   * carry at least one endpoint/cron are returned (file_facts persists only
+   * non-empty rows anyway). Flag off / empty input → `[]` (array convention).
+   */
+  async getReverseDependents(
+    repoId: string,
+    files: string[],
+    maxDepth: number = BFS_DEPTH,
+  ): Promise<ReverseDependentRow[]> {
+    if (!this.container.config.repoIntelEnabled) return [];
+    if (files.length === 0 || maxDepth <= 0) return [];
+
+    // Changed files are excluded from the result by seeding `visited`.
+    const visited = new Set(files);
+    const depthOf = new Map<string, number>();
+    let frontier = files;
+    for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth += 1) {
+      const edges = await this.repo.getReverseEdges(repoId, frontier);
+      const next: string[] = [];
+      for (const e of edges) {
+        if (visited.has(e.fromFile)) continue;
+        visited.add(e.fromFile);
+        depthOf.set(e.fromFile, depth);
+        next.push(e.fromFile);
+      }
+      frontier = next;
+    }
+    if (depthOf.size === 0) return [];
+
+    const facts = await this.repo.getFileFacts(repoId, [...depthOf.keys()]);
+    return facts
+      .filter((f) => f.endpoints.length > 0 || f.crons.length > 0)
+      .map((f) => ({
+        file: f.filePath,
+        depth: depthOf.get(f.filePath) ?? maxDepth,
+        endpoints: f.endpoints,
+        crons: f.crons,
+      }));
   }
 
   /**

@@ -44,8 +44,10 @@ export function CodeLine({
   const showAdd = hover && !!target && !composing;
 
   return (
+    // data-line-no: NEW-side line anchor (DiffTab's fileTarget scroll lookup).
     <div
       style={cs.rowWrap}
+      data-line-no={ln.newNo ?? undefined}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >

@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import type {
   AgentListItem,
+  BlastResponse,
   ConventionListResponse,
   ReviewRecord,
   RunSummary,
@@ -296,8 +297,74 @@ export function mapConventions(
 
 // ---------------------------------------------------------- blast radius ----
 
+/** Caller strings kept per symbol — token economy over completeness. */
+const BLAST_CALLERS_LIMIT = 10;
+
+export const BlastSymbolOut = z.object({
+  name: z.string(),
+  file: z.string(),
+  kind: z.string(),
+  /** "file:line (enclosing caller)" — capped at BLAST_CALLERS_LIMIT. */
+  callers: z.array(z.string()),
+  callers_total: z.number().int(),
+  endpoints: z.array(z.string()),
+  crons: z.array(z.string()),
+});
+export type BlastSymbolOut = z.infer<typeof BlastSymbolOut>;
+
+export const BlastPriorPrOut = z.object({
+  number: z.number().int(),
+  title: z.string(),
+  author: z.string(),
+  status: z.string(),
+  files_overlap: z.array(z.string()),
+});
+export type BlastPriorPrOut = z.infer<typeof BlastPriorPrOut>;
+
 export const BlastRadiusOutput = z.object({
-  status: z.literal('not_implemented'),
-  message: z.string(),
+  repo: z.string(),
+  pr_number: z.number().int(),
+  /** degraded/partial/empty are NORMAL results (reason explains), not errors. */
+  status: z.enum(['ok', 'partial', 'degraded', 'empty']),
+  reason: z.string().optional(),
+  counts: z.object({
+    symbols: z.number().int(),
+    callers: z.number().int(),
+    endpoints: z.number().int(),
+    crons: z.number().int(),
+  }),
+  symbols: z.array(BlastSymbolOut),
+  /** "METHOD /path" union (direct callers + reverse imports), deduped. */
+  endpoints: z.array(z.string()),
+  prior_prs: z.array(BlastPriorPrOut),
 });
 export type BlastRadiusOutput = z.infer<typeof BlastRadiusOutput>;
+
+export function mapBlast(repo: string, prNumber: number, resp: BlastResponse): BlastRadiusOutput {
+  return {
+    repo,
+    pr_number: prNumber,
+    status: resp.status,
+    reason: resp.reason ?? undefined,
+    counts: resp.counts,
+    symbols: resp.symbols.map((s) => ({
+      name: s.symbol.name,
+      file: s.symbol.file,
+      kind: s.symbol.kind,
+      callers: s.callers
+        .slice(0, BLAST_CALLERS_LIMIT)
+        .map((c) => `${c.file}:${c.line} (${c.symbol})`),
+      callers_total: s.callers.length,
+      endpoints: s.endpoints_affected,
+      crons: s.crons_affected,
+    })),
+    endpoints: [...new Set(resp.endpoints.map((e) => e.endpoint))],
+    prior_prs: resp.prior_prs.map((p) => ({
+      number: p.number,
+      title: p.title,
+      author: p.author,
+      status: p.status,
+      files_overlap: p.files_overlap,
+    })),
+  };
+}

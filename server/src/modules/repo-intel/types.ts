@@ -121,6 +121,18 @@ export interface FileRankRow {
   percentile: number;
 }
 
+/**
+ * A file that (transitively) imports one of the queried files AND exposes at
+ * least one endpoint/cron (`file_facts`). `depth` = BFS hops from the queried
+ * set (1 = direct importer). Produced by `getReverseDependents`.
+ */
+export interface ReverseDependentRow {
+  file: string;
+  depth: number;
+  endpoints: string[];
+  crons: string[];
+}
+
 export interface RepoMapResult {
   text: string;
   tokens: number;
@@ -144,7 +156,26 @@ export interface RepoIntel {
   getIndexState(repoId: string): Promise<IndexState>;
 
   // --- Reads --------------------------------------------------------------
-  getBlastRadius(repoId: string, changedFiles: string[]): Promise<BlastResult>;
+  /**
+   * `persistentOnly: true` = never fall back to the clone-parsing best-effort
+   * path — return a degraded empty result instead. Blast serves requests with
+   * this so "no AST parsing at request time" holds by construction.
+   */
+  getBlastRadius(
+    repoId: string,
+    changedFiles: string[],
+    opts?: { persistentOnly?: boolean },
+  ): Promise<BlastResult>;
+  /**
+   * Reverse-import BFS over `file_edges`: files that depend on `files` (up to
+   * `maxDepth` hops, default BFS_DEPTH) and expose endpoints/crons. Pure
+   * persistent-index read; flag off / empty input → `[]`.
+   */
+  getReverseDependents(
+    repoId: string,
+    files: string[],
+    maxDepth?: number,
+  ): Promise<ReverseDependentRow[]>;
   getRepoMap(repoId: string, tokenBudget?: number): Promise<RepoMapResult>;
   getFileRank(repoId: string, paths: string[]): Promise<FileRankRow[]>;
   getSymbolsInFiles(repoId: string, paths: string[]): Promise<SymbolRow[]>;

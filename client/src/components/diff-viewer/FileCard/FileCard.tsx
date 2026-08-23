@@ -75,7 +75,8 @@ export function FileCard({
     : 0;
 
   return (
-    <div style={s.fileCard}>
+    // data-file-path: deep-link anchor (DiffTab's fileTarget scroll lookup).
+    <div style={s.fileCard} data-file-path={file.path}>
       <div
         onClick={() => setOpen((o) => !o)}
         style={highlightLarge ? { ...s.fileHeader, ...fileHeaderLarge } : s.fileHeader}
