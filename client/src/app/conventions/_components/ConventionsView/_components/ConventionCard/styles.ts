@@ -1,8 +1,9 @@
 import type { CSSProperties } from "react";
 
 export const s = {
-  // All-longhand borders (never mix the `border` shorthand with borderLeft —
-  // React warns about shorthand + non-shorthand on the same rerender).
+  // All-longhand borders per side (`borderColor`/`borderWidth` are shorthands
+  // too — React warns when a shorthand and a longhand like `borderLeftColor`
+  // update on the same rerender).
   card: (accepted: boolean, rejected: boolean): CSSProperties => ({
     display: "flex",
     alignItems: "flex-start",
@@ -10,8 +11,12 @@ export const s = {
     padding: "16px 18px",
     borderRadius: 10,
     borderStyle: "solid",
-    borderWidth: 1,
-    borderColor: "var(--border)",
+    borderTopWidth: 1,
+    borderRightWidth: 1,
+    borderBottomWidth: 1,
+    borderTopColor: "var(--border)",
+    borderRightColor: "var(--border)",
+    borderBottomColor: "var(--border)",
     borderLeftWidth: 3,
     borderLeftColor: accepted ? "var(--ok)" : rejected ? "var(--failed)" : "var(--border-strong)",
     background: "var(--bg-elevated)",

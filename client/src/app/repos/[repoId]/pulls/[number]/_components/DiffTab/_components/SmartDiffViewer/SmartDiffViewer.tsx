@@ -28,12 +28,15 @@ function SmartFileCard({
   lineFindings,
   findingsCount,
   onFindingClick,
+  forceOpen,
 }: {
   file: SmartDiffFile;
   prFile: PrFile | undefined;
   lineFindings: Map<number, LineFinding> | undefined;
   findingsCount: number;
   onFindingClick?: (findingId: string) => void;
+  /** Deep-link target — mount this card open regardless of findings. */
+  forceOpen?: boolean;
 }) {
   const t = useTranslations("prReview");
   const changedLines = file.additions + file.deletions;
@@ -49,7 +52,7 @@ function SmartFileCard({
           patch: null,
         }
       }
-      defaultOpen={hasFindings}
+      defaultOpen={hasFindings || !!forceOpen}
       lineFindings={lineFindings}
       onFindingClick={onFindingClick}
       highlightLarge={isLarge}
@@ -76,17 +79,22 @@ function GroupSection({
   lineFindings,
   findingCounts,
   onFindingClick,
+  expandedPath,
 }: {
   group: SmartDiffGroup;
   fileByPath: Map<string, PrFile>;
   lineFindings: Map<string, Map<number, LineFinding>>;
   findingCounts: Map<string, number>;
   onFindingClick?: (findingId: string) => void;
+  expandedPath?: string | null;
 }) {
   const t = useTranslations("prReview");
   const meta = GROUP_META[group.role];
+  const containsTarget =
+    expandedPath != null && group.files.some((f) => f.path === expandedPath);
   // Boilerplate is ALWAYS collapsed by default; Core + Wiring start expanded.
-  const [open, setOpen] = React.useState(meta.defaultOpen);
+  // A deep-link target inside a collapsed section forces it open on mount.
+  const [open, setOpen] = React.useState(meta.defaultOpen || containsTarget);
   return (
     <section style={s.section}>
       <div
@@ -118,6 +126,7 @@ function GroupSection({
                 lineFindings={lineFindings.get(f.path)}
                 findingsCount={count}
                 onFindingClick={onFindingClick}
+                forceOpen={expandedPath === f.path}
               />
             );
           })}
@@ -132,6 +141,7 @@ export function SmartDiffViewer({
   files,
   reviews,
   onFindingClick,
+  expandedPath,
 }: {
   smartDiff: SmartDiffResponse;
   /** The PR's files (already loaded on the page) — source of the patch text. */
@@ -139,6 +149,8 @@ export function SmartDiffViewer({
   /** The PR's reviews (already loaded on the page) — severity join source. */
   reviews: ReviewRecord[];
   onFindingClick?: (findingId: string) => void;
+  /** Deep-link target file — its section and card mount open. */
+  expandedPath?: string | null;
 }) {
   const t = useTranslations("prReview");
   const tShell = useTranslations("shell");
@@ -199,6 +211,7 @@ export function SmartDiffViewer({
           lineFindings={lineFindings}
           findingCounts={findingCounts}
           onFindingClick={onFindingClick}
+          expandedPath={expandedPath}
         />
       ))}
     </div>

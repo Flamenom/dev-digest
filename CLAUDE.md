@@ -1,6 +1,6 @@
 # DevDigest — project map for agents
 
-Local-first AI pull-request review (course starter). 4 packages, **not** a
+Local-first AI pull-request review (course starter). 5 packages, **not** a
 monorepo workspace: each has its own package.json + lockfile; cross-package code
 is shared via **tsconfig path aliases**, not npm.
 
@@ -10,6 +10,7 @@ is shared via **tsconfig path aliases**, not npm.
 - client `@devdigest/web` :3000 — Next.js 15 · React 19 · TanStack Query 5 · next-intl · Tailwind v4
 - reviewer-core `@devdigest/reviewer-core` — pure TS review engine (no JS emit; build = typecheck)
 - e2e `@devdigest/e2e` — deterministic browser e2e (agent-browser; no LLM)
+- mcp `@devdigest/mcp` — local stdio MCP server for Claude Code (5 tools, thin HTTP proxy to :3001)
 - shared `@devdigest/shared` — Zod contracts, **vendored** at `server/src/vendor/shared`
 
 ## Commands
@@ -24,6 +25,7 @@ is shared via **tsconfig path aliases**, not npm.
 - codebase indexer → `server/src/modules/repo-intel/`
 - review engine → `reviewer-core/src/` (entry `review/run.ts`)
 - UI routes → `client/src/app/`; API layer → `client/src/lib/{api.ts,hooks}`
+- MCP tools → `mcp/src/tools/`; registered in `.mcp.json` at repo root (needs one-time `pnpm install` in `mcp/`); debug UI: `cd mcp && pnpm inspect` (MCP Inspector, reuses root `.mcp.json`)
 
 ## Non-default conventions (won't guess from code)
 - `@devdigest/shared` is vendored, not installed; client keeps its OWN copy; reviewer-core reads server's copy.

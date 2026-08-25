@@ -30,6 +30,8 @@ import type { RepoIntel } from '../modules/repo-intel/types.js';
 import { RepoIntelService } from '../modules/repo-intel/service.js';
 import { createIntentDeriver, type IntentDeriver } from '../modules/reviews/intent-deriver.js';
 import { SmartDiffService } from '../modules/smart-diff/service.js';
+import { BlastService } from '../modules/blast/service.js';
+import { BlastRepository } from '../modules/blast/repository.js';
 import { resolveFeatureModel } from '../modules/settings/feature-models.js';
 import { type DepGraph, DepCruiseGraph } from '../adapters/depgraph/index.js';
 import { type Tokenizer, TiktokenTokenizer } from '../adapters/tokenizer/index.js';
@@ -52,6 +54,8 @@ export interface ContainerOverrides {
   llm?: Partial<Record<'openai' | 'anthropic' | 'openrouter', LLMProvider>>;
   /** repo-intel facade (T1.1+) — tests inject mock RepoIntel implementations. */
   repoIntel?: RepoIntel;
+  /** L04 blast service — tests inject a service over mocked deps. */
+  blastService?: BlastService;
   /** repo-intel T3 adapters — only the indexer pipeline reads these. */
   depgraph?: DepGraph;
   tokenizer?: Tokenizer;
@@ -80,6 +84,7 @@ export class Container {
   private _repoIntel?: RepoIntel;
   private _intent?: IntentDeriver;
   private _smartDiffService?: SmartDiffService;
+  private _blastService?: BlastService;
   private _depgraph?: DepGraph;
   private _tokenizer?: Tokenizer;
   private _priceBook?: PriceBook;
@@ -159,6 +164,23 @@ export class Container {
   get smartDiffService(): SmartDiffService {
     this._smartDiffService ??= new SmartDiffService({ repo: this.reviewRepo });
     return this._smartDiffService;
+  }
+
+  /**
+   * L04 — Blast Radius service (symbols → callers → endpoints/crons, computed
+   * on read from the repo-intel persistent index; no LLM, no persistence).
+   * Explicit deps object; PR data flows through the shared reviewRepo and the
+   * repo-intel facade, never a sibling module's folder.
+   */
+  get blastService(): BlastService {
+    if (this.overrides.blastService) return this.overrides.blastService;
+    this._blastService ??= new BlastService({
+      repoIntelEnabled: this.config.repoIntelEnabled,
+      repoIntel: this.repoIntel,
+      repo: this.reviewRepo,
+      blastRepo: new BlastRepository(this.db),
+    });
+    return this._blastService;
   }
 
   /** Import-graph builder (dependency-cruiser). T3 indexer pipeline only. */

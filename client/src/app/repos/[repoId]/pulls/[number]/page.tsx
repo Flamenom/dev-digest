@@ -19,7 +19,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { usePrReviews, useCancelRun, usePrActiveRuns, usePrRuns, useDeleteRun } from "@/lib/hooks/reviews";
 import { useActiveRepo, useRepoNotFound } from "@/lib/repo-context";
 import { ApiError } from "@/lib/api";
-import { githubPrUrl } from "@/lib/github-urls";
+import { githubBlobUrl, githubPrUrl } from "@/lib/github-urls";
 import type { FindingRecord } from "@devdigest/shared";
 
 export default function PRDetailPage() {
@@ -60,8 +60,16 @@ export default function PRDetailPage() {
   // Both keys must land in ONE URL write (same-tick different-key setters lose
   // the first write — see use-query-param.ts), hence the batched setter.
   const [findingTarget, setFindingTarget] = useQueryParam("finding");
+  // Blast card → Files changed deep-link: ?file=<path>&line=<n> targets one
+  // FileCard (goToFinding mirror; same batched-write requirement).
+  const [fileParam] = useQueryParam("file");
+  const [lineParam] = useQueryParam("line");
   const setParams = useSetQueryParams();
   const goToFinding = (id: string) => setParams({ tab: "findings", finding: id });
+  const fileTarget = fileParam
+    ? { file: fileParam, line: lineParam ? Number(lineParam) : undefined }
+    : null;
+  const clearFileTarget = () => setParams({ file: null, line: null });
 
   // Reviews come newest-first; each is its own run (grouped into accordions).
   // Derived during render, not memoized: flattening a handful of reviews is not
@@ -116,6 +124,17 @@ export default function PRDetailPage() {
     );
   }
 
+  // Blast file:line click: in-app when the file is part of this PR's diff,
+  // otherwise a GitHub blob link pinned to the head SHA (new tab).
+  const goToFile = (file: string, line?: number) => {
+    const inDiff = pr.files.some((f) => f.path === file);
+    if (inDiff) {
+      setParams({ tab: "diff", file, line: line != null ? String(line) : null });
+    } else if (repoFullName) {
+      window.open(githubBlobUrl(repoFullName, pr.head_sha, file, line), "_blank", "noopener,noreferrer");
+    }
+  };
+
   return (
     <AppShell crumb={crumb}>
       <PrDetailHeader
@@ -130,7 +149,15 @@ export default function PRDetailPage() {
       />
 
       <div style={{ padding: "24px 32px 44px", display: "flex", flexDirection: "column", gap: 24, maxWidth: 1080, margin: "0 auto" }}>
-        {tab === "overview" && <OverviewTab prBody={pr.body} prId={prId} headSha={pr.head_sha} />}
+        {tab === "overview" && (
+          <OverviewTab
+            prBody={pr.body}
+            prId={prId}
+            headSha={pr.head_sha}
+            repoFullName={repoFullName}
+            onGoToFile={goToFile}
+          />
+        )}
 
         {tab === "findings" && (
           <FindingsTab
@@ -169,6 +196,8 @@ export default function PRDetailPage() {
             canComment={pr.status === "open"}
             reviews={runs}
             onGoToFinding={goToFinding}
+            fileTarget={fileTarget}
+            onFileTargetConsumed={clearFileTarget}
           />
         )}
       </div>
