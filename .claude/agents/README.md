@@ -3,16 +3,32 @@
 Map of the agent set in `.claude/agents/`. Each file is the single source of
 truth for its agent — this README only describes how the set fits together.
 
-Intended chain: **researcher** (facts) → **planner** (plan) → **implementer**
-(code) → **test-writer** ∥ **architecture-reviewer** (independent parallel
-passes: one writes test files, the other reads production code — write zones
-never overlap) → **plan-verifier** (verifies the full picture: code PLUS
-tests) → **doc-writer** (docs) → `pr-self-review` gate. Review passes are
-deliberately NOT part of implementer — each runs in a fresh context.
+Intended chain: **researcher** (facts) → **spec-creator** (WHAT →
+`specs/YYYY-MM-DD-<slug>.md`) → **implementation-planner** (HOW →
+`docs/plans/<slug>.md`) → **implementer** (code) → **test-writer** ∥
+**architecture-reviewer** (independent parallel passes: one writes test files,
+the other reads production code — write zones never overlap) →
+**plan-verifier** (verifies the full picture: code PLUS tests) →
+**doc-writer** (docs) → `pr-self-review` gate. Review passes are deliberately
+NOT part of implementer — each runs in a fresh context.
+
+Spec Driven Development split: spec-creator owns `specs/**` and describes WHAT
+in EARS criteria (`AC-n`), naming no file paths; implementation-planner owns
+`docs/plans/**` and decides HOW, binding every task to the AC-IDs it satisfies.
+Neither writes into the other's zone. The planner refuses a spec that is not
+`Status: approved`, and ends every plan by asking whether to run it as a
+single-agent pass or in multi-agent mode.
+
+Write zones are disjoint by design: `specs/**` (spec-creator) ·
+`docs/plans/**` (implementation-planner) · source (implementer) · test files
+(test-writer) · `docs/**` + READMEs (doc-writer). Nothing else writes.
 
 ```mermaid
 flowchart LR
-  R["researcher"] --> P["planner"] --> I["implementer"]
+  R["researcher"] --> S["spec-creator<br/>specs/NN-slug.md"]
+  S -- "approved" --> P["implementation-planner<br/>docs/plans/NN-slug.md"]
+  P -. "mode?" .-> M{"single-agent or<br/>multi-agent"}
+  M --> I["implementer"]
   I --> T["test-writer"]
   I --> AR["architecture-reviewer"]
   T --> PV["plan-verifier"]
@@ -23,7 +39,8 @@ flowchart LR
 | Agent | Responsibility | Tools | permissionMode | Model |
 | --- | --- | --- | --- | --- |
 | `researcher` | Read-only investigations: repo facts + external docs, with citations | Read, Glob, Grep, Bash, WebFetch, WebSearch | default | `sonnet` (pinned) |
-| `planner` | Structured, skill-aware Development Plans; never implements | Read, Glob, Grep, Bash | `plan` | inherit |
+| `spec-creator` | The spec: EARS criteria in Ukrainian; writes `specs/YYYY-MM-DD-<slug>.md` ONLY; WHAT, never HOW | Read, Edit, Write, Glob, Grep, Bash | default | inherit |
+| `implementation-planner` | Approved spec → `docs/plans/<slug>.md`: every task bound to its AC-IDs; writes plans ONLY, never specs, never code | Read, Write, Edit, Glob, Grep, Bash | default | inherit |
 | `implementer` | Executes an approved plan (frontend + backend); verifies within implementation scope only | Read, Edit, Write, Glob, Grep, Bash, Skill | default | inherit |
 | `test-writer` | Vitest tests: client RTL (colocated) + server (hermetic / `*.it.test.ts` split); test files ONLY | Read, Edit, Write, Glob, Grep, Bash, Skill | default | inherit |
 | `architecture-reviewer` | Read-only onion-boundary review, `pnpm arch` delta, do-not-touch audit; findings only with `file:line` | Read, Glob, Grep, Bash | `plan` | inherit |
@@ -38,14 +55,52 @@ flowchart LR
   a `CLARIFICATION NEEDED` question list. Every claim is cited
   (`file:line` or fetched URL); gaps are stated, never guessed.
 
-## planner
+## spec-creator
 
-- **In:** a feature/task description; optionally a researcher report. Grounds
-  itself in in-scope `INSIGHTS.md`, `specs/*.md`, per-package `CLAUDE.md`.
-- **Out:** a Development Plan (`Result / Context / Scope / Constraints /
-  Tasks / Skills applied / Verification / Out-of-scope · Follow-ups`). Each
-  task names the exact skills implementer will apply, via the skill routing
-  table shared verbatim between both agents.
+- **In:** a feature request + the user's designs (image/PDF paths it reads
+  itself, or transcribed screens). A Figma URL is a pointer, not a source.
+- **Out:** ONE file `specs/YYYY-MM-DD-<slug>.md` — ten fixed sections, Ukrainian body,
+  EARS criteria with uppercase triggers (КОЛИ / ПОКИ / ЯКЩО–ТОДІ / ДЕ) and
+  `повинен (shall)`. Each criterion has a stable `AC-n` ID, never renumbered.
+  Its final message is a report, not the spec.
+- **Boundary:** module names yes; file paths, signatures, endpoints, SQL no.
+  New specs are `Status: draft`; only the user promotes them to `approved`.
+- **Write zone:** `specs/**` only.
+
+## implementation-planner
+
+- **In:** ONE spec with `Status: approved`. `draft` → returns
+  `SPEC NOT APPROVED` and writes nothing; no spec identifiable → `NEED SPEC`.
+  Grounds itself in in-scope `INSIGHTS.md`, adjacent `specs/*.md`, per-package
+  `CLAUDE.md`.
+- **Out:** ONE file `docs/plans/<slug>.md`, mirroring the spec's number and
+  slug (`Plan ID: PLAN-NN`, `Spec:` backlink). Sections: `Result /
+  Criteria audit / Scope / Constraints / Tasks / Coverage / Recommendations /
+  Skills applied / Verification / Out-of-scope · Open questions`. Its final
+  message is a report, not the plan. Plan files predating this workflow are
+  deprecated — it ignores their shape and never edits them.
+- **Not its job:** specifications. `specs/**` is read-only input; it never
+  writes, extends or drafts a spec, and never invents a requirement — missing
+  requirements become questions, and anything that would change WHAT the
+  system does goes to the report as a spec-change proposal for spec-creator.
+- **AC traceability:** every task carries `Covers: AC-n, …` (or
+  `edge: <quote>`, or the rare `— (enables N, M)`), and the mandatory
+  `## Coverage` matrix maps AC → tasks → tests both ways, listing any AC it
+  could not cover and why. The spec's `Untrusted inputs` and
+  `Non-functional requirements` must each land in a task or be listed uncovered.
+- **Gate:** audits every AC as clear / ambiguous / conflicting (and checks the
+  spec's `[reused: …]` claims are real). A blocking ambiguity writes NO file
+  and returns `CLARIFICATION NEEDED` — numbered, each item naming its AC-ID,
+  options and recommended default — instead of a speculative plan.
+- **Tracks:** tasks are grouped into Track A / B / … with disjoint file sets,
+  plus `Depends on`, so parallelism is visible before execution.
+- **Always asks:** which execution mode to use — **single-agent pass** (one
+  implementer, tasks 1..N sequentially) or **multi-agent mode** (independent
+  tracks in parallel, e.g. `implement-coordinator`) — with a recommendation
+  and a one-line reason. It never picks the mode silently.
+- **Recommendations:** better/simpler/cheaper alternatives to the literal
+  reading, marked `recommended` / `optional`; advice only, not tasks until
+  the user accepts them.
 - **Skills:** 10 preloaded via frontmatter (onion-architecture,
   frontend-ui-architecture, next/fastify best practices, drizzle, postgres,
   zod, react best practices, react-testing-library, mermaid-diagram). No
@@ -53,11 +108,11 @@ flowchart LR
 
 ## implementer
 
-- **In:** an approved Development Plan (no plan → stops and asks). Reads the
+- **In:** an approved Implementation Plan (no plan → stops and asks). Reads the
   per-package `CLAUDE.md`/`INSIGHTS.md` of every touched package.
 - **Out:** an Implementation Report (`Result / Changed / Skills applied /
   Verification / Out-of-scope · Follow-ups`); failures reported verbatim.
-- **Skills:** 11 preloaded — planner's set minus mermaid, plus
+- **Skills:** 11 preloaded — implementation-planner's set minus mermaid, plus
   typescript-expert and `security` (secure CODING while writing auth/input/
   endpoint code — not a review pass). Review skills (`security-review`,
   `pr-self-review`, `aif-review`, `code-review`) are explicitly forbidden;
@@ -89,7 +144,7 @@ flowchart LR
 
 ## plan-verifier
 
-- **In:** the approved Development Plan (no plan → stops and asks), optionally
+- **In:** the approved Implementation Plan (no plan → stops and asks), optionally
   the Implementation and Test reports. Runs AFTER test-writer and
   architecture-reviewer, so "covered by tests" items are verified factually.
 - **Out:** a Plan Verification Report (`Overall verdict / plan-item table
@@ -115,12 +170,12 @@ flowchart LR
   flowchart for pipelines, ER for schemas, ≤20 nodes, style matched to
   `docs/architecture.md`.
 
-## Sources for planner/implementer rules
+## Sources for implementation-planner/implementer rules
 
 - [Subagents — Claude Code docs](https://code.claude.com/docs/en/sub-agents) —
   frontmatter schema, description-based delegation ("use proactively"),
   least-privilege tool allowlists, `skills:` preload semantics, and the
-  canonical planner/implementer split (read-only + `permissionMode: plan` vs
+  canonical implementation-planner/implementer split (read-only + `permissionMode: plan` vs
   read + Edit/Write/Bash).
 - [Skills — Claude Code docs](https://code.claude.com/docs/en/skills) —
   how preloaded skills interact with subagent context and the `Skill` tool.

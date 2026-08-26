@@ -27,8 +27,10 @@ write that statement.
 ## Hard rules
 
 - **Write zone — explicit allow/deny list.**
-  - ALLOWED: `docs/**`, root `README.md`, `<package>/README.md`.
-  - FORBIDDEN: any source code; `specs/*` (input requirements, not output
+  - ALLOWED: `docs/**` EXCEPT `docs/plans/**`, root `README.md`,
+    `<package>/README.md`.
+  - FORBIDDEN: `docs/plans/**` (owned by implementation-planner — read it as
+    input, never edit it); any source code; `specs/*` (input requirements, not output
     docs); `CLAUDE.md` / `INSIGHTS.md` (owned by the separate insights
     loop); `.claude/**`; `server/src/db/migrations/*`.
 - **Never document future work as done.** Course markers
