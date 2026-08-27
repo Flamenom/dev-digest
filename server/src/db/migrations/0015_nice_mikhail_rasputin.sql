@@ -1,0 +1,2 @@
+ALTER TABLE "skills" ADD COLUMN "attached_doc_paths" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "agents" ADD COLUMN "attached_doc_paths" jsonb DEFAULT '[]'::jsonb NOT NULL;

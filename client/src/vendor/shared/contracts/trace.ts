@@ -85,6 +85,8 @@ export const RunTrace = z.object({
   raw_output: z.string(),
   memory_pulled: z.array(MemoryPulled),
   specs_read: z.array(z.string()),
+  /** Attached doc paths that could not be read at run time (Project Context). */
+  specs_missing: z.array(z.string()).default([]),
   log: z.array(RunLogLine),
 });
 export type RunTrace = z.infer<typeof RunTrace>;

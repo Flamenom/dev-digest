@@ -1,0 +1,42 @@
+{
+  "page": {
+    "crumb": "Project context",
+    "title": "Project context",
+    "subtitle": "Markdown documents discovered in the repo clone — attach them to agents and skills.",
+    "loadError": "Could not load project context.",
+    "cloneUnavailable": {
+      "title": "Repo clone not available",
+      "body": "Project documents are read from the local repo clone. Sync the repo to make its documents available."
+    },
+    "empty": {
+      "title": "No project documents found",
+      "body": "No markdown files were discovered under specs/, docs/ or insights/ folders in this repo."
+    },
+    "footer": "● {count, plural, one {# document} other {# documents}} · ≈ {tokens} tokens total · refreshed {ago}"
+  },
+  "list": {
+    "caption": "Project context",
+    "reload": "Reload documents",
+    "openLabel": "Open {path}"
+  },
+  "pane": {
+    "usedByAgents": "Used by {count, plural, one {# agent} other {# agents}}"
+  },
+  "drawer": {
+    "previewTab": "Preview",
+    "editTab": "Edit",
+    "editorLabel": "Raw markdown",
+    "save": "Save",
+    "saving": "Saving…",
+    "saveSuccess": "Saved to the repo clone.",
+    "saveFailure": "Save failed — the document was not written.",
+    "resyncWarning": "Resync (git reset --hard) clobbers uncommitted edits to tracked files.",
+    "loadError": "Could not load this document."
+  },
+  "time": {
+    "justNow": "just now",
+    "minutesAgo": "{count}m ago",
+    "hoursAgo": "{count}h ago",
+    "daysAgo": "{count}d ago"
+  }
+}

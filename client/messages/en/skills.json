@@ -104,8 +104,33 @@
   "tabs": {
     "config": "Config",
     "preview": "Preview",
+    "context": "Context",
     "stats": "Stats",
     "versions": "Versions"
+  },
+  "context": {
+    "title": "Project context",
+    "attachedCount": "{count} attached",
+    "inheritanceNote": "Any agent using this skill inherits these documents.",
+    "orderHint": "Drag the ≡ handle or use the arrow buttons to set the injection order.",
+    "searchPlaceholder": "Search documents…",
+    "repoLabel": "Repository",
+    "loadError": "Could not load project documents.",
+    "noReposTitle": "No repositories",
+    "noReposBody": "Add a repository to discover its specs, docs, and insights.",
+    "cloneUnavailableTitle": "Clone not available",
+    "cloneUnavailableBody": "The repository clone is not available yet — documents cannot be discovered.",
+    "emptyTitle": "No documents discovered",
+    "emptyBody": "No markdown files were found under specs/, docs/, or insights/ folders.",
+    "noMatches": "No documents match your search.",
+    "moveUp": "Move {name} up",
+    "moveDown": "Move {name} down",
+    "previewLabel": "Preview {name}",
+    "tokens": "~{count} tokens",
+    "drawerLoadError": "Could not load this document.",
+    "serializesTitle": "Serializes as",
+    "serializesHint": "How this skill contributes its documents to the assembled Project context block.",
+    "serializesEmpty": "No documents attached — this skill contributes nothing to the Project context block."
   },
   "config": {
     "title": "Configuration",

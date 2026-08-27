@@ -31,6 +31,8 @@ export interface BuildTraceInput {
   rawOutput: string;
   memoryPulled: MemoryPulled[];
   specsRead: string[];
+  /** Attached doc paths skipped at injection time (missing/unreadable/guard-refused). */
+  specsMissing?: string[];
   log: RunLogLine[];
 }
 
@@ -50,6 +52,7 @@ export function buildRunTrace(input: BuildTraceInput): RunTrace {
     raw_output: input.rawOutput,
     memory_pulled: input.memoryPulled,
     specs_read: input.specsRead,
+    specs_missing: input.specsMissing ?? [],
     log: input.log,
   };
   // Validate so a malformed trace fails loudly at write-time, not read-time.

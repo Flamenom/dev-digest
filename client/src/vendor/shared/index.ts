@@ -31,4 +31,5 @@ export * from './contracts/agents-list.js';
 export * from './contracts/conventions.js';
 export * from './contracts/intent.js';
 export * from './contracts/blast.js';
+export * from './contracts/project-context.js';
 export * from './adapters.js';

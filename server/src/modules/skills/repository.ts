@@ -129,6 +129,24 @@ export class SkillsRepository {
     return row;
   }
 
+  /**
+   * Replace the ordered attached project-doc paths ONLY (Project Context).
+   * Deliberately NOT routed through `update`: attaching docs is not a body
+   * change, so it must never bump `version` or snapshot skill_versions (AC-14).
+   */
+  async setAttachedDocs(
+    workspaceId: string,
+    id: string,
+    paths: string[],
+  ): Promise<SkillRow | undefined> {
+    const [row] = await this.db
+      .update(t.skills)
+      .set({ attachedDocPaths: paths })
+      .where(and(eq(t.skills.workspaceId, workspaceId), eq(t.skills.id, id)))
+      .returning();
+    return row;
+  }
+
   private async insertVersionSnapshot(
     skillId: string,
     version: number,

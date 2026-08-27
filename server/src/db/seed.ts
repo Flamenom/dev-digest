@@ -1,8 +1,11 @@
 import 'dotenv/config';
+import { access, mkdir, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { createDb, type Db } from './client.js';
 import * as t from './schema.js';
 import { eq, and, desc, isNull } from 'drizzle-orm';
 import { estimateCost } from '../adapters';
+import { loadConfig } from '../platform/config.js';
 import {
   GENERAL_REVIEWER_PROMPT,
   SECURITY_REVIEWER_PROMPT,
@@ -15,6 +18,55 @@ import { API_CONTRACT_SEED_SKILLS, SEED_SKILLS } from './seed-skills.js';
 /** Default provider/model for the built-in reviewer agents. */
 const DEFAULT_PROVIDER = 'openrouter' as const;
 const DEFAULT_MODEL = 'deepseek/deepseek-v4-flash';
+
+/**
+ * L05 Project Context — the AC-35 headline fixture. An architectural-invariant
+ * spec is attached to the Security Reviewer (`agents.attached_doc_paths`), the
+ * spec FILE is materialized into the demo repo's clone working tree (so
+ * discovery `/repos/:id/project-context` and the agent Context tab see it), and
+ * the seeded Security run's trace mirrors exactly what the run executor records
+ * when the doc is injected: the path in `specs_read` plus the untrusted-wrapped
+ * text in `prompt_assembly.specs`. The seeded PR #482 touches `src/api/*` files,
+ * i.e. the diff the invariant speaks about. Deterministic — no model call.
+ */
+const INVARIANT_SPEC_PATH = 'specs/architecture.md';
+const INVARIANT_SPEC_TEXT = `# Architecture invariants
+
+## Layering
+
+API handlers under src/api/ must not import src/db/ directly. All database
+access goes through the repository layer, so transport code stays free of
+storage concerns.
+
+## Configuration
+
+Rate-limit settings live in src/config.ts and are read once at boot — request
+handlers must never read secrets or environment variables directly.
+`;
+
+/**
+ * Mirror of reviewer-core's `wrapUntrusted` (kept inline: the seed writes the
+ * literal trace document, same as the hand-written demo trace fields below).
+ */
+function wrapUntrustedSpec(text: string): string {
+  return `<untrusted source="spec-0">\n${text}\n</untrusted>`;
+}
+
+/**
+ * Materialize the demo repo's clone working tree with the invariant spec.
+ * Discovery and the guarded document reader only need the directory (no .git).
+ * Insert-only like the DB fixtures: an existing file is never overwritten, so
+ * edits made through the Project Context editor survive a re-seed.
+ */
+async function seedDemoCloneFixture(): Promise<void> {
+  const specAbs = join(loadConfig().cloneDir, 'acme', 'payments-api', INVARIANT_SPEC_PATH);
+  await mkdir(dirname(specAbs), { recursive: true });
+  try {
+    await access(specAbs);
+  } catch {
+    await writeFile(specAbs, INVARIANT_SPEC_TEXT, 'utf8');
+  }
+}
 
 /**
  * Seed the starter's demo data. Idempotent: re-running upserts the default
@@ -94,6 +146,13 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
       .returning();
   }
   const repoId = repo!.id;
+
+  // L05 — demo clone working tree with the invariant spec (fail-soft: an fs
+  // error must not block the DB seed; the flows that need the file will fail
+  // loudly on their own).
+  await seedDemoCloneFixture().catch((err) =>
+    console.warn(`seed: demo clone fixture skipped — ${(err as Error).message}`),
+  );
 
   // ---- PR #482 (rate limiting) ----
   let [pr] = await db
@@ -200,6 +259,9 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
       provider: DEFAULT_PROVIDER,
       model: DEFAULT_MODEL,
       systemPrompt: SECURITY_REVIEWER_PROMPT,
+      // L05 — the AC-35 headline scenario: the architectural-invariant spec is
+      // attached so its text is injected (untrusted-wrapped) into every run.
+      attachedDocPaths: [INVARIANT_SPEC_PATH],
       enabled: true,
       version: 1,
       createdBy: userId,
@@ -344,9 +406,13 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
           .where(eq(t.agents.workspaceId, workspaceId))
       ).map((a) => [a.name, a.id]),
     );
+    // Explicit ranAt: the Security run is the NEWEST timeline row, so its trace
+    // (the only one seeded with a document) is the first "Open run trace" button
+    // — the e2e project-context flow clicks it deterministically.
+    const seededAt = Date.now();
     const demoRuns = [
-      { name: 'Security Reviewer', tokensIn: 8000, tokensOut: 1119, durationMs: 8200, findingsCount: 3, blockers: 2, score: 38, grounding: '3/3 passed' },
-      { name: 'Performance Reviewer', tokensIn: 10500, tokensOut: 1511, durationMs: 6400, findingsCount: 2, blockers: 0, score: 64, grounding: '2/2 passed' },
+      { name: 'Security Reviewer', ranAt: new Date(seededAt), tokensIn: 8000, tokensOut: 1119, durationMs: 8200, findingsCount: 3, blockers: 2, score: 38, grounding: '3/3 passed' },
+      { name: 'Performance Reviewer', ranAt: new Date(seededAt - 5 * 60_000), tokensIn: 10500, tokensOut: 1511, durationMs: 6400, findingsCount: 2, blockers: 0, score: 64, grounding: '2/2 passed' },
     ];
     const insertedIds: string[] = [];
     for (const r of demoRuns) {
@@ -356,6 +422,7 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
           workspaceId,
           agentId: agentBy.get(r.name) ?? null,
           prId: pr!.id,
+          ranAt: r.ranAt,
           provider: DEFAULT_PROVIDER,
           model: DEFAULT_MODEL,
           durationMs: r.durationMs,
@@ -384,6 +451,11 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
     }
     // A minimal trace document for the Security run so the trace drawer's Stats
     // (incl. the COST card) renders on a fresh seed, not just after a live run.
+    // L05: it mirrors the run executor's project-context injection — the attached
+    // invariant spec appears in `specs_read` and as the untrusted-wrapped
+    // `prompt_assembly.specs` block (what the "Project context — attached specs"
+    // prompt row shows) — so the AC-35 e2e flow can assert injection visibility
+    // without a model call.
     if (insertedIds[0]) {
       await db
         .insert(t.runTraces)
@@ -399,11 +471,16 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
               findings: 3,
               grounding: '3/3 passed',
             },
-            prompt_assembly: { system: 'You are a security reviewer.', user: 'Review PR #482' },
+            prompt_assembly: {
+              system: 'You are a security reviewer.',
+              specs: wrapUntrustedSpec(INVARIANT_SPEC_TEXT),
+              user: 'Review PR #482',
+            },
             tool_calls: [],
             raw_output: '',
             memory_pulled: [],
-            specs_read: [],
+            specs_read: [INVARIANT_SPEC_PATH],
+            specs_missing: [],
             log: [],
           },
         })

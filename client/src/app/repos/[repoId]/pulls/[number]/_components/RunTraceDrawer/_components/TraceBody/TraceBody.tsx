@@ -49,6 +49,19 @@ export function TraceBody({ trace, findings }: { trace: RunTrace; findings: Find
               )}
             </div>
           </Row>
+          <Row label={t("trace.config.specsMissing")}>
+            <div style={s.specsWrap}>
+              {trace.specs_missing.length === 0 ? (
+                <span style={s.specsNone}>{t("trace.config.none")}</span>
+              ) : (
+                trace.specs_missing.map((sp, i) => (
+                  <span key={i} className="mono" style={s.spec}>
+                    {sp}
+                  </span>
+                ))
+              )}
+            </div>
+          </Row>
         </div>
       </TraceSection>
 
@@ -71,7 +84,12 @@ export function TraceBody({ trace, findings }: { trace: RunTrace; findings: Find
 
       <FindingsSection findings={findings} />
 
-      <TraceSection icon="FileText" title={t("trace.promptAssembly")} defaultOpen={false}>
+      <TraceSection
+        icon="FileText"
+        title={t("trace.promptAssembly")}
+        defaultOpen={false}
+        testId="trace-section-prompt-assembly"
+      >
         <PromptBlock label={t("trace.prompt.system")} text={trace.prompt_assembly.system} color={PROMPT_COLORS.system} />
         {trace.prompt_assembly.skills != null && (
           <PromptBlock label={t("trace.prompt.skills")} text={trace.prompt_assembly.skills} color={PROMPT_COLORS.skills} />
@@ -83,7 +101,12 @@ export function TraceBody({ trace, findings }: { trace: RunTrace; findings: Find
           <PromptBlock label={t("trace.prompt.repoMap")} text={trace.prompt_assembly.repo_map} color={PROMPT_COLORS.repoMap} />
         )}
         {trace.prompt_assembly.specs != null && (
-          <PromptBlock label={t("trace.prompt.specs")} text={trace.prompt_assembly.specs} color={PROMPT_COLORS.specs} />
+          <PromptBlock
+            label={t("trace.prompt.specs")}
+            text={trace.prompt_assembly.specs}
+            color={PROMPT_COLORS.specs}
+            testId="prompt-block-specs"
+          />
         )}
         {trace.prompt_assembly.callers != null && (
           <PromptBlock label={t("trace.prompt.callers")} text={trace.prompt_assembly.callers} color={PROMPT_COLORS.callers} />

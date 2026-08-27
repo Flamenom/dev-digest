@@ -28,6 +28,7 @@ const AGENT: Agent = {
   repo_intel: true,
   enabled: true,
   version: 1,
+  attached_doc_paths: [],
 };
 
 function renderWithIntl(ui: React.ReactElement) {
