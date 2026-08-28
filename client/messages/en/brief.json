@@ -10,6 +10,42 @@
   "overlap": "{count} overlap",
   "unavailable": "Brief not available yet.",
   "unavailableHint": "Run a review or open the PR to compute it.",
+  "card": {
+    "title": "PR Brief",
+    "notReviewed": "Not reviewed",
+    "reviewCta": "Run a review",
+    "regenerate": "Regenerate brief",
+    "regenerating": "Regenerating…",
+    "staleBadge": "Stale",
+    "staleReason": "Inputs changed since this brief was generated. Regenerate to refresh it.",
+    "notGenerated": "No brief generated yet.",
+    "notGeneratedHint": "Generate the brief to get a plain-language what and why, grounded risks and a reading order.",
+    "generationFailed": "Brief generation failed.",
+    "unavailableNoFiles": "No changed files recorded for this PR, so a brief cannot be generated.",
+    "missingInputs": "Missing inputs",
+    "costTotal": "Total PR model spend",
+    "costTotalHint": "Reviews + intent + brief. The PR list shows review-run spend only, so the two figures can differ.",
+    "tokensInOut": "{tokensIn} → {tokensOut} tokens",
+    "riskLevel": {
+      "high": "High risk",
+      "medium": "Medium risk",
+      "low": "Low risk"
+    },
+    "findingsPanel": {
+      "title": "Findings breakdown"
+    }
+  },
+  "focus": {
+    "title": "Review focus — read these first",
+    "count": "{count}",
+    "empty": "No reading order was derived for this PR.",
+    "reasonLabel": "Reason"
+  },
+  "risks": {
+    "expand": "Show details",
+    "collapse": "Hide details",
+    "moreRefs": "+{count} more"
+  },
   "intent": {
     "inScope": "In scope",
     "outOfScope": "Out of scope",

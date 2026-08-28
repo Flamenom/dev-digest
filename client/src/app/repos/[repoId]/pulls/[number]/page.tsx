@@ -156,6 +156,7 @@ export default function PRDetailPage() {
             headSha={pr.head_sha}
             repoFullName={repoFullName}
             onGoToFile={goToFile}
+            onGoToFinding={goToFinding}
           />
         )}
 
@@ -184,6 +185,9 @@ export default function PRDetailPage() {
               refetchReviews();
               // Smart Diff joins findings onto diff lines — refresh it too.
               if (prId) qc.invalidateQueries({ queryKey: ["pr-smart-diff", prId] });
+              // The brief's deterministic rollup and its `stale` flag are computed
+              // per read — re-READ it so the flag flips. Never a regeneration (N5).
+              if (prId) qc.invalidateQueries({ queryKey: ["pr-brief", prId] });
             }}
           />
         )}

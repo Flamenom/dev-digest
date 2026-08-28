@@ -1,24 +1,35 @@
 /* IntentCard — declared PR intent & scope (L03), rendered above the PR
    description on the Overview tab. Quoted summary, IN SCOPE / OUT OF SCOPE
-   columns, RISK AREAS chips, plus low-confidence / missing-context / stale
+   columns, RISK AREAS, plus low-confidence / missing-context / stale
    badges. Empty state (404 — nothing classified yet) offers a "Classify
-   intent" CTA; the sync POST's isPending drives the loading state. */
+   intent" CTA; the sync POST's isPending drives the loading state.
+
+   RISK AREAS has two renderings: the PR Brief's grounded, expandable risks when
+   `risks` is supplied (AC-22), and the intent's free-text chips otherwise —
+   unchanged from before the brief existed (AC-23). The intent contract is
+   untouched: `risk_areas` stays `string[]`. */
 "use client";
 
 import React from "react";
 import { useTranslations } from "next-intl";
 import { Badge, Button, Icon, SectionLabel, Skeleton } from "@devdigest/ui";
-import type { IntentDetail } from "@devdigest/shared";
+import type { BriefRisk, IntentDetail } from "@devdigest/shared";
 import { useClassifyIntent, usePrIntent } from "@/lib/hooks/intent";
+import { RiskAreas, type GoToRef } from "./_components/RiskAreas";
 import { SCOPE_BULLET_ICON_SIZE, SKELETON_HEIGHT } from "./constants";
 import { s } from "./styles";
 
 export function IntentCard({
   prId,
   headSha,
+  risks,
+  onGoToRef,
 }: {
   prId: string | null;
   headSha: string | null | undefined;
+  /** Grounded brief risks; absent/empty falls back to the intent's labels. */
+  risks?: BriefRisk[];
+  onGoToRef?: GoToRef;
 }) {
   const t = useTranslations("brief");
   const { data, isLoading } = usePrIntent(prId);
@@ -56,6 +67,8 @@ export function IntentCard({
   }
 
   const stale = data.stale || (headSha != null && data.head_sha !== headSha);
+  const briefRisks = risks ?? [];
+  const hasBriefRisks = briefRisks.length > 0;
   const unavailableRefs = data.sources
     .filter((src) => src.status === "unavailable")
     .map((src) => src.ref);
@@ -74,16 +87,27 @@ export function IntentCard({
           <ScopeColumn title={t("intent.outOfScope")} items={data.out_of_scope} dimmed />
         </div>
 
-        {data.risk_areas.length > 0 && (
+        {(hasBriefRisks || data.risk_areas.length > 0) && (
           <div>
             <div style={s.columnTitle}>{t("intent.riskAreas")}</div>
-            <div style={s.riskRow}>
-              {data.risk_areas.map((risk) => (
-                <Badge key={risk} icon="AlertTriangle" color="var(--warn)" bg="var(--bg-hover)">
-                  {risk}
-                </Badge>
-              ))}
-            </div>
+            {hasBriefRisks ? (
+              <RiskAreas risks={briefRisks} onGoToRef={onGoToRef} />
+            ) : (
+              <div style={s.riskRow}>
+                {data.risk_areas.map((risk, i) => (
+                  // Index-qualified: duplicate labels would collide on the
+                  // string alone.
+                  <Badge
+                    key={`${i}:${risk}`}
+                    icon="AlertTriangle"
+                    color="var(--warn)"
+                    bg="var(--bg-hover)"
+                  >
+                    {risk}
+                  </Badge>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

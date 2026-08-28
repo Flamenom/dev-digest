@@ -72,6 +72,19 @@ describe('routes (no DB)', () => {
     await app.close();
   });
 
+  it('brief routes validate :id at the edge — non-uuid → 422 on both verbs, no DB touched', async () => {
+    const app = await buildApp({ config });
+    // Both verbs short-circuit in the zod params schema, BEFORE `getContext`
+    // resolves tenancy — so neither needs Postgres nor a briefService.
+    const get = await app.inject({ method: 'GET', url: '/pulls/not-a-uuid/brief' });
+    expect(get.statusCode).toBe(422);
+    expect(get.json().error.code).toBe('validation_error');
+    const post = await app.inject({ method: 'POST', url: '/pulls/not-a-uuid/brief' });
+    expect(post.statusCode).toBe(422);
+    expect(post.json().error.code).toBe('validation_error');
+    await app.close();
+  });
+
   it('returns 422 structured error on invalid body', async () => {
     const app = await buildApp({ config });
     const res = await app.inject({

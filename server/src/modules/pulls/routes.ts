@@ -6,8 +6,9 @@ import { PrCommentInput } from '@devdigest/shared';
 import * as t from '../../db/schema.js';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
+import { latestReviewPerAgent, rollupReviews } from '../_shared/review-rollup.js';
 import { AppError, NotFoundError } from '../../platform/errors.js';
-import { deriveReviewStatus, rollupSeverities } from './status.js';
+import { deriveReviewStatus } from './status.js';
 
 /**
  * F1 — pulls module. PR import via Octokit (list + per-PR detail).
@@ -140,50 +141,58 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
           prId: t.reviews.prId,
           agentId: t.reviews.agentId,
           score: t.reviews.score,
+          // `verdict`/`runId` are unused by the list row (N10 freezes it) but are
+          // part of the shared rollup's input shape; `createdAt` is what makes
+          // "latest per agent" well-defined.
+          verdict: t.reviews.verdict,
+          runId: t.reviews.runId,
+          createdAt: t.reviews.createdAt,
         })
         .from(t.reviews)
         .where(and(inArray(t.reviews.prId, prIds), eq(t.reviews.kind, 'review')))
         .orderBy(desc(t.reviews.createdAt));
-      // Rows are newest-first → first seen per (pr, agent) is that agent's latest
-      // review. Agent-less reviews key on their own id (each counts once).
-      const seenAgent = new Set<string>();
-      const latestReviews: { id: string; prId: string }[] = [];
-      for (const rv of reviewRows) {
-        const key = `${rv.prId}:${rv.agentId ?? rv.id}`;
-        if (seenAgent.has(key)) continue;
-        seenAgent.add(key);
-        latestReviews.push({ id: rv.id, prId: rv.prId });
-        // Worst (lowest) score across agents; null scores don't override a number.
-        if (rv.score != null) {
-          const cur = scoreByPr.get(rv.prId);
-          scoreByPr.set(rv.prId, cur == null ? rv.score : Math.min(cur, rv.score));
-        } else if (!scoreByPr.has(rv.prId)) {
-          scoreByPr.set(rv.prId, null);
-        }
-      }
+      // ONE shared implementation of the per-agent-latest rule
+      // (`modules/_shared/review-rollup.ts`), so the PR list and the PR brief
+      // cannot drift apart. The SQL stays newest-first for the index; the
+      // helper's sort is stable, so ties keep this order.
+      const latest = latestReviewPerAgent(reviewRows);
 
-      // Sum findings severities across every per-agent-latest review of each PR.
-      const reviewIds = latestReviews.map((r) => r.id);
-      const reviewIdToPr = new Map(latestReviews.map((r) => [r.id, r.prId] as const));
+      // Findings for exactly those per-agent-latest reviews, keyed by review id.
+      // Dismissed findings are NOT excluded — unchanged list behaviour.
+      const reviewIds = latest.map((r) => r.id);
+      const findingsByReview = new Map<string, { severity: string }[]>();
       if (reviewIds.length > 0) {
         const findingRows = await container.db
           .select({ reviewId: t.findings.reviewId, severity: t.findings.severity })
           .from(t.findings)
           .where(inArray(t.findings.reviewId, reviewIds));
-        const bySeverityForReview = new Map<string, { severity: string }[]>();
         for (const fr of findingRows) {
-          const arr = bySeverityForReview.get(fr.reviewId) ?? [];
+          const arr = findingsByReview.get(fr.reviewId) ?? [];
           arr.push({ severity: fr.severity });
-          bySeverityForReview.set(fr.reviewId, arr);
+          findingsByReview.set(fr.reviewId, arr);
         }
-        for (const [reviewId, prId] of reviewIdToPr) {
-          const c = rollupSeverities(bySeverityForReview.get(reviewId) ?? []);
-          const agg = findingsByPr.get(prId) ?? { CRITICAL: 0, WARNING: 0, SUGGESTION: 0 };
-          agg.CRITICAL += c.critical;
-          agg.WARNING += c.warning;
-          agg.SUGGESTION += c.suggestion;
-          findingsByPr.set(prId, agg);
-        }
+      }
+
+      // The list shows no blocker count, so the rollup's blocker input is empty.
+      const noBlockers = new Map<string, number | null>();
+      const latestByPr = new Map<string, typeof latest>();
+      for (const rv of latest) {
+        const arr = latestByPr.get(rv.prId) ?? [];
+        arr.push(rv);
+        latestByPr.set(rv.prId, arr);
+      }
+      // Only PRs that HAVE a review get an entry: `rollupReviews` cannot tell
+      // "reviewed but unscored" (score null, findings {0,0,0}) from "never
+      // reviewed" (score null, findings null) — that distinction is the caller's,
+      // and here it is exactly "is this PR in `latestByPr`".
+      for (const [prId, prLatest] of latestByPr) {
+        const rollup = rollupReviews(prLatest, findingsByReview, noBlockers);
+        scoreByPr.set(prId, rollup.score);
+        findingsByPr.set(prId, {
+          CRITICAL: rollup.severities.critical,
+          WARNING: rollup.severities.warning,
+          SUGGESTION: rollup.severities.suggestion,
+        });
       }
 
       const runRows = await container.db
