@@ -9,6 +9,8 @@ import { REVIEW_STRATEGY } from './constants.js';
 import { taskLine } from './helpers.js';
 import { splitEnabledSkills } from '../_shared/skill-prompt.js';
 import { loadDiff } from './diff-loader.js';
+import { resolveSpecPaths } from '../project-context/injection.js';
+import { readDocument } from '../project-context/documents.js';
 
 /** Thrown by a run when the user cancels it mid-flight (between map files). */
 export class RunCancelledError extends Error {
@@ -174,6 +176,12 @@ export class ReviewRunExecutor {
 
     runLog.info(`Starting review with agent "${agent.name}" (${agent.provider}/${agent.model})`);
 
+    // Project context (AC-25/AC-26) — declared OUTSIDE the try so the
+    // failure/cancel trace below can carry whatever was resolved before the
+    // error, keeping specs_read/specs_missing truthful on both trace paths.
+    const specsRead: string[] = [];
+    const specsMissing: string[] = [];
+
     try {
       // Resolve the agent's LLM provider. (container.llm throws if the provider
       // key is missing — caught below and persisted as a failed run.)
@@ -214,6 +222,39 @@ export class ReviewRunExecutor {
       const { injected: skillBlocks, skipped: skillsSkipped } = splitEnabledSkills(linkedSkills);
       runLog.info(`Skills: ${skillBlocks.length} injected, ${skillsSkipped} skipped (disabled)`);
 
+      // Project context (AC-18..AC-24) — union of the agent's attached doc
+      // paths + every loaded (ENABLED) skill's paths, deduped in deterministic
+      // order (agent first, then skill-load order; first occurrence wins).
+      // Attach lists were read once at run start (snapshot semantics). Each
+      // path is read FRESH from the clone working tree through the guarded
+      // reader; any failure (missing/unreadable/guard-refused/clone-absent)
+      // is fail-soft: the path is recorded in specs_missing and the run
+      // proceeds (AC-22). No LLM/embedding/network call is made here (AC-24).
+      // reviewer-core wraps each doc untrusted + appends the injection guard —
+      // raw texts only, never wrap here (AC-20/AC-29).
+      const specPaths = resolveSpecPaths({
+        agentPaths: agent.attachedDocPaths ?? [],
+        loadedSkills: linkedSkills
+          .filter((s) => s.enabled)
+          .map((s) => ({ paths: s.attachedDocPaths ?? [] })),
+      });
+      const specTexts: string[] = [];
+      if (specPaths.length > 0) {
+        const repoRef = { owner: repo.owner, name: repo.name };
+        for (const p of specPaths) {
+          try {
+            specTexts.push(await readDocument(this.container.git, repoRef, p));
+            specsRead.push(p);
+          } catch (err) {
+            specsMissing.push(p);
+            runLog.info(`project context: skipped "${p}" — ${(err as Error).message}`);
+          }
+        }
+        runLog.info(
+          `Project context: ${specsRead.length} doc(s) injected, ${specsMissing.length} skipped`,
+        );
+      }
+
       // ---- Engine: assemble → single-pass → grounding -----------------------
       // The pure review pipeline lives in @devdigest/reviewer-core (shared with
       // the CI runner). The service owns only I/O: repo-intel context resolution
@@ -234,6 +275,10 @@ export class ReviewRunExecutor {
         // L02 — linked + enabled skill bodies; omitted when empty (the engine
         // then leaves the `## Skills / rules` section out entirely).
         ...(skillBlocks.length > 0 ? { skills: skillBlocks } : {}),
+        // Project context — attached doc texts (read above, fail-soft). Omitted
+        // when none attached or all reads failed so no `## Project context`
+        // section is produced (AC-23).
+        ...(specTexts.length > 0 ? { specs: specTexts } : {}),
         // PR author's description/body — untrusted; assemblePrompt wraps +
         // truncates it. Omitted when the PR has no body.
         ...(pull.body ? { prDescription: pull.body } : {}),
@@ -324,7 +369,8 @@ export class ReviewRunExecutor {
         })),
         raw_output: outcome.raw,
         memory_pulled: [],
-        specs_read: [],
+        specs_read: specsRead,
+        specs_missing: specsMissing,
         // Persisted log = the run's FULL event buffer (incl. shared pre-work:
         // diff load + intent), not just events recorded inside this method.
         log: runLog.logFor(runId),
@@ -353,7 +399,13 @@ export class ReviewRunExecutor {
         })
         .catch(() => undefined);
       await this.repo
-        .saveRunTrace(runId, this.traceFromBuffer(runId, pull, agent, '0/0 passed', Date.now() - start))
+        .saveRunTrace(
+          runId,
+          this.traceFromBuffer(runId, pull, agent, '0/0 passed', Date.now() - start, {
+            read: specsRead,
+            missing: specsMissing,
+          }),
+        )
         .catch(() => undefined);
       this.container.runBus.complete(runId);
       throw err;
@@ -458,6 +510,9 @@ export class ReviewRunExecutor {
     agent: AgentRow,
     grounding: string,
     durationMs = 0,
+    // Project-context paths resolved before the failure/cancel, when available
+    // (pre-work failures via failAll happen before specs are resolved → omitted).
+    specs?: { read: string[]; missing: string[] },
   ): RunTrace {
     return {
       config: {
@@ -473,7 +528,8 @@ export class ReviewRunExecutor {
       tool_calls: [],
       raw_output: '',
       memory_pulled: [],
-      specs_read: [],
+      specs_read: specs?.read ?? [],
+      specs_missing: specs?.missing ?? [],
       log: this.container.runBus.buffer(runId).map((e) => ({ t: e.t, kind: e.kind, msg: e.msg })),
     };
   }

@@ -1,0 +1,11 @@
+{
+  "name": "local/workflow-retro",
+  "version": "0.1.0",
+  "private": true,
+  "summary": "Retrospective for a multi-agent run — collects cost/resource metrics (tokens, cache efficiency, tool calls, durations, launch order, parallelism) and qualitative insights (hard/easy/duplicated/missed), then gives actionable recommendations. Manual only; never auto-triggered. Outputs a report to chat and appends a trend row to docs/retros/ledger.md.",
+  "skills": {
+    "workflow-retro": {
+      "path": "SKILL.md"
+    }
+  }
+}

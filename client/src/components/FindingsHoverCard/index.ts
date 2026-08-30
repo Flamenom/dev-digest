@@ -1,3 +1,3 @@
 export { FindingsHoverCard, FindingsSeverityChips } from "./FindingsHoverCard";
-export { countBySeverity, totalCount } from "./helpers";
-export type { SeverityCounts } from "./helpers";
+export { countBySeverity, groupBySeverity, totalCount } from "./helpers";
+export type { SeverityCounts, SeverityGroup } from "./helpers";

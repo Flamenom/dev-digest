@@ -30,6 +30,7 @@ export function toAgentDto(row: AgentRow): Agent {
     strategy: row.strategy as ReviewStrategy,
     ci_fail_on: row.ciFailOn as CiFailOn,
     repo_intel: row.repoIntel,
+    attached_doc_paths: row.attachedDocPaths,
   };
 }
 
@@ -53,7 +54,13 @@ export function toAgentVersionDto(row: AgentVersionRow): AgentVersion {
   };
 }
 
-/** Fields whose change bumps the agent's config version (anything but `enabled`). */
+/**
+ * Fields whose change bumps the agent's config version (anything but `enabled`).
+ * `attachedDocPaths` is deliberately EXCLUDED (AC-14): attach/detach/reorder of
+ * project-context docs is mutable config written via the dedicated
+ * `setAttachedDocs` repository method and must never bump the version or
+ * snapshot agent_versions. Do not add it here.
+ */
 export interface ConfigChangePatch {
   name?: string;
   description?: string;

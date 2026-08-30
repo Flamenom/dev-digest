@@ -17,6 +17,8 @@ import {
   PrDetail,
   IntentDetail,
   ScopedReview,
+  PrBriefDetail,
+  PrBriefGeneration,
 } from '@devdigest/shared';
 
 /**
@@ -242,6 +244,132 @@ describe('AI contracts parse fixtures', () => {
         findings: [{ ...finding, scope: 'sideways' }],
       }).success,
     ).toBe(false);
+  });
+
+  it('PrBriefDetail — full card payload round-trips; nullish provenance may be omitted', () => {
+    const full = PrBriefDetail.parse({
+      pr_id: '3e2a2b52-3b8c-4b34-9a34-0a4c8e2b1c11',
+      what: 'Adds a per-IP token-bucket limiter to the public API endpoints.',
+      why: 'Unbounded traffic has been exhausting the upstream provider quota.',
+      risks: [
+        {
+          kind: 'security',
+          title: 'Hardcoded Stripe secret key',
+          explanation: 'A live key is introduced alongside the limiter settings.',
+          severity: 'high',
+          refs: [{ path: 'src/config.ts', start_line: 11, end_line: 11 }],
+        },
+      ],
+      review_focus: [
+        {
+          path: 'src/config.ts',
+          line: 11,
+          reason: 'The secret is introduced on this line.',
+          finding_id: 'f1',
+        },
+      ],
+      score: 61,
+      risk_level: 'medium',
+      status: 'request_changes',
+      findings_count: 3,
+      blockers: 2,
+      cost_usd: 0.061,
+      tokens_in: 3600,
+      tokens_out: 400,
+      missing_inputs: [{ input: 'blast_radius', reason: 'the repository is not indexed' }],
+      model: 'gpt-4.1',
+      head_sha: 'a1b2c3d4',
+      generated_at: '2026-08-27T00:00:00.000Z',
+      stale: false,
+      stale_reason: null,
+      generation: { state: 'ok', reason: null },
+    });
+    expect(full.risks[0]!.refs[0]!.path).toBe('src/config.ts');
+    expect(full.review_focus[0]!.finding_id).toBe('f1');
+
+    // The degraded shape the card must still render: no content, no provenance,
+    // full deterministic header (AC-18a, AC-36). `.nullish()` keys may be OMITTED.
+    const skeleton = PrBriefDetail.parse({
+      pr_id: 'pr-1',
+      what: null,
+      why: null,
+      risks: [],
+      review_focus: [],
+      score: null,
+      risk_level: null,
+      status: 'not_reviewed',
+      findings_count: 0,
+      blockers: 0,
+      cost_usd: null,
+      tokens_in: null,
+      tokens_out: null,
+      missing_inputs: [],
+      stale: false,
+      stale_reason: null,
+      generation: { state: 'not_generated', reason: 'nothing generated yet' },
+    });
+    expect(skeleton.model ?? null).toBeNull();
+
+    // `status` and `generation.state` are closed enums.
+    expect(
+      PrBriefDetail.safeParse({
+        ...full,
+        status: 'merged',
+      }).success,
+    ).toBe(false);
+    expect(
+      PrBriefDetail.safeParse({
+        ...full,
+        generation: { state: 'pending', reason: null },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('PrBriefGeneration — AC-14 caps are enforced by the schema, so an over-cap answer never parses', () => {
+    const risk = {
+      kind: 'security',
+      title: 'Risk',
+      explanation: 'Short enough.',
+      severity: 'low',
+      refs: [{ path: 'src/config.ts', start_line: 11 }],
+    };
+    const entry = { path: 'src/config.ts', line: 11, reason: 'Read this first.' };
+
+    // A response at the caps parses.
+    expect(
+      PrBriefGeneration.safeParse({
+        what: 'x'.repeat(400),
+        why: 'y'.repeat(400),
+        risks: Array.from({ length: 6 }, () => risk),
+        review_focus: Array.from({ length: 8 }, () => entry),
+      }).success,
+    ).toBe(true);
+
+    // Each cap, one past its limit — every one is a PARSE FAILURE, never a trim.
+    const over: [string, unknown][] = [
+      ['7 risks', { what: 'w', why: 'y', risks: Array.from({ length: 7 }, () => risk), review_focus: [] }],
+      ['9 focus entries', { what: 'w', why: 'y', risks: [], review_focus: Array.from({ length: 9 }, () => entry) }],
+      ['401-char what', { what: 'x'.repeat(401), why: 'y', risks: [], review_focus: [] }],
+      ['401-char why', { what: 'w', why: 'y'.repeat(401), risks: [], review_focus: [] }],
+      ['81-char risk title', { what: 'w', why: 'y', risks: [{ ...risk, title: 't'.repeat(81) }], review_focus: [] }],
+      ['301-char explanation', { what: 'w', why: 'y', risks: [{ ...risk, explanation: 'e'.repeat(301) }], review_focus: [] }],
+      ['161-char reason', { what: 'w', why: 'y', risks: [], review_focus: [{ ...entry, reason: 'r'.repeat(161) }] }],
+    ];
+    for (const [label, payload] of over) {
+      expect(PrBriefGeneration.safeParse(payload).success, label).toBe(false);
+    }
+
+    // [D1] — the model contributes no number: a `score` it invents is stripped,
+    // never carried into the persisted content.
+    const stripped = PrBriefGeneration.parse({
+      what: 'w',
+      why: 'y',
+      risks: [],
+      review_focus: [],
+      score: 42,
+      risk_level: 'low',
+    });
+    expect(stripped).toEqual({ what: 'w', why: 'y', risks: [], review_focus: [] });
   });
 
   it('RunTrace (data2.jsx TRACE single-document)', () => {

@@ -1,7 +1,7 @@
 /* SkillDetail — the master-detail right pane (§4.4): header (sparkle icon +
-   mono name + type badge + v{n} chip) over Config | Preview | Stats | Versions
-   tabs. NO Evals tab, NO "Run on evals" button (spec decision 7). Tab state
-   lives in ?tab= (owned by the page). */
+   mono name + type badge + v{n} chip) over Config | Preview | Context | Stats |
+   Versions tabs. NO Evals tab, NO "Run on evals" button (spec decision 7). Tab
+   state lives in ?tab= (owned by the page). */
 "use client";
 
 import React from "react";
@@ -10,6 +10,7 @@ import { Badge, Icon, Tabs } from "@devdigest/ui";
 import type { Skill } from "@devdigest/shared";
 import { TYPE_COLORS } from "../../../_components/constants";
 import { ConfigTab } from "./_components/ConfigTab";
+import { ContextTab } from "./_components/ContextTab";
 import { PreviewTab } from "./_components/PreviewTab";
 import { StatsTab } from "./_components/StatsTab";
 import { VersionsTab } from "./_components/VersionsTab";
@@ -48,6 +49,7 @@ export function SkillDetail({
       <div style={s.body}>
         {tab === "config" && <ConfigTab skill={skill} />}
         {tab === "preview" && <PreviewTab skill={skill} />}
+        {tab === "context" && <ContextTab skill={skill} />}
         {tab === "stats" && <StatsTab skill={skill} />}
         {tab === "versions" && <VersionsTab skill={skill} />}
       </div>

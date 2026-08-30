@@ -35,6 +35,7 @@ const SKILL: Skill = {
   body: "new body",
   enabled: true,
   version: 2,
+  attached_doc_paths: [],
 };
 
 function renderTab() {

@@ -52,6 +52,7 @@ is shared via **tsconfig path aliases**, not npm.
 - **`specs/03-conventions-extractor.md`** — when touching the Conventions Extractor (server module, /conventions UI, extraction/grounding pipeline).
 - **`specs/04-intent-layer.md`** — when touching the Intent Layer (intent server module, classifier, scope filter in reviewer-core, Overview IntentCard).
 - **`specs/05-smart-diff.md`** — when touching Smart Diff (smart-diff server module, deterministic file classifier, /pulls/:id/smart-diff, SmartDiffViewer in Files changed, finding-click navigation).
+- **`specs/2026-08-27-pr-brief.md`** — when touching PR Brief (POST /pulls/:id/brief, brief cache, PrBriefCard on Overview, Risk Areas in IntentCard, Review Focus block).
 - **`server/CLAUDE.md` · `client/CLAUDE.md` · `reviewer-core/CLAUDE.md` · `e2e/CLAUDE.md`** — auto-load per folder; read before editing that package.
 - **`INSIGHTS.md`** — before debugging a cross-cutting issue.
 

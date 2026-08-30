@@ -5,7 +5,7 @@ import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from "vite
 import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { IntentDetail } from "@devdigest/shared";
+import type { BriefRisk, IntentDetail } from "@devdigest/shared";
 import messages from "../../../../../../../../../../messages/en/brief.json";
 
 // IntentCard talks to the API through lib/api only (via the intent hooks) —
@@ -36,12 +36,46 @@ const INTENT: IntentDetail = {
   stale: false,
 };
 
-function renderCard(props: { prId?: string | null; headSha?: string | null } = {}) {
+const RISKS: BriefRisk[] = [
+  {
+    kind: "security",
+    // Deliberately different strings from INTENT.risk_areas so the tests can
+    // tell the grounded rows apart from the free-text chips they replace.
+    title: "Rate limiter precedes auth",
+    explanation: "The limiter runs before the auth middleware, so unauthenticated bursts count.",
+    severity: "high",
+    refs: [
+      { path: "src/middleware/ratelimit.ts", start_line: 12, end_line: 18 },
+      { path: "src/server.ts", start_line: 88 },
+    ],
+  },
+  {
+    kind: "dependency",
+    title: "Adds ioredis to the runtime deps",
+    explanation: "Adds ioredis to the runtime dependency set.",
+    severity: "medium",
+    refs: [{ path: "package.json", start_line: 34 }],
+  },
+];
+
+function renderCard(
+  props: {
+    prId?: string | null;
+    headSha?: string | null;
+    risks?: BriefRisk[];
+    onGoToRef?: (path: string, line: number) => void;
+  } = {},
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <NextIntlClientProvider locale="en" messages={{ brief: messages }}>
-        <IntentCard prId={props.prId ?? "pr-1"} headSha={props.headSha ?? "sha-1"} />
+        <IntentCard
+          prId={props.prId ?? "pr-1"}
+          headSha={props.headSha ?? "sha-1"}
+          risks={props.risks}
+          onGoToRef={props.onGoToRef}
+        />
       </NextIntlClientProvider>
     </QueryClientProvider>,
   );
@@ -157,5 +191,75 @@ describe("IntentCard", () => {
     });
     expect(screen.queryByText("Low confidence")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Recompute intent/ })).toBeInTheDocument();
+  });
+
+  // --- Risk Areas: brief risks replace the free-text chips (AC-22..AC-25) ---
+
+  it("brief risks replace the free-text chips: every row shows a title and its primary file ref", async () => {
+    (api.get as Mock).mockResolvedValue(INTENT);
+    renderCard({ risks: RISKS });
+
+    // Grounded rows, one per risk, each with a file ref.
+    expect(await screen.findByText("Rate limiter precedes auth")).toBeInTheDocument();
+    expect(screen.getByText("Adds ioredis to the runtime deps")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "src/middleware/ratelimit.ts:12-18" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "package.json:34" })).toBeInTheDocument();
+
+    // …and none of the intent's free-text labels (AC-22).
+    expect(screen.getByText("Risk areas")).toBeInTheDocument();
+    expect(screen.queryByText("Auth surface touched")).not.toBeInTheDocument();
+    expect(screen.queryByText("New dependency: ioredis")).not.toBeInTheDocument();
+  });
+
+  it("without brief risks the free-text chips render unchanged and no row is expandable (AC-23)", async () => {
+    (api.get as Mock).mockResolvedValue(INTENT);
+    // Empty array is treated the same as "no brief".
+    renderCard({ risks: [] });
+
+    expect(await screen.findByText("Auth surface touched")).toBeInTheDocument();
+    expect(screen.getByText("New dependency: ioredis")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show details" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /ratelimit\.ts/ })).not.toBeInTheDocument();
+  });
+
+  it("expanding a risk reveals its explanation and every ref; activating a ref navigates (AC-24, AC-25)", async () => {
+    (api.get as Mock).mockResolvedValue(INTENT);
+    const onGoToRef = vi.fn();
+    renderCard({ risks: RISKS, onGoToRef });
+
+    const toggle = (await screen.findAllByRole("button", { name: "Show details" }))[0]!;
+
+    // Collapsed: primary ref only, explanation and the 2nd ref hidden.
+    expect(screen.getByRole("button", { name: "src/middleware/ratelimit.ts:12-18" }))
+      .toBeInTheDocument();
+    expect(screen.getByText("+1 more")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "src/server.ts:88" })).not.toBeInTheDocument();
+    expect(screen.queryByText(RISKS[0]!.explanation)).not.toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(toggle);
+
+    // Expanded: full explanation + both refs.
+    expect(screen.getByText(RISKS[0]!.explanation)).toBeInTheDocument();
+    const primary = screen.getByRole("button", { name: "src/middleware/ratelimit.ts:12-18" });
+    const secondary = screen.getByRole("button", { name: "src/server.ts:88" });
+    expect(screen.getByRole("button", { name: "Hide details" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+
+    // Every ref hands its path + start line back to the page (AC-25).
+    fireEvent.click(secondary);
+    expect(onGoToRef).toHaveBeenCalledWith("src/server.ts", 88);
+    fireEvent.click(primary);
+    expect(onGoToRef).toHaveBeenCalledWith("src/middleware/ratelimit.ts", 12);
+    expect(onGoToRef).toHaveBeenCalledTimes(2);
+
+    // Collapsing hides them again — the other row is unaffected either way.
+    fireEvent.click(screen.getByRole("button", { name: "Hide details" }));
+    expect(screen.queryByText(RISKS[0]!.explanation)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "src/server.ts:88" })).not.toBeInTheDocument();
   });
 });

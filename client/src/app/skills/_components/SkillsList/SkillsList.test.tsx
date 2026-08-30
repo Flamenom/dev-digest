@@ -22,6 +22,7 @@ const SKILLS: Skill[] = [
     body: "# Rubric",
     enabled: true,
     version: 2,
+    attached_doc_paths: [],
   },
   {
     id: "sk2",
@@ -32,6 +33,7 @@ const SKILLS: Skill[] = [
     body: "# Gate",
     enabled: false,
     version: 1,
+    attached_doc_paths: [],
   },
 ];
 

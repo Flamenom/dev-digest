@@ -46,6 +46,7 @@
     "tabs": {
       "config": "Config",
       "skills": "Skills",
+      "context": "Context",
       "evals": "Evals",
       "stats": "Stats",
       "ci": "CI"
@@ -97,6 +98,30 @@
     "emptyTitle": "No skills yet",
     "emptyBody": "Skills are reusable instruction blocks shared across agents. Create one in the Skills Lab, then link it here.",
     "noMatches": "No skills match the filter."
+  },
+  "context": {
+    "title": "Project context",
+    "attachedCount": "{attached} of {total} attached",
+    "filterPlaceholder": "Filter documents…",
+    "orderHint": "Order matters — earlier documents appear earlier in the assembled prompt. Drag to reorder, or use the move buttons.",
+    "tokensEstimate": "≈ {tokens} tokens attached",
+    "untrustedNote": "Injected as an untrusted block (## Project context) into every run.",
+    "repoLabel": "Repository",
+    "loadError": "The project documents could not be loaded.",
+    "noReposTitle": "No repositories",
+    "noReposBody": "Add a repository to discover project documents (specs, docs, insights).",
+    "cloneUnavailableTitle": "Clone not available",
+    "cloneUnavailableBody": "This repository has no local clone yet — refresh the repo to discover documents.",
+    "emptyTitle": "No documents discovered",
+    "emptyBody": "No markdown files were found under specs/, docs/ or insights/ in this repository.",
+    "noMatches": "No documents match the filter.",
+    "preview": "Preview",
+    "previewError": "The document could not be loaded.",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "usedByAgents": "Used by {count, plural, one {# agent} other {# agents}}",
+    "tokens": "{tokens} tokens",
+    "attachToggle": "Attached"
   },
   "mount": {
     "body": "Mount point for {owner}. The Agent Editor shell + tab routing are wired by A2 — {owner} renders this tab."

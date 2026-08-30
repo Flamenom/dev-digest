@@ -110,6 +110,20 @@ export class AgentsService {
   }
 
   /**
+   * Replace the agent's ordered attached project-context doc paths (paths only,
+   * never document text). Does NOT bump the config version (AC-14). Returns
+   * undefined when the agent isn't in this workspace (route → 404).
+   */
+  async setAttachedDocs(
+    workspaceId: string,
+    id: string,
+    paths: string[],
+  ): Promise<Agent | undefined> {
+    const row = await this.repo.setAttachedDocs(workspaceId, id, paths);
+    return row ? toAgentDto(row) : undefined;
+  }
+
+  /**
    * Config history for an agent, newest version first. Workspace-scoped: returns
    * undefined when the agent isn't in this workspace (the route maps that to 404)
    * so version snapshots can't be read across tenants.

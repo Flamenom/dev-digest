@@ -9,7 +9,7 @@ import {
   doublePrecision,
   index,
 } from 'drizzle-orm/pg-core';
-import type { IntentSource } from '@devdigest/shared';
+import type { BriefMissingInput, IntentSource } from '@devdigest/shared';
 import { now } from './_shared';
 import { workspaces } from './core';
 import { pullRequests } from './pulls';
@@ -109,5 +109,32 @@ export const prBrief = pgTable('pr_brief', {
   prId: uuid('pr_id')
     .primaryKey()
     .references(() => pullRequests.id, { onDelete: 'cascade' }),
+  /**
+   * The generated brief content (`what` / `why` / `risks` / `review_focus`).
+   * Left as `unknown` on purpose: the canonical shape is the Zod contract
+   * `PrBriefGeneration` in `vendor/shared/contracts/pr-brief.ts`, and the
+   * repository is the boundary that `safeParse`s the blob into it — the schema
+   * layer models the physical column, not the domain type.
+   */
   json: jsonb('json').notNull(),
+  // PR Why/Risk Brief (migration 0016) — all columns nullable-or-defaulted so
+  // rows written by the applied 0000 schema survive the additive migration.
+  /** Head SHA the brief was generated from; drives the stale check. */
+  headSha: text('head_sha'),
+  /** Hash of the generation inputs; a change means the brief is stale. */
+  fingerprint: text('fingerprint'),
+  /**
+   * Migration 0017 — the generation's own missing-input notes (AC-32 – AC-34,
+   * NFR-3). NULLABLE on purpose: rows written by 0016 predate the column and a
+   * null reads as `[]`. Only the notes a READ cannot recompute (`linked_issue`,
+   * `repo_doc`, `diff_statistics`) are served from here; the live-recomputable
+   * ones are re-derived on every read (`helpers.mergeMissingInputs`).
+   */
+  missingInputs: jsonb('missing_inputs').$type<BriefMissingInput[]>(),
+  model: text('model'),
+  tokensIn: integer('tokens_in'),
+  tokensOut: integer('tokens_out'),
+  costUsd: doublePrecision('cost_usd'),
+  createdAt: now(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

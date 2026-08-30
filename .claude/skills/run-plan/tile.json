@@ -1,0 +1,11 @@
+{
+  "name": "local/run-plan",
+  "version": "0.1.0",
+  "private": true,
+  "summary": "Implementation Plan executor — runs an approved plan via implementer agents (multi-agent by DAG / owned paths, or single-agent), then gates with architecture-reviewer + plan-verifier in parallel, then resolves their comments in a bounded fix loop. Starts from a plan; no spec/planning/test-writer. Never pushes or merges.",
+  "skills": {
+    "run-plan": {
+      "path": "SKILL.md"
+    }
+  }
+}

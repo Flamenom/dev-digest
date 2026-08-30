@@ -11,18 +11,21 @@ export function TraceSection({
   right,
   children,
   defaultOpen = true,
+  testId,
 }: {
   icon: "Settings" | "Gauge" | "FileText" | "Wrench" | "Code" | "AlertOctagon";
   title: string;
   right?: React.ReactNode;
   children: React.ReactNode;
   defaultOpen?: boolean;
+  /** Deterministic e2e hook on the collapsible header (agent-browser). */
+  testId?: string;
 }) {
   const [open, setOpen] = React.useState(defaultOpen);
   const I = Icon[icon];
   return (
     <div style={s.section}>
-      <div onClick={() => setOpen((o) => !o)} style={s.sectionHead}>
+      <div data-testid={testId} onClick={() => setOpen((o) => !o)} style={s.sectionHead}>
         <I size={15} style={s.sectionIcon} />
         <span style={s.sectionTitle}>{title}</span>
         {right}

@@ -14,6 +14,8 @@ export const skills = pgTable('skills', {
     enum: ['manual', 'imported_url', 'extracted', 'community'],
   }).notNull(),
   body: text('body').notNull(),
+  // Project docs (relative repo paths) attached to this skill's prompt injection.
+  attachedDocPaths: jsonb('attached_doc_paths').$type<string[]>().notNull().default([]),
   enabled: boolean('enabled').notNull().default(true),
   version: integer('version').notNull().default(1),
   evidenceFiles: jsonb('evidence_files').$type<string[]>(),

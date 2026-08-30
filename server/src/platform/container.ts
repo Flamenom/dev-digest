@@ -32,6 +32,8 @@ import { createIntentDeriver, type IntentDeriver } from '../modules/reviews/inte
 import { SmartDiffService } from '../modules/smart-diff/service.js';
 import { BlastService } from '../modules/blast/service.js';
 import { BlastRepository } from '../modules/blast/repository.js';
+import { BriefService } from '../modules/brief/service.js';
+import { BriefRepository } from '../modules/brief/repository.js';
 import { resolveFeatureModel } from '../modules/settings/feature-models.js';
 import { type DepGraph, DepCruiseGraph } from '../adapters/depgraph/index.js';
 import { type Tokenizer, TiktokenTokenizer } from '../adapters/tokenizer/index.js';
@@ -56,6 +58,8 @@ export interface ContainerOverrides {
   repoIntel?: RepoIntel;
   /** L04 blast service — tests inject a service over mocked deps. */
   blastService?: BlastService;
+  /** PR Brief service — tests inject a service over mocked deps. */
+  briefService?: BriefService;
   /** repo-intel T3 adapters — only the indexer pipeline reads these. */
   depgraph?: DepGraph;
   tokenizer?: Tokenizer;
@@ -85,6 +89,7 @@ export class Container {
   private _intent?: IntentDeriver;
   private _smartDiffService?: SmartDiffService;
   private _blastService?: BlastService;
+  private _briefService?: BriefService;
   private _depgraph?: DepGraph;
   private _tokenizer?: Tokenizer;
   private _priceBook?: PriceBook;
@@ -181,6 +186,30 @@ export class Container {
       blastRepo: new BlastRepository(this.db),
     });
     return this._blastService;
+  }
+
+  /**
+   * PR Brief service — "why this PR exists and what could break", cached per PR
+   * and regenerated on demand with exactly ONE structured model call.
+   *
+   * Explicit deps object, never the `Container`: the cross-module inputs
+   * (intent, blast, PR/review rows) arrive as bindings wired here, so the brief
+   * slice never imports a sibling module's folder. `risk_brief` is the feature
+   * model key resolved per workspace (Rec-5).
+   */
+  get briefService(): BriefService {
+    if (this.overrides.briefService) return this.overrides.briefService;
+    this._briefService ??= new BriefService({
+      repo: this.reviewRepo,
+      briefRepo: new BriefRepository(this.db),
+      intent: this.intent,
+      blast: this.blastService,
+      github: () => this.github(),
+      git: this.git,
+      llm: (id) => this.llm(id),
+      resolveModel: (workspaceId) => resolveFeatureModel(this, workspaceId, 'risk_brief'),
+    });
+    return this._briefService;
   }
 
   /** Import-graph builder (dependency-cruiser). T3 indexer pipeline only. */

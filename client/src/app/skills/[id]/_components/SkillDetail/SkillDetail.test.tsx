@@ -51,6 +51,7 @@ const SKILL: Skill = {
   body: "# Rubric\nCheck branches.",
   enabled: true,
   version: 2,
+  attached_doc_paths: [],
 };
 
 function renderDetail(tab = "config") {

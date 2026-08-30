@@ -1,0 +1,1 @@
+ALTER TABLE "pr_brief" ADD COLUMN "missing_inputs" jsonb;

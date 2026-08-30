@@ -7,11 +7,12 @@ export interface DetailTab {
   icon: IconName;
 }
 
-/** Detail tabs — Config | Preview | Stats | Versions. NO Evals tab and no
-    "Run on evals" button in this scope (spec decision 7). */
+/** Detail tabs — Config | Preview | Context | Stats | Versions. NO Evals tab
+    and no "Run on evals" button in this scope (spec decision 7). */
 export const TABS: readonly DetailTab[] = [
   { key: "config", labelKey: "tabs.config", icon: "Settings" },
   { key: "preview", labelKey: "tabs.preview", icon: "Eye" },
+  { key: "context", labelKey: "tabs.context", icon: "FileText" },
   { key: "stats", labelKey: "tabs.stats", icon: "BarChart" },
   { key: "versions", labelKey: "tabs.versions", icon: "History" },
 ];

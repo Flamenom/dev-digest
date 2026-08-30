@@ -28,6 +28,32 @@ export function countBySeverity(findings: Pick<Finding, "severity">[]): Severity
   return c;
 }
 
+/** One severity block for the panel's `groupBySeverity` rendering mode. */
+export interface SeverityGroup {
+  severity: Severity;
+  findings: Finding[];
+}
+
+/**
+ * Bucket findings into `SEVERITY_SEQUENCE` order, dropping empty buckets.
+ * Findings with an unknown severity are kept in a trailing bucket keyed by
+ * their own value so nothing counted is ever silently hidden (AC-20).
+ */
+export function groupBySeverity(findings: Finding[]): SeverityGroup[] {
+  const groups = new Map<string, Finding[]>();
+  for (const f of findings) {
+    const bucket = groups.get(f.severity);
+    if (bucket) bucket.push(f);
+    else groups.set(f.severity, [f]);
+  }
+  const known = SEVERITY_SEQUENCE.filter((sev) => groups.has(sev));
+  const unknown = [...groups.keys()].filter((sev) => !SEVERITY_SEQUENCE.includes(sev as Severity));
+  return [...known, ...unknown].map((severity) => ({
+    severity: severity as Severity,
+    findings: groups.get(severity) ?? [],
+  }));
+}
+
 /** Total findings across severities. */
 export function totalCount(c: SeverityCounts): number {
   return c.CRITICAL + c.WARNING + c.SUGGESTION;

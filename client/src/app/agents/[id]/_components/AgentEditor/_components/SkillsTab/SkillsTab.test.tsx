@@ -28,6 +28,7 @@ const AGENT: Agent = {
   repo_intel: true,
   enabled: true,
   version: 1,
+  attached_doc_paths: [],
 };
 
 const skill = (id: string, name: string, over: Partial<Skill> = {}): Skill => ({
@@ -39,6 +40,7 @@ const skill = (id: string, name: string, over: Partial<Skill> = {}): Skill => ({
   body: "- rule",
   enabled: true,
   version: 1,
+  attached_doc_paths: [],
   ...over,
 });
 

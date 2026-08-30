@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import type {} from '@fastify/multipart';
-import { SkillSource, SkillType } from '@devdigest/shared';
+import { SetAttachedDocsBody, SkillSource, SkillType } from '@devdigest/shared';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
 import { NotFoundError, ValidationError } from '../../platform/errors.js';
@@ -23,6 +23,7 @@ const VersionParams = z.object({
  *   GET    /skills/:id              → one skill
  *   POST   /skills                  → create (v1 snapshot in skill_versions)
  *   PUT    /skills/:id              → update; a BODY change bumps version (+note)
+ *   PUT    /skills/:id/attached-docs → set project-doc paths (NO version bump)
  *   DELETE /skills/:id              → delete (agent_skills links cascade)
  *   GET    /skills/:id/stats        → per-skill stats (agents using it, versions)
  *   POST   /skills/:id/restore      → re-apply an old body as a NEW head version
@@ -123,6 +124,19 @@ export default async function skillsRoutes(appBase: FastifyInstance) {
     async (req) => {
       const { workspaceId } = await getContext(app.container, req);
       const skill = await service.update(workspaceId, req.params.id, req.body);
+      if (!skill) throw new NotFoundError('Skill not found');
+      return skill;
+    },
+  );
+
+  // Attach project docs (ordered paths, never text) — deliberately NOT a body
+  // change: `version` stays unchanged and no snapshot is recorded (AC-14).
+  app.put(
+    '/skills/:id/attached-docs',
+    { schema: { params: IdParams, body: SetAttachedDocsBody } },
+    async (req) => {
+      const { workspaceId } = await getContext(app.container, req);
+      const skill = await service.setAttachedDocs(workspaceId, req.params.id, req.body.paths);
       if (!skill) throw new NotFoundError('Skill not found');
       return skill;
     },

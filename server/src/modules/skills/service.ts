@@ -101,6 +101,21 @@ export class SkillsService {
     return row ? toSkillDto(row) : undefined;
   }
 
+  /**
+   * Replace the skill's attached project-doc paths (array order = attach
+   * order). Stores paths only, never document text (AC-16). NOT a body change:
+   * `version` and skill_versions stay untouched (AC-14). Undefined when the
+   * skill isn't in this workspace (route → 404).
+   */
+  async setAttachedDocs(
+    workspaceId: string,
+    id: string,
+    paths: string[],
+  ): Promise<Skill | undefined> {
+    const row = await this.repo.setAttachedDocs(workspaceId, id, paths);
+    return row ? toSkillDto(row) : undefined;
+  }
+
   /** Delete a skill (agent_skills links cascade). */
   async delete(workspaceId: string, id: string): Promise<boolean> {
     return this.repo.deleteById(workspaceId, id);
