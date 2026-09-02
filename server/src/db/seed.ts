@@ -14,6 +14,7 @@ import {
   API_CONTRACT_REVIEWER_PROMPT,
 } from './seed-prompts.js';
 import { API_CONTRACT_SEED_SKILLS, SEED_SKILLS } from './seed-skills.js';
+import { SEED_EVAL_CASES } from './seed-evals.js';
 
 /** Default provider/model for the built-in reviewer agents. */
 const DEFAULT_PROVIDER = 'openrouter' as const;
@@ -387,6 +388,55 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
     }
   }
 
+  // ---- agent name → id. Built once, AFTER every agent above is seeded, and
+  // shared by the fixtures below (eval cases, demo agent runs): agent ids are
+  // generated, so name is the only stable handle a fixture can reference.
+  const agentBy = new Map(
+    (
+      await db
+        .select({ id: t.agents.id, name: t.agents.name })
+        .from(t.agents)
+        .where(eq(t.agents.workspaceId, workspaceId))
+    ).map((a) => [a.name, a.id]),
+  );
+
+  // ---- L06: the seeded eval set (10 cases on the Security Reviewer).
+  // Case data lives in ./seed-evals.ts as a plain array, so `verify:l06` can
+  // assert the §11 invariants over it with no database.
+  //
+  // Insert-only, guarded by a SELECT on (workspace_id, owner_id, name).
+  // `eval_cases` has NO unique constraint on that triple — the only unique index
+  // is on `source_finding_id`, which is null here — so `onConflictDoNothing`
+  // would deduplicate nothing and a second `seed()` would double the set.
+  // `source_finding_id` stays null: a seeded case has no accept/dismiss
+  // provenance, and the case editor renders that honestly.
+  for (const c of SEED_EVAL_CASES) {
+    const ownerId = agentBy.get(c.ownerAgentName);
+    if (!ownerId) continue; // owner agent absent (renamed by the user) → skip, never orphan
+    const [existingCase] = await db
+      .select({ id: t.evalCases.id })
+      .from(t.evalCases)
+      .where(
+        and(
+          eq(t.evalCases.workspaceId, workspaceId),
+          eq(t.evalCases.ownerId, ownerId),
+          eq(t.evalCases.name, c.name),
+        ),
+      );
+    if (existingCase) continue;
+    await db.insert(t.evalCases).values({
+      workspaceId,
+      ownerKind: 'agent',
+      ownerId,
+      name: c.name,
+      inputDiff: c.inputDiff,
+      inputMeta: c.inputMeta,
+      expectedOutput: c.expectedOutput,
+      notes: c.notes,
+      sourceFindingId: null,
+    });
+  }
+
   // ---- demo agent runs (so the COST column / timeline show data on a fresh
   // seed). Two completed runs on PR #482 with realistic tokens; cost is derived
   // from the model price table — no model calls. Idempotent: skipped if runs
@@ -398,14 +448,6 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
     .where(and(eq(t.agentRuns.workspaceId, workspaceId), eq(t.agentRuns.prId, pr!.id)))
     .limit(1);
   if (!existingRun) {
-    const agentBy = new Map(
-      (
-        await db
-          .select({ id: t.agents.id, name: t.agents.name })
-          .from(t.agents)
-          .where(eq(t.agents.workspaceId, workspaceId))
-      ).map((a) => [a.name, a.id]),
-    );
     // Explicit ranAt: the Security run is the NEWEST timeline row, so its trace
     // (the only one seeded with a document) is the first "Open run trace" button
     // — the e2e project-context flow clicks it deterministically.

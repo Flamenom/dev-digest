@@ -8,6 +8,12 @@
 #    deliberate version bump.
 #  - unit: the ~19 DB-free test files (everything that is NOT `*.it.test.ts`).
 #    LLM/git/embeddings are mocked via src/adapters/mocks.ts — no Docker.
+#  - verify-l06: the L06 eval-pipeline lesson gate (`pnpm verify:l06`), run as
+#    its own job so the AC-39 claim is visible as a named check rather than
+#    buried inside the 19-file unit run. Deliberately NO provider secret in
+#    `env:` and NO `services: postgres` — the gate's whole point is that the
+#    three files are hermetic, and a job that had a key or a database could
+#    pass while the claim was false.
 #
 # DB-backed tests run in server-integration.yml. reviewer-core/** is in the
 # path filter because server aliases ../reviewer-core/src at type-check time.
@@ -97,3 +103,42 @@ jobs:
       # skip-worktree (a local variant), so the committed package.json may
       # not carry the split scripts. Run vitest directly.
       - run: pnpm exec vitest run --exclude '**/*.it.test.ts'
+
+  # The L06 gate (spec 06-eval-pipeline.md §17, AC-38/AC-39). A SUBSET of the
+  # `unit` job's files, run again on its own: `unit` proves nothing regressed,
+  # this proves the lesson's five user-stated criteria hold with no network, no
+  # API key and no Postgres. The two are cheap enough to keep separate.
+  verify-l06:
+    name: verify:l06 (eval gate)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      # Same reason as the jobs above: test/eval-service.test.ts loads the eval
+      # runner, which imports @devdigest/reviewer-core (../reviewer-core/src) →
+      # `openai`/`zod`. Without this the run dies at import with
+      # ERR_MODULE_NOT_FOUND, not with a test failure. reviewer-core uses npm.
+      - name: Install reviewer-core deps
+        working-directory: reviewer-core
+        run: npm ci
+
+      # Inlined rather than `pnpm verify:l06`, matching the `unit` job above:
+      # the committed package.json is treated as a local variant by the other
+      # jobs, so CI never depends on a script being present. The file list is
+      # the script's, verbatim.
+      - run: pnpm exec vitest run test/eval-scoring.test.ts test/eval-seed.test.ts test/eval-service.test.ts

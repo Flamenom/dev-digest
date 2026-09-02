@@ -14,6 +14,7 @@ import smartDiff from './smart-diff/routes.js';
 import blast from './blast/routes.js';
 import brief from './brief/routes.js';
 import projectContext from './project-context/routes.js';
+import evalPipeline from './eval/routes.js';
 
 /**
  * Module registry. Each feature module is a Fastify plugin in
@@ -44,4 +45,7 @@ export const modules: Record<string, FastifyPluginAsync> = {
   blast,
   brief,
   projectContext,
+  // `eval` is a reserved word, so the plugin binding is named `evalPipeline`;
+  // the REGISTRY KEY stays `eval` (registry keys are plain strings).
+  eval: evalPipeline,
 };
