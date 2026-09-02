@@ -11,6 +11,7 @@
     "arch": "depcruise src ../reviewer-core/src --config .dependency-cruiser.cjs",
     "test": "vitest run",
     "verify:l03": "vitest run test/smart-diff-helpers.test.ts",
+    "verify:l06": "vitest run test/eval-scoring.test.ts test/eval-seed.test.ts test/eval-service.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed.ts"

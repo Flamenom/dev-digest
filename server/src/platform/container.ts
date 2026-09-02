@@ -34,6 +34,10 @@ import { BlastService } from '../modules/blast/service.js';
 import { BlastRepository } from '../modules/blast/repository.js';
 import { BriefService } from '../modules/brief/service.js';
 import { BriefRepository } from '../modules/brief/repository.js';
+import { EvalRepository } from '../modules/eval/repository.js';
+import { EvalRunner } from '../modules/eval/runner.js';
+import { EvalDashboardService } from '../modules/eval/dashboard.js';
+import { EvalService } from '../modules/eval/service.js';
 import { resolveFeatureModel } from '../modules/settings/feature-models.js';
 import { type DepGraph, DepCruiseGraph } from '../adapters/depgraph/index.js';
 import { type Tokenizer, TiktokenTokenizer } from '../adapters/tokenizer/index.js';
@@ -45,6 +49,27 @@ import { type Tokenizer, TiktokenTokenizer } from '../adapters/tokenizer/index.j
  * Tests construct a container with `overrides` to inject mock adapters; the
  * Services depend on these interfaces, not the concrete classes.
  */
+/**
+ * L06 — the eval slice's SINGLE container seam.
+ *
+ * DEVIATION FROM THE PLAN, stated rather than hidden: T13 specifies
+ * `evalService?: EvalService` on the overrides, but `modules/eval/routes.ts`
+ * translates R1–R13 and R15–R17 across THREE application objects (case CRUD,
+ * the batch runner, the read-side aggregation) and `EvalService` exposes only
+ * the first. Widening it to a named three-field seam keeps the plan's actual
+ * requirement — ONE getter, ONE `EvalRepository`, one override slot — while
+ * letting the routes reach the runner and the dashboard without a second
+ * getter or a pass-through facade with 12 forwarding methods.
+ */
+export interface EvalServices {
+  /** R1–R8: case CRUD and one-click creation from a judged finding. */
+  cases: EvalService;
+  /** R9: batch execution (the in-flight lock lives on this instance). */
+  runner: EvalRunner;
+  /** R10–R13, R15–R17: aggregation, compare, run-all. */
+  dashboard: EvalDashboardService;
+}
+
 export interface ContainerOverrides {
   secrets?: SecretsProvider;
   auth?: AuthProvider;
@@ -60,6 +85,8 @@ export interface ContainerOverrides {
   blastService?: BlastService;
   /** PR Brief service — tests inject a service over mocked deps. */
   briefService?: BriefService;
+  /** L06 eval slice — tests inject the whole seam over mocked deps. */
+  evalService?: EvalServices;
   /** repo-intel T3 adapters — only the indexer pipeline reads these. */
   depgraph?: DepGraph;
   tokenizer?: Tokenizer;
@@ -90,6 +117,7 @@ export class Container {
   private _smartDiffService?: SmartDiffService;
   private _blastService?: BlastService;
   private _briefService?: BriefService;
+  private _evalServices?: EvalServices;
   private _depgraph?: DepGraph;
   private _tokenizer?: Tokenizer;
   private _priceBook?: PriceBook;
@@ -210,6 +238,46 @@ export class Container {
       resolveModel: (workspaceId) => resolveFeatureModel(this, workspaceId, 'risk_brief'),
     });
     return this._briefService;
+  }
+
+  /**
+   * L06 Eval Pipeline — the regression harness (spec `specs/06-eval-pipeline.md`).
+   *
+   * ONE `EvalRepository` is shared by all three application objects so a batch
+   * write and the read that aggregates it can never sit on two different
+   * connections' views. The runner is a SINGLETON on purpose: its in-flight
+   * `Set<agentId>` is the "one batch per agent" lock (AC-19), and a second
+   * instance would be a second lock, i.e. no lock at all — which is also why
+   * both the dashboard's `run-all` and the case service's single-case run take
+   * THIS runner rather than building their own.
+   *
+   * Explicit deps objects, never the `Container`: the slice's cross-module
+   * inputs (agents, agent versions, skills, findings → reviews → PRs → patches)
+   * arrive as bindings wired here, so `modules/eval/` never imports a sibling
+   * module's folder (onion §9).
+   */
+  get evalService(): EvalServices {
+    if (this.overrides.evalService) return this.overrides.evalService;
+    if (!this._evalServices) {
+      const evalRepo = new EvalRepository(this.db);
+      const runner = new EvalRunner({
+        evalRepo,
+        agentsRepo: this.agentsRepo,
+        skillsRepo: this.skillsRepo,
+        llm: (id) => this.llm(id),
+      });
+      this._evalServices = {
+        runner,
+        dashboard: new EvalDashboardService({ evalRepo, agentsRepo: this.agentsRepo, runner }),
+        cases: new EvalService({
+          evalRepo,
+          reviewRepo: this.reviewRepo,
+          agentsRepo: this.agentsRepo,
+          runner,
+        }),
+      };
+    }
+    return this._evalServices;
   }
 
   /** Import-graph builder (dependency-cruiser). T3 indexer pipeline only. */

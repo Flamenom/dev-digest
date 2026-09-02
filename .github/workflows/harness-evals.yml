@@ -1,0 +1,167 @@
+# Harness evals — runs the DevDigest Claude Code harness's own eval suite (evals/) against a
+# PR's changes to skills, subagents, and CLAUDE.md files.
+#
+# What runs, keyed by what changed (mirrors evals/README.md "Which change → which run"):
+#   .claude/skills/<name>/**  → skills/<name> evals, IF evals/skills/<name> has a *.eval.ts.
+#   .claude/agents/<name>.md  → agents/<name> evals, IF evals/agents/<name> has a *.eval.ts.
+#   CLAUDE.md (root or any package's) → the full workflow tier (activation/dispatch/contrast).
+#
+# A changed artifact with NO written evals is not a failure — evals/scripts/ci-detect.mjs reports
+# it as a skip, logged and left out of both jobs' matrices.
+#
+# Models: OpenRouter throughout (no Claude subscription in CI). Content-tier (skill) evals call
+# OpenRouter directly. Tool-tier (agent + workflow) evals go through the Agent SDK, so they need
+# the bundled LiteLLM proxy (evals/proxy/) to reach a non-Anthropic model — see evals/README.md
+# "Runners: Claude Code vs OpenRouter". Per evals/README.md's own measured table, DeepSeek does
+# NOT reliably dispatch subagents (falls back to inline work), so the workflow tier pins Gemini
+# 2.5 Flash; the other tiers default to DeepSeek for cost. Override either via repo Settings →
+# Secrets and variables → Actions → Variables (EVAL_MODEL_SKILL / EVAL_MODEL_AGENT /
+# EVAL_MODEL_WORKFLOW) — no workflow_dispatch input, nothing shown on the run UI.
+
+name: harness-evals
+
+on:
+  pull_request:
+    paths:
+      - '.claude/skills/**'
+      - '.claude/agents/**'
+      - 'CLAUDE.md'
+      - '**/CLAUDE.md'
+      - 'evals/**'
+      - '.github/workflows/harness-evals.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    name: detect changed artifacts
+    runs-on: ubuntu-latest
+    outputs:
+      skills: ${{ steps.detect.outputs.skills }}
+      agents: ${{ steps.detect.outputs.agents }}
+      run_workflow: ${{ steps.detect.outputs.run_workflow }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -n "${BASE_SHA:-}" ]; then
+            CHANGED_FILES="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          else
+            # workflow_dispatch (no PR context): treat everything as changed so the run is a
+            # smoke test of the wiring itself, not a no-op.
+            CHANGED_FILES="$(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)"
+          fi
+          export CHANGED_FILES
+          node evals/scripts/ci-detect.mjs
+
+  skill-evals:
+    name: skill evals (content tier, direct OpenRouter)
+    needs: detect
+    if: needs.detect.outputs.skills != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: evals
+    env:
+      EVAL_BACKEND: openrouter
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      EVAL_MODEL: ${{ vars.EVAL_MODEL_SKILL || 'deepseek/deepseek-chat' }}
+      EVAL_JUDGE_MODEL: ${{ vars.EVAL_JUDGE_MODEL_SKILL || 'deepseek/deepseek-chat' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: evals/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run skill evals
+        env:
+          SKILLS_JSON: ${{ needs.detect.outputs.skills }}
+        run: |
+          TARGETS="$(node -e 'console.log(JSON.parse(process.env.SKILLS_JSON).map(n=>"skills/"+n).join(" "))')"
+          echo "targets: $TARGETS"
+          pnpm vitest run $TARGETS
+
+  agent-and-workflow-evals:
+    name: agent + CLAUDE.md evals (tool tier, via LiteLLM proxy)
+    needs: detect
+    if: needs.detect.outputs.agents != '[]' || needs.detect.outputs.run_workflow == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: evals
+    env:
+      EVAL_BACKEND: openrouter
+      OPENROUTER_BASE_URL: http://localhost:4000
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: evals/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      # One proxy instance serves every model in this job — its route is a wildcard forwarding
+      # whatever EVAL_MODEL/EVAL_JUDGE_MODEL a step sets, so the two steps below can each pin a
+      # different model without restarting it.
+      - run: docker compose -f proxy/docker-compose.yml up -d
+      - run: pnpm proxy:wait
+
+      # !cancelled() so this suite still runs even if an earlier, independent suite in this job
+      # failed — GitHub's default step condition is success(), which would otherwise skip every
+      # step after the first failure and hide whether the rest actually pass.
+      - name: Run agent evals
+        if: needs.detect.outputs.agents != '[]' && !cancelled()
+        env:
+          AGENTS_JSON: ${{ needs.detect.outputs.agents }}
+          EVAL_MODEL: ${{ vars.EVAL_MODEL_AGENT || 'deepseek/deepseek-chat' }}
+          EVAL_JUDGE_MODEL: ${{ vars.EVAL_JUDGE_MODEL_AGENT || 'deepseek/deepseek-chat' }}
+        run: |
+          TARGETS="$(node -e 'console.log(JSON.parse(process.env.AGENTS_JSON).map(n=>"agents/"+n).join(" "))')"
+          echo "targets: $TARGETS"
+          pnpm vitest run $TARGETS
+
+      - name: Run CLAUDE.md / workflow evals
+        if: needs.detect.outputs.run_workflow == 'true' && !cancelled()
+        env:
+          # DeepSeek does not reliably dispatch subagents on this tier (measured in evals/README.md)
+          # — pin a model that does. Override via repo Variables if a cheaper option proves reliable.
+          EVAL_MODEL: ${{ vars.EVAL_MODEL_WORKFLOW || 'google/gemini-2.5-flash' }}
+          EVAL_JUDGE_MODEL: ${{ vars.EVAL_JUDGE_MODEL_WORKFLOW || 'google/gemini-2.5-flash' }}
+        run: pnpm eval:workflow
+
+      - if: failure()
+        run: docker compose -f proxy/docker-compose.yml logs --tail 100
+
+      - if: always()
+        run: docker compose -f proxy/docker-compose.yml down

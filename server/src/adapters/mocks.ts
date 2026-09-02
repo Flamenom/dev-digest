@@ -56,11 +56,14 @@ export interface MockLLMOptions {
 }
 
 export class MockLLMProvider implements LLMProvider {
-  readonly id: 'openai' | 'anthropic';
+  // The port's FULL union (plan C2): every seeded agent is `provider:
+  // 'openrouter'`, and `ContainerOverrides.llm` already keys that id, so a
+  // narrower type here made the seeded agents unmockable without an API key.
+  readonly id: LLMProvider['id'];
   public calls: { method: string; req: unknown }[] = [];
 
   constructor(
-    id: 'openai' | 'anthropic' = 'openai',
+    id: LLMProvider['id'] = 'openai',
     private opts: MockLLMOptions = {},
   ) {
     this.id = id;

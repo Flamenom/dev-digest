@@ -1,16 +1,50 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
-import type { FindingRecord } from "@devdigest/shared";
+import type { EvalCaseLink, FindingRecord } from "@devdigest/shared";
 import messages from "../../../../../../../../messages/en/prReview.json";
 
 vi.mock("@/lib/hooks/reviews", () => ({
   useFindingAction: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
+// No QueryClientProvider and no MSW in this harness — the eval hooks are mocked
+// over a mutable module-scope state object each test seeds.
+const evalHooks = vi.hoisted(() => ({
+  links: [] as EvalCaseLink[],
+}));
+
+vi.mock("@/lib/hooks/eval", () => ({
+  usePrEvalCases: () => ({ data: evalHooks.links }),
+}));
+
+vi.mock("next/navigation", () => ({ useParams: () => ({ repoId: "r1" }) }));
+
+/* The editor has its own suite; here it is a spy on WHAT the panel opens it on.
+   `caseId` = an existing case, `sourceFindingId` = an unsaved draft composed
+   from the finding — the distinction the whole "nothing is written until Save"
+   behaviour rests on. */
+vi.mock("@/components/EvalCaseEditorModal", () => ({
+  EvalCaseEditorModal: (props: {
+    caseId: string | null;
+    sourceFindingId?: string | null;
+    prId?: string | null;
+  }) => (
+    <div
+      data-testid="case-editor"
+      data-case-id={props.caseId ?? ""}
+      data-finding-id={props.sourceFindingId ?? ""}
+      data-pr-id={props.prId ?? ""}
+    />
+  ),
+}));
+
 import { FindingsPanel } from "./FindingsPanel";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  evalHooks.links = [];
+});
 
 const FINDINGS: FindingRecord[] = [
   {
@@ -124,5 +158,41 @@ describe("FindingsPanel deep-link target", () => {
     expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false");
     expect(scrolled[1]!.getAttribute("data-finding-id")).toBe("f2");
     expect(scrolled[1]!.style.boxShadow).toContain("0 0 0 1px");
+  });
+});
+
+/* --- L06 screen A: the panel owns the eval-case query + the editor ---------- */
+
+describe("FindingsPanel eval cases", () => {
+  const ACCEPTED: FindingRecord = { ...FINDINGS[0]!, accepted_at: "2026-09-01T10:00:00.000Z" };
+
+  it("opens the editor on an unsaved draft and stays on the PR", () => {
+    renderWithIntl(<FindingsPanel findings={[ACCEPTED]} prId="pr1" />);
+
+    expect(screen.queryByTestId("case-editor")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Turn into eval case" }));
+
+    const editor = screen.getByTestId("case-editor");
+    // Addressed by FINDING, not by case id: nothing has been created yet, which
+    // is what keeps the button out of its success state until Save.
+    expect(editor).toHaveAttribute("data-finding-id", "f1");
+    expect(editor).toHaveAttribute("data-case-id", "");
+    expect(editor).toHaveAttribute("data-pr-id", "pr1");
+    // Still the created state's own source of truth — an unsaved draft must not
+    // put the card into it.
+    expect(screen.getByRole("button", { name: "Turn into eval case" })).toBeInTheDocument();
+  });
+
+  it("edits the real row once a case exists, still without navigating", () => {
+    evalHooks.links = [{ finding_id: "f1", case_id: "c9", case_name: "stripe-key-leak" }];
+    renderWithIntl(<FindingsPanel findings={[ACCEPTED]} prId="pr1" />);
+
+    expect(screen.queryByRole("button", { name: "Turn into eval case" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Eval case/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Eval case/ }));
+    const editor = screen.getByTestId("case-editor");
+    expect(editor).toHaveAttribute("data-case-id", "c9");
+    expect(editor).toHaveAttribute("data-finding-id", "");
   });
 });
