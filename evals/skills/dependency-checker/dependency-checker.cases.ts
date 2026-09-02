@@ -57,11 +57,11 @@ export const cases: SkillCase[] = [
   {
     name: "distinguishes internal (path-alias) dependencies from external npm dependencies",
     kind: "quality",
-    prompt: `This repo isn't a monorepo — server, client, reviewer-core, and e2e share code via TypeScript path aliases, not workspace:* packages. Analyze our dependencies, including how these packages depend on each other internally.\n\n${REPO_DATA}`,
+    prompt: `This repo isn't a monorepo — server, client, reviewer-core, and e2e share code via TypeScript path aliases, not workspace:* packages. Analyze our dependencies, including how these packages depend on each other internally. Include a dedicated "Internal vs External Dependencies" subsection that explicitly separates the two.\n\n${REPO_DATA}`,
     practices: [
-      "the answer explicitly distinguishes internal cross-package dependencies (the @shared/review-types alias and the direct relative import into reviewer-core/src/pipeline.js) from external npm package dependencies, rather than treating them as the same kind of dependency",
+      "the report has a section that explicitly labels the @shared/review-types alias and the relative import into reviewer-core/src/pipeline.js as internal/intra-repo dependencies, kept distinct from the external npm packages",
       "the answer flags server/src/services/review-service.ts importing reviewer-core/src/pipeline.js by relative path instead of through reviewer-core's public entry point as a P0-tier or otherwise explicitly called-out issue",
-      "the answer does not claim these packages are linked via workspace:* or pnpm workspaces, since the project explicitly is not a monorepo",
+      "the report explicitly states these internal dependencies are connected via TypeScript path aliases or relative imports, not npm's workspace:* protocol",
     ],
     threshold: 0.6,
     maxTurns: 10,

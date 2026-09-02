@@ -137,8 +137,11 @@ jobs:
       - run: docker compose -f proxy/docker-compose.yml up -d
       - run: pnpm proxy:wait
 
+      # !cancelled() so this suite still runs even if an earlier, independent suite in this job
+      # failed — GitHub's default step condition is success(), which would otherwise skip every
+      # step after the first failure and hide whether the rest actually pass.
       - name: Run agent evals
-        if: needs.detect.outputs.agents != '[]'
+        if: needs.detect.outputs.agents != '[]' && !cancelled()
         env:
           AGENTS_JSON: ${{ needs.detect.outputs.agents }}
           EVAL_MODEL: ${{ vars.EVAL_MODEL_AGENT || 'deepseek/deepseek-chat' }}
@@ -149,7 +152,7 @@ jobs:
           pnpm vitest run $TARGETS
 
       - name: Run CLAUDE.md / workflow evals
-        if: needs.detect.outputs.run_workflow == 'true'
+        if: needs.detect.outputs.run_workflow == 'true' && !cancelled()
         env:
           # DeepSeek does not reliably dispatch subagents on this tier (measured in evals/README.md)
           # — pin a model that does. Override via repo Variables if a cheaper option proves reliable.
