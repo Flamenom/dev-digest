@@ -26,6 +26,7 @@ import { ConfigError } from './errors.js';
 import { AgentsRepository } from '../modules/agents/repository.js';
 import { SkillsRepository } from '../modules/skills/repository.js';
 import { ReviewRepository } from '../modules/reviews/repository.js';
+import { PullRequestRepository } from '../modules/pulls/repository.js';
 import type { RepoIntel } from '../modules/repo-intel/types.js';
 import { RepoIntelService } from '../modules/repo-intel/service.js';
 import { createIntentDeriver, type IntentDeriver } from '../modules/reviews/intent-deriver.js';
@@ -79,6 +80,8 @@ export interface ContainerOverrides {
   embedder?: Embedder;
   /** Pre-built providers by id (skip key lookup). */
   llm?: Partial<Record<'openai' | 'anthropic' | 'openrouter', LLMProvider>>;
+  /** `pull_requests` writes (list sync + diff-stat backfill) — tests inject a fake. */
+  pullRequestRepo?: PullRequestRepository;
   /** repo-intel facade (T1.1+) — tests inject mock RepoIntel implementations. */
   repoIntel?: RepoIntel;
   /** L04 blast service — tests inject a service over mocked deps. */
@@ -112,6 +115,7 @@ export class Container {
   private _agentsRepo?: AgentsRepository;
   private _skillsRepo?: SkillsRepository;
   private _reviewRepo?: ReviewRepository;
+  private _pullRequestRepo?: PullRequestRepository;
   private _repoIntel?: RepoIntel;
   private _intent?: IntentDeriver;
   private _smartDiffService?: SmartDiffService;
@@ -152,6 +156,12 @@ export class Container {
 
   get reviewRepo(): ReviewRepository {
     return (this._reviewRepo ??= new ReviewRepository(this.db));
+  }
+
+  /** F1 — PR-list writes shared by the pulls and polling modules. */
+  get pullRequestRepo(): PullRequestRepository {
+    if (this.overrides.pullRequestRepo) return this.overrides.pullRequestRepo;
+    return (this._pullRequestRepo ??= new PullRequestRepository(this.db));
   }
 
   get codeIndex(): CodeIndex {

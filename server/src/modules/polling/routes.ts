@@ -4,7 +4,6 @@ import { and, eq } from 'drizzle-orm';
 import * as t from '../../db/schema.js';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
-import { upsertPullRequestList } from '../_shared/repository/pr-sync.js';
 import { NotFoundError } from '../../platform/errors.js';
 
 /**
@@ -28,7 +27,7 @@ export default async function pollingRoutes(appBase: FastifyInstance) {
 
     const gh = await container.github();
     const pulls = await gh.listPullRequests({ owner: repo.owner, name: repo.name });
-    const synced = await upsertPullRequestList(container.db, { workspaceId, repoId: repo.id }, pulls);
+    const synced = await container.pullRequestRepo.upsertList({ workspaceId, repoId: repo.id }, pulls);
     await container.db
       .update(t.repos)
       .set({ lastPolledAt: new Date() })

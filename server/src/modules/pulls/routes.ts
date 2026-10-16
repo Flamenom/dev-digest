@@ -7,7 +7,6 @@ import * as t from '../../db/schema.js';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
 import { latestReviewPerAgent, rollupReviews } from '../_shared/review-rollup.js';
-import { upsertPullRequestList } from '../_shared/repository/pr-sync.js';
 import { AppError, NotFoundError } from '../../platform/errors.js';
 import { deriveReviewStatus } from './status.js';
 
@@ -45,7 +44,7 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
     if (gh) {
       try {
         const pulls = await gh.listPullRequests({ owner: repo.owner, name: repo.name });
-        await upsertPullRequestList(container.db, { workspaceId, repoId: repo.id }, pulls);
+        await container.pullRequestRepo.upsertList({ workspaceId, repoId: repo.id }, pulls);
       } catch (err) {
         app.log.warn({ err }, 'GitHub PR sync skipped (no token / offline); serving persisted PRs');
       }
@@ -72,19 +71,16 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
         needStats.map(async (r) => {
           try {
             const detail = await client.getPullRequest({ owner: repo.owner, name: repo.name }, r.number);
-            await container.db
-              .update(t.pullRequests)
-              .set({
-                additions: detail.additions,
-                deletions: detail.deletions,
-                filesCount: detail.files_count,
-              })
-              .where(eq(t.pullRequests.id, r.id));
+            await container.pullRequestRepo.updateDiffStats(workspaceId, r.id, {
+              additions: detail.additions,
+              deletions: detail.deletions,
+              filesCount: detail.files_count,
+            });
             r.additions = detail.additions;
             r.deletions = detail.deletions;
             r.filesCount = detail.files_count;
           } catch (err) {
-            app.log.warn({ err, number: r.number }, 'PR diff-stat backfill skipped');
+            req.log.warn({ err, number: r.number }, 'PR diff-stat backfill skipped');
           }
         }),
       );
