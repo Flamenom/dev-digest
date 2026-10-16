@@ -88,6 +88,36 @@ module.exports = {
       },
     },
 
+    // ======== the eval slice's pure modules — clean today, keep it ==========
+    {
+      name: 'eval-scoring-purity',
+      comment:
+        'modules/eval/{scoring,alerts,naming,prompt-diff,constants}.ts are PURE decision rules — ' +
+        'plain data in, counters out (onion §2: "pure functions are not infrastructure"). They are ' +
+        'the product claim of L06: scoring must be reproducible with ZERO LLM calls and zero I/O, ' +
+        'and `verify:l06` must import them with no database, no API key and no network in their ' +
+        'graph (AC-36, AC-38/39). So: no drizzle/postgres, no fastify, no adapters, no db/, no ' +
+        'composition root, and no filesystem/subprocess/network builtin. If one of these needs a ' +
+        'row or a client, the caller resolves it and passes plain data in — do not widen this rule. ' +
+        'EXCEPTION (see `to.pathNot`): `node:crypto` is permitted, and only for `createHash` in ' +
+        'the §4.7 case fingerprint. It is a pure, deterministic transform — no descriptor, no ' +
+        'socket, no process — so it does not make the module impure or non-hermetic, unlike every ' +
+        'other builtin banned above.',
+      severity: 'error',
+      from: { path: '^src/modules/eval/(scoring|alerts|naming|prompt-diff|constants)\\.ts$' },
+      to: {
+        path: [
+          DB_PACKAGES,
+          WEB_FRAMEWORK,
+          '^src/adapters/',
+          '^src/db/',
+          '^src/platform/container\\.ts$',
+          '^(node:)?(fs|fs/promises|child_process|net|http|https|dns|dgram)$',
+        ].join('|'),
+        pathNot: '^(node:)?crypto$',
+      },
+    },
+
     // ======== ring: presentation is outermost — clean today, keep it =========
     {
       name: 'no-fastify-inward',

@@ -33,4 +33,5 @@ export * from './contracts/intent.js';
 export * from './contracts/blast.js';
 export * from './contracts/project-context.js';
 export * from './contracts/pr-brief.js';
+export * from './contracts/eval-pipeline.js';
 export * from './adapters.js';

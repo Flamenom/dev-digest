@@ -24,6 +24,7 @@ const VersionParams = z.object({
  *   PUT    /agents/:id              → update / toggle enabled (versions config)
  *   GET    /agents/:id/versions     → config history (newest first)
  *   GET    /agents/:id/versions/:version → one config snapshot
+ *   POST   /agents/:id/versions/:version/promote → re-apply a snapshot (new highest version)
  *   GET    /agents/:id/skills       → linked skills (ordered)
  *   POST   /agents/:id/skills       → set/reorder linked skills OR link one
  *   PUT    /agents/:id/attached-docs → set ordered attached doc paths (no version bump)
@@ -140,6 +141,22 @@ export default async function agentsRoutes(appBase: FastifyInstance) {
       const version = await service.getVersion(workspaceId, req.params.id, req.params.version);
       if (!version) throw new NotFoundError('Agent version not found');
       return version;
+    },
+  );
+
+  /**
+   * R14 — promote a stored snapshot back onto the live agent. Version history is
+   * append-only, so this creates a NEW highest version (never a rollback); an
+   * identical config creates nothing and answers `changed: false` (AC-31, AC-32).
+   */
+  app.post(
+    '/agents/:id/versions/:version/promote',
+    { schema: { params: VersionParams } },
+    async (req) => {
+      const { workspaceId } = await getContext(app.container, req);
+      const result = await service.promoteVersion(workspaceId, req.params.id, req.params.version);
+      if (!result) throw new NotFoundError('Agent version not found');
+      return result;
     },
   );
 

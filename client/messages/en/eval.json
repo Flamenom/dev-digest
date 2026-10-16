@@ -1,14 +1,30 @@
 {
   "dashboard": {
     "defaultTitle": "Eval Dashboard",
+    "subtitle": "Replay judged findings through your reviewer agents and watch recall, precision and citation accuracy move.",
     "loading": "Loading eval metrics…",
     "casesSummary": "{count, plural, one {# eval case} other {# eval cases}} · gold set · {runs, plural, one {# run} other {# runs}}",
     "configure": "Configure eval cases →",
     "runEval": "Run eval ({count})",
+    "runAllAgents": "Run all agents",
     "running": "Running…",
+    "agentsHeading": "Agents",
     "metricTrend": "Metric trend",
     "recentRuns": "Recent runs",
+    "recentAllAgents": "Recent eval runs · all agents",
     "noRuns": "No runs yet. Create an eval case and run it.",
+    "noRunsInWindow": "No eval runs in the last {days, plural, one {# day} other {# days}}.",
+    "noCases": "No eval cases",
+    "lastRun": "Last run v{version} · {ranAt} · {passed}/{total} pass",
+    "windowLabel": "Date range",
+    "window": {
+      "7": "7 days",
+      "30": "30 days",
+      "90": "90 days",
+      "all": "All time"
+    },
+    "allAgentsBack": "← All agents",
+    "version": "v{version}",
     "metrics": {
       "recall": "RECALL",
       "precision": "PRECISION",
@@ -28,7 +44,41 @@
       "cost": "Cost"
     },
     "pass": "pass",
-    "fail": "fail"
+    "fail": "fail",
+    "alert": {
+      "precisionDown": "Precision dipped {pts, plural, one {# pt} other {# pts}} on v{version}",
+      "precisionUp": "Precision rose {pts, plural, one {# pt} other {# pts}} on v{version}",
+      "recallDown": "Recall dipped {pts, plural, one {# pt} other {# pts}} on v{version}",
+      "recallUp": "Recall rose {pts, plural, one {# pt} other {# pts}} on v{version}",
+      "citationDown": "Citation accuracy dipped {pts, plural, one {# pt} other {# pts}} on v{version}",
+      "citationUp": "Citation accuracy rose {pts, plural, one {# pt} other {# pts}} on v{version}",
+      "newFalsePositive": "a new false positive slipped in.",
+      "othersUp": "{count, plural, one {{metrics} is also up.} other {{metrics} are both up.}}",
+      "othersDown": "{count, plural, one {{metrics} is also down.} other {{metrics} are both down.}}",
+      "othersMixed": "Also moved: {metrics}."
+    }
+  },
+  "compare": {
+    "title": "Compare eval batches",
+    "subtitle": "Base v{baseVersion} · {baseRanAt} → head v{headVersion} · {headRanAt}",
+    "promptDiff": "System prompt diff",
+    "legendOld": "− removed (base)",
+    "legendNew": "+ added (head)",
+    "promptDiffUnavailable": "No system prompt diff available — one of these batches has no recorded agent version.",
+    "notComparable": "The case set changed between these two runs, so these deltas are not like-for-like.",
+    "changedCases": "{count, plural, one {# case changed} other {# cases changed}}",
+    "close": "Close",
+    "promote": "Promote v{version}",
+    "promoteConfirm": "Promote v{version}'s configuration. The agent is at v{current}, so this creates v{next} with v{version}'s settings. Every version in between stays in history.",
+    "promoteToast": "v{version} promoted as v{next}.",
+    "promoteAlreadyActive": "v{version} is already the active configuration.",
+    "selectTwo": "Select two runs to compare.",
+    "delta": {
+      "recall": "Recall",
+      "precision": "Precision",
+      "citation": "Citation",
+      "cost": "Cost"
+    }
   },
   "caseEditor": {
     "newCase": "New eval case",
@@ -37,6 +87,9 @@
     "running": "Running…",
     "save": "Save",
     "saving": "Saving…",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "deleteConfirmWithRuns": "This case has {count, plural, one {# recorded run} other {# recorded runs}}. Deleting it also removes {count, plural, one {that run} other {those runs}} from past batches. Delete anyway?",
     "nameLabel": "Name",
     "namePlaceholder": "stripe-key-leak",
     "inputLabel": "Input",
@@ -50,28 +103,68 @@
     "bodyLabel": "Body",
     "bodyPlaceholder": "Wire up payments via Stripe SDK.",
     "preview": "Preview",
+    "kindLabel": "Expectation kind",
+    "kind": {
+      "mustFind": "must find",
+      "mustNotFlag": "must not flag"
+    },
     "expectedOutput": "Expected output",
+    "findingSkeleton": "+ Finding skeleton",
     "validJson": "valid JSON",
     "invalidJson": "invalid JSON",
+    "expectationNotInDiff": "Lines {start}–{end} of {file} are not inside any hunk of this case's diff. The grounding gate will drop the correct answer, so recall can never reach 100% on this case.",
+    "emptyDiff": "This diff parses to zero files — the case will error as “empty diff” before any model call.",
+    "sourceFinding": "Created from a judged finding.",
+    "sourceFindingGone": "The source finding no longer exists — this case is kept as it was created.",
+    "runOnSave": "Run on save",
     "lastRunPassed": "Last run passed",
     "lastRunFailed": "Last run failed",
-    "resultSummary": "recall {recall}% · precision {precision}% · citation {citation}% · {duration}s"
+    "resultSummary": "recall {recall}% · precision {precision}% · citation {citation}% · {duration}s",
+    "actualOutput": "Actual output",
+    "neverRunYet": "Never run yet",
+    "newSubtitle": "Simulate a PR and assert the expected output",
+    "editSubtitle": "Simulate a PR and assert the expected output",
+    "seededFromAccepted": "Seeded from an accepted finding · assert the expected output",
+    "seededFromDismissed": "Seeded from a dismissed finding · assert it is NOT flagged",
+    "kindBanner": {
+      "positiveTitle": "Positive case",
+      "positiveBody": "MUST find the expected finding",
+      "negativeTitle": "Negative case",
+      "negativeBody": "MUST NOT flag the expected location"
+    }
   },
   "evalsTab": {
     "metricsTitle": "Eval metrics",
     "metricsSubtitle": "Recall / Precision / Citation for this agent's eval cases",
+    "viewFullDashboard": "View full dashboard →",
     "casesHeading": "Eval cases",
+    "passingPill": "{passed} / {total} passing",
+    "runAll": "Run all evals",
     "newCase": "New case",
     "loadingCases": "Loading cases…",
     "emptyCases": "No eval cases yet. Create one to assert this agent's expected findings on a sample diff.",
     "neverRun": "never run",
     "passed": "passed",
     "failed": "failed",
+    "tracesPassed": "{passed} / {total} cases passed",
+    "badgeEmpty": "no expectations",
+    "expectedGot": "expected {expected}, got {actual}",
+    "expectedGotNone": "expected {expected}, got none",
     "recallSuffix": " · recall {recall}%",
     "run": "Run",
     "running": "Running…",
     "edit": "Edit",
     "delete": "Delete"
+  },
+  "errors": {
+    "batchAlreadyRunning": "A batch is already running for this agent. Wait for it to finish.",
+    "noCases": "This agent has no eval cases to run.",
+    "tooManyCases": "Too many eval cases for one batch.",
+    "emptyDiff": "This case's diff parses to zero files, so it cannot be run.",
+    "crossAgentCompare": "These batches belong to different agents and cannot be compared.",
+    "sameBatch": "Pick two different batches to compare.",
+    "caseHasRuns": "This case has {count, plural, one {# recorded run} other {# recorded runs}} and was not deleted.",
+    "draftUnavailable": "This finding can no longer be turned into an eval case. Accept or dismiss it first, and make sure its file has a stored patch. Nothing was created."
   },
   "page": {
     "crumbSkillsLab": "Skills Lab",

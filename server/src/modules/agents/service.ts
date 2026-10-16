@@ -5,10 +5,13 @@ import type {
   AgentSkillLink,
   AgentVersion,
   CiFailOn,
+  EvalPromoteResult,
   ModelInfo,
   Provider,
   ReviewStrategy,
 } from '@devdigest/shared';
+import { AgentVersionConfig } from '@devdigest/shared';
+import { ValidationError } from '../../platform/errors.js';
 import { AgentsRepository } from './repository.js';
 import { toAgentDto, toAgentListItemDto, toAgentVersionDto } from './helpers.js';
 
@@ -47,6 +50,26 @@ export interface UpdateAgentInput {
   ci_fail_on?: CiFailOn;
   repo_intel?: boolean;
   enabled?: boolean;
+}
+
+/**
+ * Order-insensitive structural comparison of two JSON-ish values, rendered as a
+ * canonical string with object keys sorted. Used only to decide whether a
+ * snapshot's `output_schema` genuinely differs from the live one: `isConfigChange`
+ * deliberately treats ANY `outputSchema !== undefined` as a config change
+ * (`helpers.ts`), so replaying an identical schema would bump the version and
+ * break the "identical config ⇒ changed: false" rule (AC-32).
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || value === undefined) return 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
 }
 
 export class AgentsService {
@@ -148,6 +171,71 @@ export class AgentsService {
     if (!agent) return undefined;
     const row = await this.repo.getVersion(agentId, version);
     return row ? toAgentVersionDto(row) : undefined;
+  }
+
+  /**
+   * Promote a stored config snapshot back onto the live agent (AC-31, AC-32).
+   *
+   * Deliberately goes through the SAME path as `PUT /agents/:id` —
+   * `update` → `isConfigChange` → `snapshotVersion` — instead of re-implementing
+   * version-bump semantics: history is append-only, so promoting v7 while the
+   * agent is at v9 creates **v10** with v7's settings, exactly like a git revert.
+   * Nothing is rewritten and every past eval batch keeps pointing at the version
+   * it really ran.
+   *
+   * `output_schema` is passed ONLY when it actually differs, because
+   * `isConfigChange` counts any defined `outputSchema` as a change; passing it
+   * unconditionally would bump the version even for an identical config.
+   * `attached_doc_paths` is not part of a snapshot and is never touched here.
+   *
+   * Returns undefined when the agent isn't in this workspace OR that version was
+   * never recorded (the route maps both to 404, never 403). Throws 422 when the
+   * stored snapshot is malformed and cannot be applied.
+   */
+  async promoteVersion(
+    workspaceId: string,
+    agentId: string,
+    version: number,
+  ): Promise<EvalPromoteResult | undefined> {
+    const existing = await this.get(workspaceId, agentId);
+    if (!existing) return undefined;
+
+    const snapshot = await this.repo.getVersion(agentId, version);
+    if (!snapshot) return undefined;
+
+    // `config_json` is untyped jsonb; an older/drifted snapshot must not be
+    // applied blindly to the live agent.
+    const parsed = AgentVersionConfig.safeParse(snapshot.configJson);
+    if (!parsed.success) {
+      throw new ValidationError(`Stored config for version ${version} is not a valid snapshot`, {
+        version,
+        issues: parsed.error.issues,
+      });
+    }
+    const config = parsed.data;
+
+    const outputSchemaChanged =
+      canonicalJson(config.output_schema) !== canonicalJson(existing.output_schema);
+
+    const agent = await this.update(workspaceId, agentId, {
+      provider: config.provider,
+      model: config.model,
+      system_prompt: config.system_prompt,
+      strategy: config.strategy,
+      ci_fail_on: config.ci_fail_on,
+      repo_intel: config.repo_intel,
+      ...(outputSchemaChanged ? { output_schema: config.output_schema ?? null } : {}),
+    });
+    if (!agent) return undefined;
+
+    return {
+      agent,
+      promoted_from_version: version,
+      // A config change bumped the version inside `repo.update`; an identical
+      // config left it untouched, which is exactly AC-32's `changed: false`.
+      new_version: agent.version,
+      changed: agent.version !== existing.version,
+    };
   }
 
   /** Linked skills for an agent as AgentSkillLink[] (ordered). */

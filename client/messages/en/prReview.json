@@ -9,7 +9,12 @@
     "replyToAuthor": "Reply to author",
     "replyPlaceholder": "Reply to the author about this finding…",
     "sendReply": "Send reply",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "turnIntoEvalCase": "Turn into eval case",
+    "evalCaseCreated": "Eval case ✓",
+    "evalCaseJudgeFirst": "Accept or dismiss this finding first",
+    "evalCaseNoPatch": "No stored patch for this file, so there is no diff to pin as an eval case",
+    "evalCaseNoAgent": "This review has no agent, so an eval case has no owner"
   },
   "trifecta": {
     "lethal": "LETHAL TRIFECTA — ALL 3 PRESENT",

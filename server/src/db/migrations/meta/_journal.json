@@ -127,6 +127,13 @@
       "when": 1787905804687,
       "tag": "0017_zippy_mephisto",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1788363979942,
+      "tag": "0018_demonic_jocasta",
+      "breakpoints": true
     }
   ]
 }

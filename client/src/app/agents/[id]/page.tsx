@@ -12,7 +12,9 @@ import { AgentEditor } from "./_components/AgentEditor";
 import { useAgents, useAgent, useUpdateAgent } from "../../../lib/hooks/agents";
 import { ApiError } from "../../../lib/api";
 
-const VALID_TABS = ["config", "skills", "context"];
+/** Keep in lockstep with `AgentEditor/constants.ts` TABS — an unlisted key makes
+    the `?tab=` deep link silently fall back to `config`. */
+const VALID_TABS = ["config", "skills", "context", "evals"];
 
 export default function AgentEditorPage() {
   const params = useParams<{ id: string }>();
