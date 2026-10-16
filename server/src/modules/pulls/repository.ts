@@ -20,6 +20,12 @@ export interface DiffStats {
   filesCount: number;
 }
 
+/** The `pull_requests` write port — what consumers (and test fakes) depend on. */
+export interface PullRequestStore {
+  upsertList(scope: PrScope, pulls: readonly PrMeta[], tx?: PullsExecutor): Promise<number>;
+  updateDiffStats(workspaceId: string, prId: string, stats: DiffStats, tx?: PullsExecutor): Promise<void>;
+}
+
 /** `excluded.<col>` for an ON CONFLICT set — column name taken from the schema, so a rename breaks the build. */
 function excluded(column: AnyPgColumn): SQL {
   return sql.raw(`excluded.${column.name}`);
@@ -32,7 +38,7 @@ function excluded(column: AnyPgColumn): SQL {
  * Every method takes an optional `tx` so a service can compose it into a larger
  * `db.transaction`; the repository never opens one itself.
  */
-export class PullRequestRepository {
+export class PullRequestRepository implements PullRequestStore {
   constructor(private db: Db) {}
 
   private exec(tx?: PullsExecutor): Db {
