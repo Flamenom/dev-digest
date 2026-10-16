@@ -7,6 +7,7 @@ import * as t from '../../db/schema.js';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
 import { latestReviewPerAgent, rollupReviews } from '../_shared/review-rollup.js';
+import { upsertPullRequestList } from '../_shared/repository/pr-sync.js';
 import { AppError, NotFoundError } from '../../platform/errors.js';
 import { deriveReviewStatus } from './status.js';
 
@@ -44,35 +45,7 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
     if (gh) {
       try {
         const pulls = await gh.listPullRequests({ owner: repo.owner, name: repo.name });
-        for (const pr of pulls) {
-          await container.db
-            .insert(t.pullRequests)
-            .values({
-              workspaceId,
-              repoId: repo.id,
-              number: pr.number,
-              title: pr.title,
-              author: pr.author,
-              branch: pr.branch,
-              base: pr.base,
-              headSha: pr.head_sha,
-              additions: pr.additions,
-              deletions: pr.deletions,
-              filesCount: pr.files_count,
-              status: pr.status,
-              openedAt: pr.opened_at ? new Date(pr.opened_at) : null,
-              updatedAt: pr.updated_at ? new Date(pr.updated_at) : null,
-            })
-            .onConflictDoUpdate({
-              target: [t.pullRequests.repoId, t.pullRequests.number],
-              set: {
-                title: pr.title,
-                headSha: pr.head_sha,
-                status: pr.status,
-                updatedAt: pr.updated_at ? new Date(pr.updated_at) : null,
-              },
-            });
-        }
+        await upsertPullRequestList(container.db, { workspaceId, repoId: repo.id }, pulls);
       } catch (err) {
         app.log.warn({ err }, 'GitHub PR sync skipped (no token / offline); serving persisted PRs');
       }
@@ -92,24 +65,29 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
       const needStats = rows
         .filter((r) => r.additions === 0 && r.deletions === 0 && r.filesCount === 0)
         .slice(0, BACKFILL_LIMIT);
-      for (const r of needStats) {
-        try {
-          const detail = await gh.getPullRequest({ owner: repo.owner, name: repo.name }, r.number);
-          await container.db
-            .update(t.pullRequests)
-            .set({
-              additions: detail.additions,
-              deletions: detail.deletions,
-              filesCount: detail.files_count,
-            })
-            .where(eq(t.pullRequests.id, r.id));
-          r.additions = detail.additions;
-          r.deletions = detail.deletions;
-          r.filesCount = detail.files_count;
-        } catch (err) {
-          app.log.warn({ err, number: r.number }, 'PR diff-stat backfill skipped');
-        }
-      }
+      // Detail fetches are independent — run them concurrently (bounded by
+      // BACKFILL_LIMIT); one failure skips only that PR.
+      const client = gh;
+      await Promise.all(
+        needStats.map(async (r) => {
+          try {
+            const detail = await client.getPullRequest({ owner: repo.owner, name: repo.name }, r.number);
+            await container.db
+              .update(t.pullRequests)
+              .set({
+                additions: detail.additions,
+                deletions: detail.deletions,
+                filesCount: detail.files_count,
+              })
+              .where(eq(t.pullRequests.id, r.id));
+            r.additions = detail.additions;
+            r.deletions = detail.deletions;
+            r.filesCount = detail.files_count;
+          } catch (err) {
+            app.log.warn({ err, number: r.number }, 'PR diff-stat backfill skipped');
+          }
+        }),
+      );
     }
 
     // SCORE + FINDINGS severity breakdown per PR for the list's score ring and

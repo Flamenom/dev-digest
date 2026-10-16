@@ -4,6 +4,7 @@ import { and, eq } from 'drizzle-orm';
 import * as t from '../../db/schema.js';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
+import { upsertPullRequestList } from '../_shared/repository/pr-sync.js';
 import { NotFoundError } from '../../platform/errors.js';
 
 /**
@@ -27,36 +28,7 @@ export default async function pollingRoutes(appBase: FastifyInstance) {
 
     const gh = await container.github();
     const pulls = await gh.listPullRequests({ owner: repo.owner, name: repo.name });
-    let synced = 0;
-    for (const pr of pulls) {
-      await container.db
-        .insert(t.pullRequests)
-        .values({
-          workspaceId,
-          repoId: repo.id,
-          number: pr.number,
-          title: pr.title,
-          author: pr.author,
-          branch: pr.branch,
-          base: pr.base,
-          headSha: pr.head_sha,
-          additions: pr.additions,
-          deletions: pr.deletions,
-          filesCount: pr.files_count,
-          status: pr.status,
-          updatedAt: pr.updated_at ? new Date(pr.updated_at) : null,
-        })
-        .onConflictDoUpdate({
-          target: [t.pullRequests.repoId, t.pullRequests.number],
-          set: {
-            title: pr.title,
-            headSha: pr.head_sha,
-            status: pr.status,
-            updatedAt: pr.updated_at ? new Date(pr.updated_at) : null,
-          },
-        });
-      synced++;
-    }
+    const synced = await upsertPullRequestList(container.db, { workspaceId, repoId: repo.id }, pulls);
     await container.db
       .update(t.repos)
       .set({ lastPolledAt: new Date() })
