@@ -1266,9 +1266,14 @@ describe('§14 scoring cost', () => {
     };
 
     runOnce(); // warm-up: exclude first-call JIT from an upper bound
-    // Best of three: an upper bound must not be defeated by a GC pause or the
+    // Best of ten: an upper bound must not be defeated by a GC pause or the
     // scheduler on a loaded CI box. Measured locally at ~7 ms.
-    const elapsed = Math.min(runOnce(), runOnce(), runOnce());
-    expect(elapsed).toBeLessThan(20);
+    const elapsed = Math.min(...Array.from({ length: 10 }, runOnce));
+    // §14's 20 ms is "on the test machine" (a dev laptop). GitHub's shared
+    // runners measure 24–38 ms for the same work, so CI gets a 5× budget —
+    // an extra ×N (=50) factor, the regression this guards against, would
+    // still overshoot it by an order of magnitude.
+    const budgetMs = process.env.CI ? 100 : 20;
+    expect(elapsed).toBeLessThan(budgetMs);
   });
 });
