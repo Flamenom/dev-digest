@@ -32,8 +32,10 @@
  */
 import { isIP } from 'node:net';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { RateLimitOptions } from '@fastify/rate-limit';
 import type { Principal, PrincipalProvider } from '@devdigest/shared';
 import { AppError } from '../errors.js';
+import { describeError } from '../errors-describe.js';
 import {
   CsrfRejectedError,
   ForbiddenRoleError,
@@ -217,7 +219,7 @@ async function resolvePrincipal(
   try {
     return await principals().resolve(req);
   } catch (err) {
-    req.log.error({ err: (err as Error)?.message }, 'principal resolution failed — request denied');
+    req.log.error(describeError(err), 'principal resolution failed — request denied');
     throw new AuthUnavailableError();
   }
 }
@@ -297,13 +299,13 @@ export function installRoutePolicyHooks(app: FastifyInstance): void {
       keys.add(policyKey(method, route.url));
       const { perIpRateLimit } = lookupPolicy(method, route.url).policy;
       if (perIpRateLimit) {
-        route.config = {
-          ...(route.config ?? {}),
-          rateLimit: {
-            ...perIpRateLimit,
-            keyGenerator: (req: FastifyRequest) => `ip:${req.ip}`,
-          },
-        } as typeof route.config;
+        const rateLimit = {
+          ...perIpRateLimit,
+          keyGenerator: (req: FastifyRequest) => `ip:${req.ip}`,
+        } satisfies RateLimitOptions;
+        // `rateLimit` is typed on FastifyContextConfig by @fastify/rate-limit's
+        // module augmentation, so a shape mismatch fails typecheck here.
+        route.config = { ...(route.config ?? {}), rateLimit };
       }
     }
   });

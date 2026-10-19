@@ -17,6 +17,14 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { AuditEventInput } from '@devdigest/shared';
 import { lookupPolicy, type AuditContext } from './route-policy.js';
+import { describeError } from '../errors-describe.js';
+
+/**
+ * In-flight audit writes above this count signal a stalled audit store. We
+ * warn (once per burst — re-armed when the set drains below the threshold)
+ * but never drop events: every committed mutation still gets its row.
+ */
+export const AUDIT_IN_FLIGHT_WARN_THRESHOLD = 1000;
 
 function parseJson(payload: unknown): unknown {
   const text =
@@ -38,19 +46,23 @@ export interface AuditHookDeps {
 const inFlight = new WeakMap<FastifyInstance, Set<Promise<void>>>();
 
 /**
- * Resolves once every audit write started so far has finished (success or
- * logged failure). Writes are registered synchronously in `onSend`, i.e.
- * before the response is delivered, so a caller that awaits this right after
- * a request (`inject`) always sees that request's row.
+ * Resolves once every audit write has finished (success or logged failure) —
+ * including writes started WHILE draining (a response still in `onSend` during
+ * shutdown): the set is re-checked until it is empty, not snapshotted once.
+ * Writes are registered synchronously in `onSend`, i.e. before the response is
+ * delivered, so a caller that awaits this right after a request (`inject`)
+ * always sees that request's row.
  */
 export async function auditWritesSettled(app: FastifyInstance): Promise<void> {
   const writes = inFlight.get(app);
-  if (writes && writes.size > 0) await Promise.allSettled([...writes]);
+  if (!writes) return;
+  while (writes.size > 0) await Promise.allSettled([...writes]);
 }
 
 export function installAuditHook(app: FastifyInstance, deps: AuditHookDeps): void {
   const writes = new Set<Promise<void>>();
   inFlight.set(app, writes);
+  let burstWarned = false;
 
   /** Start the write and track it; a failure is logged, never surfaced (the mutation is committed). */
   const startWrite = (req: FastifyRequest, action: string, event: AuditEventInput): void => {
@@ -58,11 +70,21 @@ export function installAuditHook(app: FastifyInstance, deps: AuditHookDeps): voi
       try {
         await deps.audit().record(event);
       } catch (err) {
-        req.log.error({ action, err: (err as Error)?.message }, 'audit event could not be recorded');
+        req.log.error({ action, ...describeError(err) }, 'audit event could not be recorded');
       }
     })();
     writes.add(write);
-    void write.finally(() => writes.delete(write));
+    if (writes.size > AUDIT_IN_FLIGHT_WARN_THRESHOLD && !burstWarned) {
+      burstWarned = true;
+      req.log.warn(
+        { inFlight: writes.size, threshold: AUDIT_IN_FLIGHT_WARN_THRESHOLD },
+        'audit writes are backing up (none dropped)',
+      );
+    }
+    void write.finally(() => {
+      writes.delete(write);
+      if (writes.size <= AUDIT_IN_FLIGHT_WARN_THRESHOLD) burstWarned = false;
+    });
   };
 
   // Build the event while the payload is at hand and start the write — not
@@ -100,7 +122,7 @@ export function installAuditHook(app: FastifyInstance, deps: AuditHookDeps): voi
       };
     } catch (err) {
       req.log.error(
-        { action: descriptor.action, err: (err as Error)?.message },
+        { action: descriptor.action, ...describeError(err) },
         'audit event could not be recorded',
       );
       return payload;

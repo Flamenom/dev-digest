@@ -7,6 +7,7 @@
  * persist a secret value, token, cookie, password, authorization code or ID token.
  * Row contents are never logged.
  */
+import { isIP } from 'node:net';
 import type { AuditEventInput, AuditLog } from '../../vendor/shared/auth-ports.js';
 import type { Db } from '../../db/client.js';
 import * as t from '../../db/schema.js';
@@ -69,6 +70,18 @@ export function scrubMetadata(metadata: Record<string, unknown> | undefined): Re
   return scrubValue(metadata, 0) as Record<string, unknown>;
 }
 
+/**
+ * `audit_events.ip` is `inet`: keep only a valid IPv4/IPv6 literal, otherwise null,
+ * so a malformed `X-Forwarded-For` or proxy value can never fail the audit insert.
+ */
+export function normalizeAuditIp(ip: string | null | undefined): string | null {
+  if (typeof ip !== 'string') return null;
+  const trimmed = ip.trim();
+  // Node accepts IPv6 zone ids (`fe80::1%eth0`); Postgres `inet` does not.
+  if (trimmed.includes('%')) return null;
+  return isIP(trimmed) !== 0 ? trimmed : null;
+}
+
 export class AuditRepository implements AuditLog<AuditTx> {
   constructor(private db: Db) {}
 
@@ -89,7 +102,7 @@ export class AuditRepository implements AuditLog<AuditTx> {
         targetType: event.targetType,
         targetId: event.targetId ?? null,
         metadata: scrubMetadata(event.metadata),
-        ip: event.ip ?? null,
+        ip: normalizeAuditIp(event.ip),
       });
   };
 }

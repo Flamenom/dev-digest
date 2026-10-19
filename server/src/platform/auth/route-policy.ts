@@ -33,7 +33,7 @@
  * Pure data + pure helpers: no Fastify, no I/O.
  */
 import type { SecretKey } from '@devdigest/shared';
-import { SECRET_KEY_BY_PROVIDER } from '../../modules/settings/constants.js';
+import { SECRET_KEY_BY_PROVIDER } from '../secret-keys.js';
 
 export type RouteAccess = 'public' | 'member' | 'admin';
 

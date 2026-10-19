@@ -14,6 +14,7 @@ import {
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
 import { AppError } from '../../platform/errors.js';
+import { describeError } from '../../platform/errors-describe.js';
 import { AuthDisabledError, AuthFlowError } from '../../platform/auth-errors.js';
 import { safeReturnTo } from '../../platform/auth/return-to.js';
 import { sessionCookieValue } from './principal-service.js';
@@ -136,7 +137,7 @@ export default async function identityRoutes(app: FastifyInstance) {
         // path would log the request URL, which carries `code` / `state`. Log
         // the error class only and send the user back to the sign-in screen.
         req.log.error(
-          { errName: (err as Error)?.name ?? typeof err },
+          describeError(err),
           'sign-in callback failed unexpectedly',
         );
         return reply.redirect(signInErrorLocation(publicOrigin, 'auth_idp_unavailable'));

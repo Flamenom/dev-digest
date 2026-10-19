@@ -87,7 +87,8 @@ export class SessionsRepo {
         expiresAt: t.sessions.expiresAt,
       })
       .from(t.sessions)
-      .innerJoin(t.users, eq(t.users.id, t.sessions.userId))
+      // No `users` join: sessions.user_id is an FK with ON DELETE CASCADE, so
+      // a live session row implies its user exists.
       .innerJoin(
         t.workspaceMembers,
         and(

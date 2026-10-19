@@ -69,7 +69,7 @@ export function FindingsTab({
   const handleCancelAll = () => {
     cancellableLiveIds.forEach((id) => cancelMutation.mutate(id));
   };
-  const handleCancelOne = useCallback((id: string) => cancelMutation.mutate(id), [cancelMutation]);
+  const handleCancelOne = (id: string) => cancelMutation.mutate(id);
 
   const handleOpenFirstTrace = useCallback(() => {
     if (liveRunIds[0]) onOpenTrace(liveRunIds[0]);

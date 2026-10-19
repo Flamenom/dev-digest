@@ -202,4 +202,49 @@ d('settings + secrets (google mode, Testcontainers pg)', () => {
     expect(get.json().polling_interval_min).toBe(9);
     expect(['dark', 'light']).toContain(get.json().theme);
   });
+
+  it('concurrent saves of the same two keys in opposite order both succeed (advisory locks taken in key order)', async () => {
+    // Over HTTP: two Admins PUT the same pair of keys, written in opposite order.
+    for (let round = 0; round < 5; round++) {
+      const [a, b] = await Promise.all([
+        t1.app.inject(
+          asSession(adminA.session, {
+            method: 'PUT',
+            url: '/settings',
+            payload: { theme: 'dark', polling_interval_min: 11 + round },
+          }),
+        ),
+        t1.app.inject(
+          asSession(adminB.session, {
+            method: 'PUT',
+            url: '/settings',
+            payload: { polling_interval_min: 21 + round, theme: 'light' },
+          }),
+        ),
+      ]);
+      expect(a.statusCode).toBe(200);
+      expect(b.statusCode).toBe(200);
+    }
+
+    // At the repository: route validation normalizes key order, so drive the
+    // opposite caller order directly — without sorted locking this deadlocks
+    // (Postgres aborts one transaction with 40P01).
+    const repo = t1.container.settingsRepo;
+    for (let round = 0; round < 10; round++) {
+      await expect(
+        Promise.all([
+          repo.upsert(t1.workspaceId, adminA.userId, { theme: 'dark', polling_interval_min: 30 + round }),
+          repo.upsert(t1.workspaceId, adminB.userId, { polling_interval_min: 40 + round, theme: 'light' }),
+        ]),
+      ).resolves.toBeDefined();
+    }
+
+    for (const key of ['polling_interval_min', 'theme']) {
+      const rows = await t1.db
+        .select({ id: t.settings.id })
+        .from(t.settings)
+        .where(and(eq(t.settings.workspaceId, t1.workspaceId), eq(t.settings.key, key)));
+      expect(rows).toHaveLength(1);
+    }
+  });
 });

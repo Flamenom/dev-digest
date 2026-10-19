@@ -172,6 +172,7 @@
     "tokenValueLabel": "New API token value",
     "copy": "Copy",
     "copied": "Copied",
+    "copyFailed": "Copy failed — select and copy manually",
     "done": "Done",
     "listTitle": "Your tokens",
     "colName": "Name",

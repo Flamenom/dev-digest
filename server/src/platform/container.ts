@@ -75,7 +75,7 @@ import { EvalDashboardService } from '../modules/eval/dashboard.js';
 import { EvalService } from '../modules/eval/service.js';
 import { resolveFeatureModel } from '../modules/settings/feature-models.js';
 import { SettingsRepository } from '../modules/settings/repository.js';
-import { SECRET_KEY_BY_PROVIDER } from '../modules/settings/constants.js';
+import { SECRET_KEY_BY_PROVIDER } from './secret-keys.js';
 import { IdentityRepository } from '../modules/identity/repository.js';
 import { PrincipalService } from '../modules/identity/principal-service.js';
 import { SignInService } from '../modules/identity/sign-in-service.js';

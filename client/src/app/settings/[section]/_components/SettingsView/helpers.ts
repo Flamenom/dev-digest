@@ -24,6 +24,11 @@ export function visibleSections(
   return [{ key: first.key, label: first.label }, ...rest.map((sec) => ({ key: sec.key, label: sec.label })), ...extra];
 }
 
+/** True for a section key that only exists in google mode (Members, API tokens). */
+export function isGoogleOnlySection(key: string): boolean {
+  return EXTRA_SECTIONS.some((sec) => sec.googleOnly && sec.key === key);
+}
+
 /** Medium date ("Oct 19, 2026") for an ISO timestamp; `fallback` when null/invalid. */
 export function formatDate(iso: string | null | undefined, fallback: string): string {
   if (!iso) return fallback;

@@ -70,29 +70,26 @@ export function ConventionsView() {
   } else if (conventions.length === 0) {
     content = (
       <div style={s.centered}>
-        {isAdmin ? (
-          <EmptyState
-            icon="ListChecks"
-            title={t("page.empty.title")}
-            body={t("page.empty.body")}
-            cta={extract.isPending ? t("page.scanning") : t("page.empty.cta")}
-            onCta={runExtraction}
-            ctaLoading={extract.isPending}
-          />
-        ) : (
-          <div style={s.gatedEmpty}>
-            <EmptyState icon="ListChecks" title={t("page.empty.title")} body={t("page.empty.body")} />
-            <div style={s.gatedAction}>
-              <AdminOnly>
-                {(gate) => (
-                  <Button kind="secondary" icon="Plus" {...gate.controlProps} onClick={gate.guard()}>
-                    {t("page.empty.cta")}
-                  </Button>
-                )}
-              </AdminOnly>
-            </div>
+        {/* ONE tree for every role — only the CTA is gated, so the empty state
+            never remounts when the session resolves. */}
+        <div style={s.gatedEmpty}>
+          <EmptyState icon="ListChecks" title={t("page.empty.title")} body={t("page.empty.body")} />
+          <div style={s.gatedAction}>
+            <AdminOnly>
+              {(gate) => (
+                <Button
+                  kind="secondary"
+                  icon="Plus"
+                  loading={extract.isPending}
+                  {...gate.controlProps}
+                  onClick={gate.guard(runExtraction)}
+                >
+                  {extract.isPending ? t("page.scanning") : t("page.empty.cta")}
+                </Button>
+              )}
+            </AdminOnly>
           </div>
-        )}
+        </div>
       </div>
     );
   } else {

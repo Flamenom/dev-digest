@@ -14,7 +14,7 @@ import { Container } from '../platform/container.js';
 import { createDb } from '../db/client.js';
 import { SecretStoreRepository } from '../modules/secrets/repository.js';
 import { AuditRepository } from '../modules/audit/repository.js';
-import { SECRET_KEY_BY_PROVIDER } from '../modules/settings/constants.js';
+import { SECRET_KEY_BY_PROVIDER } from '../platform/secret-keys.js';
 import { runSecretsImport } from '../modules/secrets/import.js';
 
 /** A config failure, printable without values (zod issues → paths only). */

@@ -7,7 +7,7 @@
 import React from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { EmptyState } from "@devdigest/ui";
+import { EmptyState, Skeleton } from "@devdigest/ui";
 import { useTranslations } from "next-intl";
 import { AppShell } from "@/components/app-shell";
 import { useCan } from "@/lib/permissions";
@@ -22,7 +22,7 @@ import {
   SECTION_MEMBERS,
   SECTION_MODELS,
 } from "./constants";
-import { visibleSections } from "./helpers";
+import { isGoogleOnlySection, visibleSections } from "./helpers";
 import { s } from "./styles";
 
 function SectionPane({ section, label, readOnly }: { section: string; label: string; readOnly: boolean }) {
@@ -53,6 +53,10 @@ export function SettingsView() {
   // No read-only flash for Admins while the session probe is in flight; the
   // server enforces every write regardless.
   const readOnly = !perms.isPending && !perms.isAdmin;
+  // A deep link to a google-only section (/settings/members) can't be resolved
+  // until the session says which mode we're in — hold an empty pane instead of
+  // flashing the fallback panel.
+  const awaitingMode = perms.isPending && isGoogleOnlySection(requested);
 
   return (
     <AppShell crumb={[{ label: t("breadcrumb"), href: "/settings/api-keys" }, { label: current.label }]}>
@@ -69,7 +73,13 @@ export function SettingsView() {
           })}
         </div>
         <div style={s.pane}>
-          <SectionPane section={section} label={current.label} readOnly={readOnly} />
+          {awaitingMode ? (
+            <div aria-busy="true">
+              <Skeleton height={140} />
+            </div>
+          ) : (
+            <SectionPane section={section} label={current.label} readOnly={readOnly} />
+          )}
         </div>
       </div>
     </AppShell>

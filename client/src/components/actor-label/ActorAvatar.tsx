@@ -16,8 +16,9 @@ export interface ActorAvatarProps {
 }
 
 export function ActorAvatar({ name, url, size = DEFAULT_AVATAR_SIZE }: ActorAvatarProps) {
-  const [failed, setFailed] = React.useState(false);
-  if (!isSafeAvatarUrl(url) || failed) return <Avatar name={name || "?"} size={size} />;
+  // Remember WHICH url failed, so a new url gets a fresh attempt.
+  const [failedUrl, setFailedUrl] = React.useState<string | null>(null);
+  if (!isSafeAvatarUrl(url) || failedUrl === url) return <Avatar name={name || "?"} size={size} />;
   return (
     // A tiny remote profile photo: next/image's optimizer adds nothing here and
     // would need a remotePatterns entry; the URL is allowlisted above.
@@ -29,7 +30,7 @@ export function ActorAvatar({ name, url, size = DEFAULT_AVATAR_SIZE }: ActorAvat
       height={size}
       referrerPolicy="no-referrer"
       style={s.avatarImg(size)}
-      onError={() => setFailed(true)}
+      onError={() => setFailedUrl(url)}
     />
   );
 }

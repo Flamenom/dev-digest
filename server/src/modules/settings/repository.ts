@@ -37,7 +37,9 @@ export class SettingsRepository {
    * the same key can't both insert.
    */
   async upsert(workspaceId: string, userId: string, entries: Record<string, unknown>): Promise<void> {
-    const pairs = Object.entries(entries);
+    // Sorted by key so concurrent batches take the per-key advisory locks in
+    // the same global order — opposite caller orders can't deadlock.
+    const pairs = Object.entries(entries).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     if (pairs.length === 0) return;
     await this.db.transaction(async (tx) => {
       for (const [key, value] of pairs) {

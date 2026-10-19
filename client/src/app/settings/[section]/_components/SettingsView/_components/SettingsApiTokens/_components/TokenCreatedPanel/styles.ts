@@ -13,4 +13,5 @@ export const s = {
   body: { fontSize: 13, color: "var(--text-secondary)", marginBottom: 12, lineHeight: 1.45 } satisfies CSSProperties,
   row: { display: "flex", gap: 10, alignItems: "center" } satisfies CSSProperties,
   value: { flex: 1, minWidth: 0 } satisfies CSSProperties,
+  hint: { fontSize: 12, color: "var(--warn)", marginTop: 8 } satisfies CSSProperties,
 } as const;

@@ -33,12 +33,17 @@ interface Journal {
 
 /** Copy of the migrations folder whose journal stops just before 0021. */
 function migrationsBefore0021(): string {
+  return migrationsBefore(TARGET_TAG_PREFIX);
+}
+
+/** Copy of the migrations folder whose journal stops just before the migration tagged `prefix`. */
+function migrationsBefore(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'devdigest-mig-'));
   cpSync(MIGRATIONS_DIR, dir, { recursive: true });
   const journalPath = join(dir, 'meta', '_journal.json');
   const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as Journal;
-  const cut = journal.entries.findIndex((e) => e.tag.startsWith(TARGET_TAG_PREFIX));
-  if (cut < 0) throw new Error('migration 0021 not found in journal');
+  const cut = journal.entries.findIndex((e) => e.tag.startsWith(prefix));
+  if (cut < 0) throw new Error(`migration ${prefix} not found in journal`);
   journal.entries = journal.entries.slice(0, cut);
   writeFileSync(journalPath, JSON.stringify(journal));
   return dir;
@@ -268,5 +273,106 @@ d('migration 0021 — multi-user server mode', () => {
       expect(idx!.tablename, name).toBe(table);
       expect(idx!.indexdef, name).toContain(`btree (${column})`);
     }
+  });
+});
+
+/**
+ * Migration 0023 (postgresql-table-design hardening of the identity tables):
+ * apply 0000–0022, insert legacy audit rows whose `ip` text is valid or junk,
+ * apply 0023, and assert the inet conversion kept valid IPs and nulled junk
+ * without the append-only trigger blocking the column rewrite. Also checks the
+ * new metadata-object CHECK, TRUNCATE trigger and full api_tokens user index.
+ */
+d('migration 0023 — inet ip, metadata CHECK, TRUNCATE guard, api_tokens user index', () => {
+  let container: StartedPostgreSqlContainer;
+  let sql: postgres.Sql;
+  let oldDir: string;
+  let workspaceId: string;
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer('pgvector/pgvector:pg16')
+      .withDatabase('devdigest')
+      .withUsername('devdigest')
+      .withPassword('devdigest')
+      .start();
+    sql = postgres(container.getConnectionUri(), { max: 1, onnotice: () => {} });
+    await sql`CREATE EXTENSION IF NOT EXISTS vector`;
+    oldDir = migrationsBefore('0023_');
+    await migrate(drizzle(sql), { migrationsFolder: oldDir });
+
+    const [ws] = await sql`INSERT INTO workspaces (name) VALUES ('mig-0023') RETURNING id`;
+    workspaceId = ws!.id as string;
+    const legacy: [string, string | null][] = [
+      ['legacy.v4', '10.0.0.7'],
+      ['legacy.v6', '2001:db8::1'],
+      ['legacy.junk', 'unknown'],
+      ['legacy.hexish', 'dead:beef:zz'],
+      ['legacy.bad_octet', '999.1.1.1'],
+      ['legacy.null', null],
+    ];
+    for (const [action, ip] of legacy) {
+      await sql`INSERT INTO audit_events (workspace_id, action, target_type, ip)
+                VALUES (${workspaceId}, ${action}, 'session', ${ip})`;
+    }
+
+    await migrate(drizzle(sql), { migrationsFolder: MIGRATIONS_DIR });
+  }, 180_000);
+
+  afterAll(async () => {
+    await sql?.end({ timeout: 5 });
+    await container?.stop();
+    if (oldDir) rmSync(oldDir, { recursive: true, force: true });
+  });
+
+  it('converts audit_events.ip to inet, keeping valid IPs and nulling junk', async () => {
+    const [col] = await sql`
+      SELECT data_type FROM information_schema.columns
+      WHERE table_name = 'audit_events' AND column_name = 'ip'`;
+    expect(col!.data_type).toBe('inet');
+
+    const got = await sql`SELECT action, host(ip) AS ip FROM audit_events WHERE action LIKE 'legacy.%'`;
+    const byAction = Object.fromEntries(got.map((r) => [r.action as string, r.ip as string | null]));
+    expect(byAction).toEqual({
+      'legacy.v4': '10.0.0.7',
+      'legacy.v6': '2001:db8::1',
+      'legacy.junk': null,
+      'legacy.hexish': null,
+      'legacy.bad_octet': null,
+      'legacy.null': null,
+    });
+    // The throwaway safe-cast helper does not outlive the migration.
+    const fns = await sql`SELECT 1 FROM pg_proc WHERE proname = 'audit_events_try_inet_0023'`;
+    expect(fns).toHaveLength(0);
+  });
+
+  it('rejects an invalid inet literal at the database', async () => {
+    await expect(
+      sql`INSERT INTO audit_events (workspace_id, action, target_type, ip) VALUES (${workspaceId}, 'x', 'y', 'nope')`,
+    ).rejects.toMatchObject({ code: '22P02' });
+  });
+
+  it('rejects non-object metadata (audit_events_metadata_object_ck)', async () => {
+    await expect(
+      sql`INSERT INTO audit_events (workspace_id, action, target_type, metadata)
+          VALUES (${workspaceId}, 'x', 'y', '[1,2]'::jsonb)`,
+    ).rejects.toMatchObject({ code: '23514', constraint_name: 'audit_events_metadata_object_ck' });
+  });
+
+  it('refuses TRUNCATE of audit_events, directly or via CASCADE, and keeps UPDATE/DELETE refused', async () => {
+    await expect(sql`TRUNCATE audit_events`).rejects.toThrow(/append-only/);
+    await expect(sql`TRUNCATE workspaces CASCADE`).rejects.toThrow(/append-only/);
+    await expect(sql`UPDATE audit_events SET action = 't'`).rejects.toThrow(/append-only/);
+    await expect(sql`DELETE FROM audit_events`).rejects.toThrow(/append-only/);
+    const [n] = await sql`SELECT count(*)::int AS n FROM audit_events WHERE action LIKE 'legacy.%'`;
+    expect(n!.n).toBe(6);
+  });
+
+  it('adds a full btree api_tokens_user_idx and keeps the partial active index', async () => {
+    const idx = await sql`
+      SELECT indexname, indexdef FROM pg_indexes
+      WHERE tablename = 'api_tokens' AND indexname IN ('api_tokens_user_idx', 'api_tokens_user_active_idx')`;
+    const byName = new Map(idx.map((r) => [r.indexname as string, r.indexdef as string]));
+    expect(byName.get('api_tokens_user_idx')).toMatch(/btree \(user_id\)$/);
+    expect(byName.get('api_tokens_user_active_idx')).toMatch(/WHERE \(revoked_at IS NULL\)/);
   });
 });

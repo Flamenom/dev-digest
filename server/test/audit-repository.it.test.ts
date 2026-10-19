@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { startPg, dockerAvailable, type PgFixture } from './helpers/pg.js';
 import * as t from '../src/db/schema.js';
-import { AuditRepository, scrubMetadata } from '../src/modules/audit/repository.js';
+import { AuditRepository, normalizeAuditIp, scrubMetadata } from '../src/modules/audit/repository.js';
 
 /**
  * T8 — append-only audit trail (AC-52 storage half): row fields persisted,
@@ -108,6 +108,53 @@ d('AuditRepository', () => {
     expect(rows).toHaveLength(1);
   });
 
+  it('stores ip as inet: valid IPv4/IPv6 kept, anything invalid stored as null (0023)', async () => {
+    const cases: [string, string | null][] = [
+      ['ip.v4', '203.0.113.9'],
+      ['ip.v6', '2001:db8::1'],
+      ['ip.garbage', null],
+      ['ip.bad_octet', null],
+      ['ip.cidr', null],
+      ['ip.zone', null],
+    ];
+    const raw: Record<string, string> = {
+      'ip.v4': ' 203.0.113.9 ',
+      'ip.v6': '2001:db8::1',
+      'ip.garbage': 'not-an-ip, 1.2.3.4',
+      'ip.bad_octet': '999.1.1.1',
+      'ip.cidr': '10.0.0.0/8',
+      'ip.zone': 'fe80::1%eth0',
+    };
+    for (const [action] of cases) {
+      await repo.record({ workspaceId, actorUserId: null, action, targetType: 'session', ip: raw[action] });
+    }
+    for (const [action, expected] of cases) {
+      const [row] = await pg.handle.db.select().from(t.auditEvents).where(eq(t.auditEvents.action, action));
+      expect(row?.ip ?? null, action).toBe(expected);
+    }
+    const [col] = (await pg.handle.db.execute(
+      sql`select data_type from information_schema.columns where table_name = 'audit_events' and column_name = 'ip'`,
+    )) as unknown as { data_type: string }[];
+    expect(col!.data_type).toBe('inet');
+  });
+
+  it('refuses TRUNCATE (statement-level append-only trigger, 0023)', async () => {
+    await expect(pg.handle.db.execute(sql`truncate audit_events`)).rejects.toThrow(/append-only/);
+    const rows = await pg.handle.db.select().from(t.auditEvents);
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
+  it('rejects non-object metadata via CHECK (0023)', async () => {
+    for (const bad of ['[]', '"str"', '1']) {
+      await expect(
+        pg.handle.db.execute(
+          sql`insert into audit_events (workspace_id, action, target_type, metadata) values (${workspaceId}, 'ck', 'x', ${bad}::jsonb)`,
+        ),
+        bad,
+      ).rejects.toMatchObject({ code: '23514' });
+    }
+  });
+
   it('joins the caller transaction: a rolled-back tx leaves no row', async () => {
     const db = pg.handle.db;
     await expect(
@@ -127,6 +174,14 @@ describe('scrubMetadata', () => {
     const input = { value: 'x', keep: 'y' };
     expect(scrubMetadata(input)).toEqual({ keep: 'y' });
     expect(input).toEqual({ value: 'x', keep: 'y' });
+  });
+
+  it('normalizeAuditIp keeps only valid IP literals', () => {
+    expect(normalizeAuditIp(undefined)).toBeNull();
+    expect(normalizeAuditIp(null)).toBeNull();
+    expect(normalizeAuditIp('')).toBeNull();
+    expect(normalizeAuditIp('::ffff:1.2.3.4')).toBe('::ffff:1.2.3.4');
+    expect(normalizeAuditIp('1.2.3.4:8080')).toBeNull();
   });
 
   it('drops binary values', () => {

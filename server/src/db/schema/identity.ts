@@ -23,6 +23,15 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType: () => 'bytea',
 });
 
+/**
+ * Postgres `inet` ↔ string (drizzle-orm 0.38 has no built-in inet column). The
+ * repository normalises to a valid IPv4/IPv6 literal (or null) before insert, so
+ * the cast never fails at the database.
+ */
+const inet = customType<{ data: string; driverData: string }>({
+  dataType: () => 'inet',
+});
+
 /** Server-side sessions. The cookie carries the raw id; only its SHA-256 is stored. */
 export const sessions = pgTable(
   'sessions',
@@ -94,6 +103,8 @@ export const apiTokens = pgTable(
   },
   (t) => ({
     tokenHashUq: uniqueIndex('api_tokens_token_hash_uq').on(t.tokenHash),
+    /** FK index: user-cascade deletes (the partial index below only covers active tokens). */
+    userIdx: index('api_tokens_user_idx').on(t.userId),
     /** Own-token list + the active-token limit count. */
     userActiveIdx: index('api_tokens_user_active_idx')
       .on(t.userId)
@@ -133,8 +144,9 @@ export const encryptedSecrets = pgTable(
 );
 
 /**
- * Append-only audit trail. A BEFORE UPDATE OR DELETE trigger (migration 0021)
- * raises, so rows can only be inserted. `actor_user_id` is deliberately a soft
+ * Append-only audit trail. A BEFORE UPDATE OR DELETE row trigger (migration 0021)
+ * and a BEFORE TRUNCATE statement trigger (migration 0023) raise, so rows can
+ * only be inserted. `actor_user_id` is deliberately a soft
  * reference (no FK): an FK action would have to UPDATE/DELETE audit rows, which
  * the trigger forbids, and the trail must outlive any user row. The workspace FK
  * has no ON DELETE action for the same reason (deleting an audited workspace is
@@ -152,10 +164,11 @@ export const auditEvents = pgTable(
     targetType: text('target_type').notNull(),
     targetId: text('target_id'),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
-    ip: text('ip'),
+    ip: inet('ip'),
     createdAt: now(),
   },
   (t) => ({
     wsCreatedIdx: index('audit_events_ws_created_idx').on(t.workspaceId, t.createdAt),
+    metadataObjectCk: check('audit_events_metadata_object_ck', sql`jsonb_typeof(${t.metadata}) = 'object'`),
   }),
 );
