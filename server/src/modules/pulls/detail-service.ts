@@ -56,17 +56,6 @@ export interface PullDetailDeps {
 }
 
 /**
- * PR/MR detail (`GET /pulls/:id`) — the only place diffs, patches and commits
- * are fetched from a host.
- *
- * - GitHub: always a full refetch + replace of the mirrored files/commits
- *   (unchanged behaviour, AC-48).
- * - GitLab: refetch ONLY when the host head moved since the persisted detail
- *   (`detail_head_sha`, Q6). An unchanged head refreshes metadata only and
- *   serves the persisted files/commits.
- * - Any host failure → the persisted detail (AC-26).
- */
-/**
  * The PR-detail use case as consumers see it — the container's override slot
  * and getter are typed by this (a class with private members is nominal, so a
  * plain-object test fake could not satisfy the class type).
@@ -77,6 +66,17 @@ export interface PullDetail {
   assertWritable(repo: DetailRepo): void;
 }
 
+/**
+ * PR/MR detail (`GET /pulls/:id`) — the only place diffs, patches and commits
+ * are fetched from a host.
+ *
+ * - GitHub: always a full refetch + replace of the mirrored files/commits
+ *   (unchanged behaviour, AC-48).
+ * - GitLab: refetch ONLY when the host head moved since the persisted detail
+ *   (`detail_head_sha`, Q6). An unchanged head refreshes metadata only and
+ *   serves the persisted files/commits.
+ * - Any host failure → the persisted detail (AC-26).
+ */
 export class PullDetailService implements PullDetail {
   constructor(private deps: PullDetailDeps) {}
 

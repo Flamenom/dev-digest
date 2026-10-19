@@ -107,6 +107,31 @@ describe("usePullsSync", () => {
     expect(FakeEventSource.instances).toHaveLength(1);
   });
 
+  it("done whose one refetch fails → Updating does not stick on the cached running state (AC-59/63)", async () => {
+    vi.mocked(api.get)
+      .mockResolvedValueOnce(RUNNING)
+      .mockRejectedValue(new Error("network blip"));
+    const { result } = setup();
+    await tick();
+    expect(result.current.updating).toBe(true);
+    const es = FakeEventSource.instances[0]!;
+
+    await act(async () => {
+      es.emit("done", { state: "idle", last_synced_at: "2026-10-16T10:05:00Z" });
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(es.closed).toBe(true);
+    expect(api.get).toHaveBeenCalledTimes(2);
+    // The cache still holds the pre-done `running` snapshot, but nothing listens.
+    expect(result.current.sync?.state).toBe("running");
+    expect(result.current.updating).toBe(false);
+
+    await tick(600_000);
+    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(result.current.updating).toBe(false);
+  });
+
   it("a done whose refetch still reports an in-flight sync opens ONE new listener; its done clears Updating", async () => {
     vi.mocked(api.get)
       .mockResolvedValueOnce(RUNNING)

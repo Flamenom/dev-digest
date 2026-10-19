@@ -166,10 +166,15 @@ export function usePullsSync(repoId: string) {
     isError: query.isError,
     error: query.error,
     refetch: query.refetch,
-    // While suspended (after an SSE error) nothing listens, so a cached
-    // `running` would never clear — show the last-synced time instead; a
-    // manual Refresh un-suspends.
-    updating: listenKey != null || (sync?.state === "running" && !tracking.suspended),
+    // A cached `running` only counts for a read newer than the last settled
+    // listener: after a settle (done → its one refetch failed, or SSE error →
+    // suspended) nothing listens, so it would never clear. Show the
+    // last-synced time instead; a manual Refresh resumes.
+    updating:
+      listenKey != null ||
+      (sync?.state === "running" &&
+        !tracking.suspended &&
+        dataUpdatedAt > tracking.settledReadAt),
     refreshing: refresh.isPending || manualPending,
     /** The manual `POST /pulls/sync` failed to start (cleared on the next click). */
     syncError: syncPulls.error,
