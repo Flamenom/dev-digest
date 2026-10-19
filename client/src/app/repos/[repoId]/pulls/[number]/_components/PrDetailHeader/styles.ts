@@ -67,4 +67,6 @@ export const s = {
     fontSize: 12.5,
     color: "var(--text-muted)",
   } satisfies CSSProperties,
+  /** Draft badge wrapper (carries the e2e test id). */
+  draftBadgeWrap: { display: "inline-flex" } satisfies CSSProperties,
 } as const;

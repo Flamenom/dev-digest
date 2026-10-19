@@ -7,29 +7,35 @@
 import React from "react";
 import { useTranslations } from "next-intl";
 import { Textarea, Button } from "@devdigest/ui";
-import { notify } from "@/lib/toast";
+import { ReadOnlyPostNotice, useCopyToClipboard } from "@/components/read-only-host";
 import { cs, type DiffCommentApi } from "../comments";
 
-/** Copy button + the visible note the disabled post button points at. */
-function ReadOnlyExtras({ text, noteId }: { text: string; noteId: string }) {
+/** Read-only host: disabled post + Cancel + Copy + the visible note. Kept in its
+ *  own component so a GitHub composer never resolves the `prHost` catalog. */
+function ReadOnlyComposerActions({
+  text,
+  postLabel,
+  children,
+}: {
+  text: string;
+  postLabel: string;
+  children: React.ReactNode;
+}) {
   const t = useTranslations("prHost");
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text.trim());
-      notify.success(t("readOnly.copied"));
-    } catch {
-      notify.error(t("readOnly.copyFailed"));
-    }
-  };
+  const copy = useCopyToClipboard();
   return (
-    <>
-      <Button kind="secondary" size="sm" icon="Copy" disabled={!text.trim()} onClick={() => void copy()}>
+    <ReadOnlyPostNotice label={postLabel} kind="primary" noteStyle={cs.hint}>
+      {children}
+      <Button
+        kind="secondary"
+        size="sm"
+        icon="Copy"
+        disabled={!text.trim()}
+        onClick={() => void copy(text.trim())}
+      >
         {t("readOnly.copyComment")}
       </Button>
-      <span id={noteId} style={cs.hint}>
-        {t("readOnly.note")}
-      </span>
-    </>
+    </ReadOnlyPostNotice>
   );
 }
 
@@ -49,7 +55,6 @@ export function InlineComposer({
   onClose: () => void;
 }) {
   const t = useTranslations("shell");
-  const noteId = React.useId();
   const readOnly = !!commenting.readOnly;
   const [text, setText] = React.useState("");
   const submit = async () => {
@@ -69,6 +74,11 @@ export function InlineComposer({
       /* error toast is raised by the caller; keep the draft open */
     }
   };
+  const cancel = (
+    <Button kind="ghost" size="sm" onClick={onClose} disabled={commenting.posting}>
+      {t("diffViewer.cancel")}
+    </Button>
+  );
   return (
     <div
       style={cs.thread}
@@ -84,24 +94,25 @@ export function InlineComposer({
         placeholder={t("diffViewer.commentPlaceholder")}
       />
       <div style={cs.composerActions}>
-        <Button
-          kind="primary"
-          size="sm"
-          icon="MessageSquare"
-          loading={!readOnly && commenting.posting}
-          disabled={readOnly || commenting.posting || !text.trim()}
-          aria-describedby={readOnly ? noteId : undefined}
-          onClick={() => void submit()}
-        >
-          {t("diffViewer.post")}
-        </Button>
-        <Button kind="ghost" size="sm" onClick={onClose} disabled={commenting.posting}>
-          {t("diffViewer.cancel")}
-        </Button>
         {readOnly ? (
-          <ReadOnlyExtras text={text} noteId={noteId} />
+          <ReadOnlyComposerActions text={text} postLabel={t("diffViewer.post")}>
+            {cancel}
+          </ReadOnlyComposerActions>
         ) : (
-          <span style={cs.hint}>{t("diffViewer.postedToGitHub")}</span>
+          <>
+            <Button
+              kind="primary"
+              size="sm"
+              icon="MessageSquare"
+              loading={commenting.posting}
+              disabled={commenting.posting || !text.trim()}
+              onClick={() => void submit()}
+            >
+              {t("diffViewer.post")}
+            </Button>
+            {cancel}
+            <span style={cs.hint}>{t("diffViewer.postedToGitHub")}</span>
+          </>
         )}
       </div>
     </div>

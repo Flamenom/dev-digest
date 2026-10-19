@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import messages from "../../../../../../../../messages/en/settings.json";
 import type { SecretsStatusHost } from "@/lib/types";
@@ -43,11 +43,12 @@ describe("SettingsApiKeys", () => {
     expect(hint).not.toHaveTextContent(/\bapi\b(?!_)/); // no write-scope wording
     expect(screen.getAllByText("Configured")).toHaveLength(3); // openai, github, gitlab
 
-    const buttons = screen.getAllByRole("button", { name: "Test connection" });
-    expect(buttons).toHaveLength(5);
-    const inputs = screen.getAllByPlaceholderText(messages.apiKeys.placeholder);
-    fireEvent.change(inputs[4]!, { target: { value: "glpat-xyz" } });
-    fireEvent.click(buttons[4]!);
+    expect(screen.getAllByRole("button", { name: "Test connection" })).toHaveLength(5);
+    const gitlabRow = screen.getByRole("group", { name: "GitLab access token" });
+    fireEvent.change(within(gitlabRow).getByLabelText("GitLab access token"), {
+      target: { value: "glpat-xyz" },
+    });
+    fireEvent.click(within(gitlabRow).getByRole("button", { name: "Test connection" }));
     expect(mutateAsync).toHaveBeenCalledWith({ provider: "gitlab", key: "glpat-xyz" });
     expect(await screen.findByText("Token OK (read_api)")).toBeInTheDocument();
   });

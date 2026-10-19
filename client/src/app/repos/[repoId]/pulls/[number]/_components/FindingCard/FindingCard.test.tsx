@@ -8,7 +8,17 @@ import prHost from "../../../../../../../../messages/en/prHost.json";
 import { FindingHostProvider } from "./host-context";
 import type { HostLinkRepo } from "@/lib/host-urls";
 
-afterEach(cleanup);
+// jsdom has no clipboard: stub it per test and put the original back after.
+const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+function stubClipboard(writeText: (text: string) => Promise<void>) {
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+}
+
+afterEach(() => {
+  cleanup();
+  if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+  else Reflect.deleteProperty(navigator, "clipboard");
+});
 
 const FINDING: FindingRecord = {
   id: "f1",
@@ -149,10 +159,10 @@ function renderHosted(repo: HostLinkRepo, readOnly: boolean) {
 describe("FindingCard on a host", () => {
   it("GitLab: blob link, disabled post with a visible note, and copy writes the finding text", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    stubClipboard(writeText);
     renderHosted(GITLAB, true);
 
-    expect(screen.getByText("src/config.ts:10-20").closest("a")).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "src/config.ts:10-20" })).toHaveAttribute(
       "href",
       `https://gitlab.com/space-profit/platform/crm-frontend/-/blob/${SHA}/src/config.ts#L10-20`,
     );
@@ -177,7 +187,7 @@ describe("FindingCard on a host", () => {
 
   it("GitHub: the same blob link as today and no read-only controls", () => {
     renderHosted(GITHUB, false);
-    expect(screen.getByText("src/config.ts:10-20").closest("a")).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "src/config.ts:10-20" })).toHaveAttribute(
       "href",
       `https://github.com/acme/payments-api/blob/${SHA}/src/config.ts#L10-L20`,
     );

@@ -73,7 +73,7 @@ describe("PrDetailHeader host link", () => {
     renderHeader(GITLAB_REPO);
 
     expect(screen.getByText("#5")).toBeInTheDocument();
-    expect(screen.getByText("Draft")).toBeInTheDocument();
+    expect(screen.getByTestId("pr-draft-badge")).toHaveTextContent("Draft");
     fireEvent.click(screen.getByRole("button", { name: "View on GitLab" }));
     expect(open).toHaveBeenCalledWith(
       "https://gitlab.com/space-profit/platform/crm-frontend/-/merge_requests/5",

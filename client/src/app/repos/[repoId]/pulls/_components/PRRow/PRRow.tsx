@@ -38,9 +38,12 @@ export function PRRow({ pr, repoId }: { pr: PrMetaHost; repoId: string }) {
           <div style={s.rowTitleLine}>
             <div style={s.rowTitle(h)}>{pr.title}</div>
             {pr.is_draft && (
-              <Badge color="var(--text-muted)" style={s.draftBadge}>
-                {t("list.draft")}
-              </Badge>
+              // Wrapper carries the e2e hook — the vendored Badge forwards no props.
+              <span data-testid="pr-draft-badge" style={s.draftBadgeWrap}>
+                <Badge color="var(--text-muted)" style={s.draftBadge}>
+                  {t("list.draft")}
+                </Badge>
+              </span>
             )}
           </div>
           <span className="mono" style={s.rowNumber}>

@@ -37,3 +37,5 @@ export * from './contracts/eval-pipeline.js';
 export * from './contracts/repo-host.js';
 export * from './adapters.js';
 export * from './host-adapters.js';
+export * from './host-git.js';
+export * from './repo-identity.js';

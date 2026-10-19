@@ -57,18 +57,17 @@ export function evidenceGitHubUrl(
   );
 }
 
-/**
- * The repo fields an evidence link needs. Host fields are optional because the
- * active-repo context is typed as the legacy `Repo`; at runtime it carries them.
- */
-export type EvidenceLinkRepo = Pick<Repo, "full_name" | "default_branch"> &
-  Partial<Pick<RepoWithHost, "provider" | "host" | "web_url">>;
+/** The repo fields an evidence link needs — any `RepoWithHost` satisfies it. */
+export type EvidenceLinkRepo = Pick<
+  RepoWithHost,
+  "full_name" | "default_branch" | "provider" | "host" | "web_url"
+>;
 
 /**
  * Host-aware evidence link (AC-37/38): GitLab →
  * `<web_url>/-/blob/<default_branch>/<path>#L<a>-<b>` via `host-urls` (null when
- * the repo's host fields can't produce a safe link); GitHub (or a repo without
- * a provider) → exactly `evidenceGitHubUrl`. Null without a repo.
+ * the repo's host fields can't produce a safe link); GitHub → exactly
+ * `evidenceGitHubUrl`. Null without a repo.
  */
 export function evidenceHostUrl(
   repo: EvidenceLinkRepo | null | undefined,
@@ -76,9 +75,8 @@ export function evidenceHostUrl(
 ): string | null {
   if (!repo) return null;
   if (repo.provider === "gitlab") {
-    if (!repo.host || !repo.web_url) return null;
     return hostBlobUrl(
-      { provider: "gitlab", host: repo.host, web_url: repo.web_url, full_name: repo.full_name },
+      repo,
       repo.default_branch,
       c.evidence_path,
       c.evidence_start_line ?? undefined,

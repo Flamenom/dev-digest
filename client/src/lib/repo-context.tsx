@@ -13,7 +13,16 @@ const RepoCtx = React.createContext<{
   repos: RepoWithHost[];
   activeRepo: RepoWithHost | null;
   reposLoaded: boolean;
-}>({ repoId: null, setRepoId: () => {}, repos: [], activeRepo: null, reposLoaded: false });
+  /** First fetch of the repos list in flight (false once it settles, even on error). */
+  reposLoading: boolean;
+}>({
+  repoId: null,
+  setRepoId: () => {},
+  repos: [],
+  activeRepo: null,
+  reposLoaded: false,
+  reposLoading: false,
+});
 
 function repoIdFromPath(pathname: string | null): string | null {
   if (!pathname) return null;
@@ -23,7 +32,7 @@ function repoIdFromPath(pathname: string | null): string | null {
 
 export function RepoProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { data: repos, isSuccess: reposLoaded } = useRepos();
+  const { data: repos, isSuccess: reposLoaded, isLoading: reposLoading } = useRepos();
   const [stored, setStored] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -51,8 +60,8 @@ export function RepoProvider({ children }: { children: React.ReactNode }) {
     const fromPath = repoIdFromPath(pathname);
     const repoId = fromPath ?? stored ?? list[0]?.id ?? null;
     const activeRepo = list.find((r) => r.id === repoId) ?? null;
-    return { repoId, setRepoId, repos: list, activeRepo, reposLoaded };
-  }, [repos, pathname, stored, setRepoId, reposLoaded]);
+    return { repoId, setRepoId, repos: list, activeRepo, reposLoaded, reposLoading };
+  }, [repos, pathname, stored, setRepoId, reposLoaded, reposLoading]);
 
   return <RepoCtx.Provider value={value}>{children}</RepoCtx.Provider>;
 }

@@ -50,31 +50,36 @@ function KeyRow({
   };
 
   return (
-    <FormField label={label} hint={hint} right={<StatusBadge configured={configured} />}>
-      <div style={s.keyRow}>
-        <div style={s.keyInput}>
-          <TextInput
-            value={val}
-            onChange={setVal}
-            mono
-            type={reveal ? "text" : "password"}
-            placeholder={t("apiKeys.placeholder")}
-            suffix={
-              <Icon.EyeOff size={14} style={s.revealIcon} onClick={() => setReveal((r) => !r)} />
-            }
-          />
+    // Named group: FormField's <label> is not bound to the input, so the row and
+    // its input carry the provider label for assistive tech (and tests).
+    <div role="group" aria-label={label}>
+      <FormField label={label} hint={hint} right={<StatusBadge configured={configured} />}>
+        <div style={s.keyRow}>
+          <div style={s.keyInput}>
+            <TextInput
+              value={val}
+              onChange={setVal}
+              mono
+              type={reveal ? "text" : "password"}
+              aria-label={label}
+              placeholder={t("apiKeys.placeholder")}
+              suffix={
+                <Icon.EyeOff size={14} style={s.revealIcon} onClick={() => setReveal((r) => !r)} />
+              }
+            />
+          </div>
+          <Button kind="secondary" size="md" onClick={run} disabled={test.isPending}>
+            {test.isPending ? t("apiKeys.testing") : t("apiKeys.testConnection")}
+          </Button>
         </div>
-        <Button kind="secondary" size="md" onClick={run} disabled={test.isPending}>
-          {test.isPending ? t("apiKeys.testing") : t("apiKeys.testConnection")}
-        </Button>
-      </div>
-      {res && (
-        <div style={s.result(res.ok)}>
-          {res.ok ? <Icon.CheckCircle size={13} /> : <Icon.XCircle size={13} />}
-          {res.message}
-        </div>
-      )}
-    </FormField>
+        {res && (
+          <div style={s.result(res.ok)}>
+            {res.ok ? <Icon.CheckCircle size={13} /> : <Icon.XCircle size={13} />}
+            {res.message}
+          </div>
+        )}
+      </FormField>
+    </div>
   );
 }
 

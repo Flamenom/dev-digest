@@ -28,6 +28,7 @@ export const s = {
     gap: 8,
     minWidth: 0,
   } satisfies CSSProperties,
+  draftBadgeWrap: { display: "inline-flex", flexShrink: 0 } satisfies CSSProperties,
   draftBadge: { flexShrink: 0, fontSize: 11, padding: "0 8px" } satisfies CSSProperties,
   rowTitle: (hover: boolean): CSSProperties => ({
     minWidth: 0,
