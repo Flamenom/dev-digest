@@ -14,7 +14,7 @@ import {
   WIRING_BARREL_BASENAMES,
   WIRING_BASENAMES,
   WIRING_CONFIG_SUFFIXES,
-  WIRING_PATH_PREFIX,
+  WIRING_PATH_PREFIXES,
   WIRING_YAML_SUFFIXES,
 } from './constants.js';
 
@@ -68,7 +68,7 @@ export function classifyPath(path: string): SmartDiffRole {
   if (TSCONFIG_RE.test(basename)) return 'wiring';
   if (WIRING_CONFIG_SUFFIXES.some((sfx) => basename.endsWith(sfx))) return 'wiring';
   if (WIRING_BASENAMES.has(basename)) return 'wiring';
-  if (path.startsWith(WIRING_PATH_PREFIX)) return 'wiring';
+  if (WIRING_PATH_PREFIXES.some((prefix) => path.startsWith(prefix))) return 'wiring';
   if (WIRING_YAML_SUFFIXES.some((sfx) => path.endsWith(sfx))) return 'wiring';
   if (WIRING_BARREL_BASENAMES.has(basename)) return 'wiring'; // NOT .tsx/.jsx — may be components
   if (basename.endsWith('.sql') && dirSegments.includes(MIGRATIONS_SEGMENT)) return 'wiring';

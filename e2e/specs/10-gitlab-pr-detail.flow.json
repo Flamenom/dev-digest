@@ -1,0 +1,27 @@
+{
+  "name": "GitLab PR detail: host link, draft, read-only posting and host-omitted diff",
+  "description": "Spec 2026-10-16-gitlab-merge-requests (AC-49, AC-37, AC-39, AC-43, AC-51). From the seeded GitLab repo's PR list, opens PR #5 (route keyed by PR number) and asserts the 'View on GitLab' action targets the merge-request URL, the Draft badge, and on the Files changed tab the read-only posting note, the renamed file 'old → new', 'Diff too large on GitLab' (in Original order — Smart order collapses the boilerplate lockfile group) and the host-omitted notice. The 'View on GitLab' control is a button that calls window.open (no href), so the flow stubs window.open, clicks it, and reads back the captured URL. Persisted data only — DEVDIGEST_HOSTS_OFFLINE=true. Assumes the hermetic runner (scripts/e2e.sh) with SEED_GITLAB_FIXTURE=1.",
+  "steps": [
+    { "cmd": ["open", "{BASE}/"], "label": "load the app root" },
+    { "cmd": ["wait", "--url", "/pulls"], "label": "land on a repo's PR list" },
+    { "cmd": ["wait", "--load", "networkidle"], "label": "repo list + PR list settle" },
+    { "cmd": ["find", "text", "acme/payments-api", "click"], "label": "open the sidebar repo switcher (active repo = seeded GitHub demo)" },
+    { "cmd": ["find", "text", "space-profit/platform/crm-frontend", "click"], "label": "select the seeded GitLab repo" },
+    { "cmd": ["wait", "--text", "Lead filters on the CRM list view"], "label": "GitLab PR #5 row is visible" },
+    { "cmd": ["find", "text", "Lead filters on the CRM list view", "click"], "label": "open PR #5" },
+    { "cmd": ["wait", "--url", "/pulls/5"], "label": "detail route is keyed by the PR number (AC-49)" },
+    { "cmd": ["wait", "--load", "networkidle"], "label": "PR detail data settles" },
+    { "cmd": ["wait", "--text", "View on GitLab"], "label": "host action names GitLab" },
+    { "cmd": ["wait", "--text", "Draft"], "label": "Draft badge renders on the detail header" },
+    { "cmd": ["eval", "window.__e2eOpened = null; window.open = function (u) { window.__e2eOpened = String(u); return null; }; 'stubbed'"], "label": "stub window.open to capture the host URL (no new tab, no network)" },
+    { "cmd": ["find", "role", "button", "click", "--name", "View on GitLab"], "label": "click View on GitLab" },
+    { "cmd": ["eval", "window.__e2eOpened"], "label": "host URL points at the GitLab merge request (AC-37)", "assert": { "stdoutIncludes": "gitlab.com/space-profit/platform/crm-frontend/-/merge_requests/5" } },
+    { "cmd": ["find", "role", "button", "click", "--name", "Files changed"], "label": "switch to the Files changed tab" },
+    { "cmd": ["wait", "--url", "tab=diff"], "label": "diff tab is active in the URL" },
+    { "cmd": ["wait", "--text", "Posting comments to GitLab isn't supported yet"], "label": "read-only posting note is visible (AC-43)" },
+    { "cmd": ["wait", "--text", "src/components/ContactCard.vue → src/components/LeadCard.vue"], "label": "renamed file shows old → new (AC-51)" },
+    { "cmd": ["find", "role", "button", "click", "--name", "Original order"], "label": "switch to Original order (Smart order collapses the boilerplate lockfile group)" },
+    { "cmd": ["wait", "--text", "Diff too large on GitLab"], "label": "host-omitted file explains why there is no diff" },
+    { "cmd": ["wait", "--text", "not reviewed (diff unavailable)"], "label": "host-omitted files notice renders" }
+  ]
+}

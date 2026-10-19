@@ -1,6 +1,8 @@
 /* PR list — /repos/:repoId/pulls. Ported from screen_dashboard.jsx; fetches
-   GET /repos/:id/pulls (F1). Filter/search/sort ALL live in the URL
-   (?status&q&sort) so the view survives reload and is shareable. */
+   GET /repos/:id/pulls/page ({ pulls, sync }). Opening the page may start/join a
+   server-side PR-list sync (AC-56/57); the persisted rows render immediately and
+   the list refetches ONCE when that sync completes (AC-59/63). Filter/search/sort
+   ALL live in the URL (?status&q&sort) so the view survives reload and is shareable. */
 "use client";
 
 import React from "react";
@@ -14,7 +16,7 @@ import {
 } from "@devdigest/ui";
 import { AppShell } from "@/components/app-shell";
 import { RepoNotFound } from "@/components/repo-not-found";
-import { usePulls, useRefreshRepo, useQueryParam, useDebouncedQueryParam } from "@/lib/hooks";
+import { usePullsSync, useQueryParam, useDebouncedQueryParam } from "@/lib/hooks";
 import { useActiveRepo, useRepoNotFound } from "@/lib/repo-context";
 import { ApiError } from "@/lib/api";
 import { COLUMN_KEYS, SKELETON_ROWS } from "./constants";
@@ -22,6 +24,7 @@ import { filterAndSortPulls, countPulls } from "./helpers";
 import { s } from "./styles";
 import { PRRow } from "./_components/PRRow";
 import { FilterBar } from "./_components/FilterBar";
+import { SyncStatus } from "./_components/SyncStatus";
 
 export default function PullsPage() {
   const t = useTranslations("prReview");
@@ -29,8 +32,20 @@ export default function PullsPage() {
   const repoId = params.repoId;
   const { activeRepo } = useActiveRepo();
   const repoNotFound = useRepoNotFound(repoId);
-  const { data: pulls, isLoading, isError, error, refetch } = usePulls(repoId);
-  const refresh = useRefreshRepo();
+  // List + sync orchestration (sync-on-open listener, manual Refresh = PR-list
+  // sync + clone refresh) lives in the hook; the page only renders.
+  const {
+    pulls,
+    sync,
+    isLoading,
+    isError,
+    error,
+    refetch,
+    updating,
+    refreshing,
+    syncError,
+    onRefresh,
+  } = usePullsSync(repoId);
 
   // Default to "needs review" — the most actionable filter on open. Note:
   // useQueryParam drops the key when set to the empty string, so "all" (a
@@ -64,6 +79,7 @@ export default function PullsPage() {
           </p>
         </div>
         <div style={s.headerActions}>
+          <SyncStatus sync={sync} updating={updating} startFailed={syncError != null} />
           <AutoTriggerStatus on={false} />
         </div>
       </div>
@@ -76,8 +92,8 @@ export default function PullsPage() {
           onQuery={setQuery}
           sort={sort}
           onSort={setSort}
-          onRefresh={() => refresh.mutate(repoId)}
-          refreshing={refresh.isPending}
+          onRefresh={onRefresh}
+          refreshing={refreshing}
         />
         <div style={s.headRow}>
           {COLUMN_KEYS.map((key, i) => (

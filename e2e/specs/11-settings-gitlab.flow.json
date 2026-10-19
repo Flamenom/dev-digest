@@ -1,0 +1,12 @@
+{
+  "name": "Settings API Keys shows the GitLab token row with its minimal scopes",
+  "description": "Spec 2026-10-16-gitlab-merge-requests (AC-53). Loads /settings/api-keys and confirms the GitLab access token row renders with its scopes hint (read_api + read_repository). Read-only — nothing is saved, no host call.",
+  "steps": [
+    { "cmd": ["open", "{BASE}/settings/api-keys"], "label": "load the API Keys settings section" },
+    { "cmd": ["wait", "--url", "/settings/api-keys"], "label": "api-keys route reached" },
+    { "cmd": ["wait", "--load", "networkidle"], "label": "settings fetch settles" },
+    { "cmd": ["wait", "--text", "GitLab access token"], "label": "the GitLab token row renders" },
+    { "cmd": ["wait", "--text", "read_api"], "label": "scopes hint names read_api" },
+    { "cmd": ["wait", "--text", "read_repository"], "label": "scopes hint names read_repository" }
+  ]
+}

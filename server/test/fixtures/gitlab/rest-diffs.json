@@ -1,0 +1,54 @@
+[
+  {
+    "old_path": "src/contacts/old-import.ts",
+    "new_path": "src/contacts/import.ts",
+    "a_mode": "100644",
+    "b_mode": "100644",
+    "diff": "@@ -1,3 +1,4 @@\n import { parse } from 'csv';\n-export const run = () => null;\n+export const run = () => parse();\n+export const version = 2;\n",
+    "new_file": false,
+    "renamed_file": true,
+    "deleted_file": false,
+    "generated_file": false,
+    "collapsed": false,
+    "too_large": false
+  },
+  {
+    "old_path": "fixtures/huge.json",
+    "new_path": "fixtures/huge.json",
+    "a_mode": "0",
+    "b_mode": "100644",
+    "diff": "",
+    "new_file": true,
+    "renamed_file": false,
+    "deleted_file": false,
+    "generated_file": false,
+    "collapsed": false,
+    "too_large": true
+  },
+  {
+    "old_path": "legacy/remove-me.ts",
+    "new_path": "legacy/remove-me.ts",
+    "a_mode": "100644",
+    "b_mode": "0",
+    "diff": "@@ -1,2 +0,0 @@\n-export {};\n-// gone\n",
+    "new_file": false,
+    "renamed_file": false,
+    "deleted_file": true,
+    "generated_file": false,
+    "collapsed": false,
+    "too_large": false
+  },
+  {
+    "old_path": ".gitlab-ci.yml",
+    "new_path": ".gitlab-ci.yml",
+    "a_mode": "100644",
+    "b_mode": "100644",
+    "diff": "@@ -1,1 +1,2 @@\n stages: [test]\n+include: ci/review.yml\n",
+    "new_file": false,
+    "renamed_file": false,
+    "deleted_file": false,
+    "generated_file": false,
+    "collapsed": false,
+    "too_large": false
+  }
+]

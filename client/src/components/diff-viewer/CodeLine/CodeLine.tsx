@@ -40,7 +40,10 @@ export function CodeLine({
   }
 
   const sign = ln.kind === "add" ? "+" : ln.kind === "del" ? "−" : "";
-  const target = commenting?.canComment ? commentTargetFor(ln) : null;
+  // Read-only hosts still get the composer (disabled post + copy), so the
+  // affordance is offered for them too.
+  const target =
+    commenting?.canComment || commenting?.readOnly ? commentTargetFor(ln) : null;
   const showAdd = hover && !!target && !composing;
 
   return (

@@ -11,6 +11,10 @@ import { splitEnabledSkills } from '../_shared/skill-prompt.js';
 import { loadDiff } from './diff-loader.js';
 import { resolveSpecPaths } from '../project-context/injection.js';
 import { readDocument } from '../project-context/documents.js';
+import { hostRepoRef } from '../_shared/repo-ref.js';
+
+/** Run error when no file has a reviewable patch (AC-32). Prefix is the stable code. */
+export const NO_REVIEWABLE_DIFF = 'no_reviewable_diff: No reviewable diff';
 
 /** Thrown by a run when the user cancels it mid-flight (between map files). */
 export class RunCancelledError extends Error {
@@ -97,12 +101,31 @@ export class ReviewRunExecutor {
 
     let diff: UnifiedDiff;
     try {
-      diff = await runLog.step('Loading PR diff', () => loadDiff(this.container, this.repo, workspaceId, pull, repo), {
-        kind: 'tool',
-      });
+      const loaded = await runLog.step(
+        'Loading PR diff',
+        () => loadDiff(this.container, this.repo, workspaceId, pull, repo),
+        { kind: 'tool' },
+      );
+      diff = loaded.diff;
+      runLog.info(`Diff source: ${loaded.source}`);
+      // AC-31 — host-omitted files (too large / collapsed) are not in the
+      // fallback diff; say so in the trace. (RunEventKind has no 'warn'
+      // level — info is the closest non-error kind.)
+      if (loaded.excludedFiles > 0) {
+        runLog.info(`${loaded.excludedFiles} files not reviewed (diff unavailable)`);
+      }
     } catch (err) {
       runLog.error(`Failed to load PR diff: ${(err as Error).message}`);
       await failAll(`Failed to load PR diff: ${(err as Error).message}`);
+      return;
+    }
+
+    // AC-32 / Q5 — nothing reviewable (every file omitted, or no patches at
+    // all): end every queued run with a clear outcome and NO engine/LLM call.
+    // An empty diff could only yield findings the grounding gate drops.
+    if (diff.files.length === 0) {
+      runLog.error(NO_REVIEWABLE_DIFF);
+      await failAll(NO_REVIEWABLE_DIFF);
       return;
     }
     runLog.info(`Diff ready — ${diff.files.length} changed file(s); starting ${jobs.length} agent run(s)`);
@@ -240,7 +263,7 @@ export class ReviewRunExecutor {
       });
       const specTexts: string[] = [];
       if (specPaths.length > 0) {
-        const repoRef = { owner: repo.owner, name: repo.name };
+        const repoRef = hostRepoRef(repo);
         for (const p of specPaths) {
           try {
             specTexts.push(await readDocument(this.container.git, repoRef, p));

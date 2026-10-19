@@ -1,18 +1,22 @@
 "use client";
 
 import React, { useCallback } from "react";
+import { useTranslations } from "next-intl";
 import { Icon, Avatar, Badge, Button, Tabs } from "@devdigest/ui";
 import { RunReviewDropdown } from "../RunReviewDropdown";
 import { s } from "./styles";
-import type { PrDetail } from "@/lib/types";
+import type { PrDetailHost } from "@/lib/types";
+import type { HostLabelKey } from "@/lib/host-urls";
 
 interface PrDetailHeaderProps {
-  pr: PrDetail;
+  pr: PrDetailHost;
   prId: string | null;
   tab: string;
   findingsCount: number;
-  /** github.com PR URL; null when the repo's full_name isn't known yet. */
-  githubUrl?: string | null;
+  /** The PR's page on its host (built by `host-urls`); null when no safe link exists. */
+  hostUrl?: string | null;
+  /** Which host the external link names ("View on GitLab" / "View on GitHub"). */
+  provider: HostLabelKey;
   onSetTab: (tab: string) => void;
   onRunStart: () => void;
   onRunsStarted: () => void;
@@ -23,11 +27,13 @@ export function PrDetailHeader({
   prId,
   tab,
   findingsCount,
-  githubUrl,
+  hostUrl,
+  provider,
   onSetTab,
   onRunStart,
   onRunsStarted,
 }: PrDetailHeaderProps) {
+  const tHost = useTranslations("prHost");
   const handleRunStart = useCallback(() => {
     onRunStart();
   }, [onRunStart]);
@@ -75,6 +81,11 @@ export function PrDetailHeader({
             <Badge dot bg="transparent" color={statusColor}>
               {pr.status}
             </Badge>
+            {pr.is_draft && (
+              <Badge bg="transparent" color="var(--text-muted)">
+                {tHost("draft")}
+              </Badge>
+            )}
           </div>
         </div>
         <div style={s.actions}>
@@ -82,12 +93,10 @@ export function PrDetailHeader({
             kind="ghost"
             size="sm"
             icon="ExternalLink"
-            disabled={!githubUrl}
-            onClick={() =>
-              githubUrl && window.open(githubUrl, "_blank", "noopener,noreferrer")
-            }
+            disabled={!hostUrl}
+            onClick={() => hostUrl && window.open(hostUrl, "_blank", "noopener,noreferrer")}
           >
-            View on GitHub
+            {tHost("viewOn", { provider })}
           </Button>
           {prId && (
             <RunReviewDropdown

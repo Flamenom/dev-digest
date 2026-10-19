@@ -25,9 +25,59 @@ import {
 } from "@devdigest/ui";
 import type { EvalCaseLink, FindingRecord, FindingActionKind } from "@devdigest/shared";
 import { SEV_COLOR, SEV_COLOR_FALLBACK } from "./constants";
-import { lineLabel } from "./helpers";
+import { findingClipboardText, lineLabel } from "./helpers";
+import { useFindingHost, type FindingHost } from "./host-context";
 import { githubBlobUrl } from "@/lib/github-urls";
+import { hostBlobUrl } from "@/lib/host-urls";
+import { notify } from "@/lib/toast";
 import { s } from "./styles";
+
+/** Host-aware blob link when a FindingHostProvider is present (the PR page);
+ *  the legacy owner/repo props stay as the GitHub-only fallback. `hostBlobUrl`
+ *  returns null for anything unsafe → no link is rendered. */
+function fileHrefFor(
+  f: FindingRecord,
+  headSha: string | null | undefined,
+  host: FindingHost | null,
+  repoFullName: string | null | undefined,
+): string | undefined {
+  if (!headSha) return undefined;
+  if (host) {
+    if (!host.repo) return undefined;
+    return hostBlobUrl(host.repo, headSha, f.file, f.start_line, f.end_line) ?? undefined;
+  }
+  return repoFullName
+    ? githubBlobUrl(repoFullName, headSha, f.file, f.start_line, f.end_line)
+    : undefined;
+}
+
+/** Read-only host (GitLab): copy the finding instead of posting it (AC-43).
+ *  The disabled post button is described by a VISIBLE note — not hover-only. */
+function ReadOnlyActions({ f }: { f: FindingRecord }) {
+  const t = useTranslations("prHost");
+  const noteId = React.useId();
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(findingClipboardText(f, t("finding.suggestedFix")));
+      notify.success(t("readOnly.copied"));
+    } catch {
+      notify.error(t("readOnly.copyFailed"));
+    }
+  };
+  return (
+    <>
+      <Button kind="ghost" size="sm" icon="Copy" onClick={() => void copy()}>
+        {t("readOnly.copyFinding")}
+      </Button>
+      <Button kind="ghost" size="sm" icon="MessageSquare" disabled aria-describedby={noteId}>
+        {t("readOnly.postComment")}
+      </Button>
+      <p id={noteId} style={s.readOnlyNote}>
+        {t("readOnly.note")}
+      </p>
+    </>
+  );
+}
 
 export function FindingCard({
   f,
@@ -55,12 +105,14 @@ export function FindingCard({
 }) {
   const t = useTranslations("prReview");
   const hintId = React.useId();
+  const host = useFindingHost();
   const [expanded, setExpanded] = React.useState(defaultExpanded ?? false);
   const sevColor = SEV_COLOR[f.severity] ?? SEV_COLOR_FALLBACK;
-  const fileHref =
-    repoFullName && headSha
-      ? githubBlobUrl(repoFullName, headSha, f.file, f.start_line, f.end_line)
-      : undefined;
+  // Host-aware link when a FindingHostProvider is above us (the PR page); the
+  // legacy owner/repo props stay as the GitHub-only fallback. `hostBlobUrl`
+  // returns null for anything unsafe → no link is rendered.
+  const fileHref = fileHrefFor(f, headSha, host, repoFullName);
+  const readOnly = !!host?.readOnly;
   const accepted = !!f.accepted_at;
   const dismissed = !!f.dismissed_at;
   const muted = accepted || dismissed;
@@ -164,6 +216,7 @@ export function FindingCard({
                 )}
               </>
             )}
+            {readOnly && <ReadOnlyActions f={f} />}
           </div>
         </div>
       )}

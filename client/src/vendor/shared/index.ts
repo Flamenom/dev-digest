@@ -34,4 +34,6 @@ export * from './contracts/blast.js';
 export * from './contracts/project-context.js';
 export * from './contracts/pr-brief.js';
 export * from './contracts/eval-pipeline.js';
+export * from './contracts/repo-host.js';
 export * from './adapters.js';
+export * from './host-adapters.js';

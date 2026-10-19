@@ -11,7 +11,7 @@ import { useTranslations } from "next-intl";
 import { Badge, Icon, SectionLabel, Skeleton } from "@devdigest/ui";
 import type { BlastPriorPr, BlastResponse, BlastSymbolImpact } from "@devdigest/shared";
 import { usePrBlast } from "@/lib/hooks/blast";
-import { githubPrUrl } from "@/lib/github-urls";
+import { hostPrUrl, type HostLinkRepo } from "@/lib/host-urls";
 import { BlastGraph } from "./_components/BlastGraph";
 import { SKELETON_HEIGHT } from "./constants";
 import { partitionSymbols, symbolLabel } from "./helpers";
@@ -21,13 +21,13 @@ type BlastView = "tree" | "graph";
 
 export function BlastCard({
   prId,
-  repoFullName,
+  repo,
   onGoToFile,
 }: {
   prId: string | null;
-  /** "owner/repo" for GitHub deep-links (prior PRs); null until loaded. */
-  repoFullName: string | null;
-  /** Open a file (optionally at a line) — in-app diff or GitHub fallback. */
+  /** The PR's repository — prior-PR deep-links via `host-urls`; null until loaded. */
+  repo: HostLinkRepo | null;
+  /** Open a file (optionally at a line) — in-app diff or host blob fallback. */
   onGoToFile: (file: string, line?: number) => void;
 }) {
   const t = useTranslations("blast");
@@ -66,7 +66,7 @@ export function BlastCard({
           {data.reason && <p style={s.emptyHint}>{data.reason}</p>}
           {data.status === "degraded" && <p style={s.emptyHint}>{t("banner.degradedHint")}</p>}
           {data.prior_prs.length > 0 && (
-            <PriorPrs priorPrs={data.prior_prs} repoFullName={repoFullName} />
+            <PriorPrs priorPrs={data.prior_prs} repo={repo} />
           )}
         </div>
       </section>
@@ -115,7 +115,7 @@ export function BlastCard({
           <BlastGraph data={data} onFileClick={(file) => onGoToFile(file)} />
         )}
 
-        <PriorPrs priorPrs={data.prior_prs} repoFullName={repoFullName} />
+        <PriorPrs priorPrs={data.prior_prs} repo={repo} />
       </div>
     </section>
   );
@@ -313,10 +313,10 @@ function SilentSymbols({ symbols }: { symbols: BlastSymbolImpact[] }) {
 /** Collapsible "Prior PRs touching these files" footer. */
 function PriorPrs({
   priorPrs,
-  repoFullName,
+  repo,
 }: {
   priorPrs: BlastPriorPr[];
-  repoFullName: string | null;
+  repo: HostLinkRepo | null;
 }) {
   const t = useTranslations("blast");
   const [open, setOpen] = React.useState(false);
@@ -342,31 +342,35 @@ function PriorPrs({
       </div>
       {open && (
         <ul style={s.priorList}>
-          {priorPrs.map((pr) => (
-            <li key={pr.number} style={s.priorItem}>
-              {repoFullName ? (
-                <a
-                  className="mono"
-                  style={s.priorNumber}
-                  href={githubPrUrl(repoFullName, pr.number)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  #{pr.number}
-                </a>
-              ) : (
-                <span className="mono" style={s.priorNumber}>
-                  #{pr.number}
+          {priorPrs.map((pr) => {
+            // null for an unsafe/unknown host link → plain text, never a bad href.
+            const href = repo ? hostPrUrl(repo, pr.number) : null;
+            return (
+              <li key={pr.number} style={s.priorItem}>
+                {href ? (
+                  <a
+                    className="mono"
+                    style={s.priorNumber}
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    #{pr.number}
+                  </a>
+                ) : (
+                  <span className="mono" style={s.priorNumber}>
+                    #{pr.number}
+                  </span>
+                )}
+                <span style={s.priorTitle} title={pr.title}>
+                  {pr.title}
                 </span>
-              )}
-              <span style={s.priorTitle} title={pr.title}>
-                {pr.title}
-              </span>
-              <span style={s.priorMeta}>
-                {pr.author} · {pr.status} · {t("priorPrs.overlap", { count: pr.files_overlap.length })}
-              </span>
-            </li>
-          ))}
+                <span style={s.priorMeta}>
+                  {pr.author} · {pr.status} · {t("priorPrs.overlap", { count: pr.files_overlap.length })}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

@@ -72,6 +72,7 @@ export const AGENT: AgentListItem = {
   ci_fail_on: 'critical',
   repo_intel: true,
   skill_count: 2,
+  attached_doc_paths: [],
 };
 
 export const AGENT_2: AgentListItem = {

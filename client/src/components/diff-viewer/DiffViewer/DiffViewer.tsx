@@ -6,7 +6,7 @@
 
 import React from "react";
 import { useTranslations } from "next-intl";
-import type { PrFile } from "@/lib/types";
+import type { PrFileHost } from "@/lib/types";
 import { type DiffCommentApi } from "../comments";
 import { s } from "../styles";
 import { FileCard } from "../FileCard";
@@ -16,7 +16,7 @@ export function DiffViewer({
   commenting,
   expandedPath,
 }: {
-  files: PrFile[];
+  files: PrFileHost[];
   commenting?: DiffCommentApi;
   /** Force this file's card to mount open (deep-link target). */
   expandedPath?: string | null;

@@ -120,8 +120,21 @@
     "errorTitle": "Couldn’t load pull requests",
     "errorBody": "The engine returned an error.",
     "emptyTitle": "No pull requests",
-    "emptyAllBody": "No open PRs found for this repo yet. Refresh to sync from GitHub.",
-    "emptyStatusBody": "No PRs with status “{status}”."
+    "emptyAllBody": "No open pull requests found for this repo yet. Refresh to sync.",
+    "emptyStatusBody": "No PRs with status “{status}”.",
+    "draft": "Draft",
+    "statsUnknown": "Diff stats not available yet",
+    "sync": {
+      "updating": "Updating…",
+      "never": "Never synced",
+      "syncedNow": "Synced just now",
+      "syncedMinutes": "Synced {count}m ago",
+      "syncedHours": "Synced {count}h ago",
+      "syncedDays": "Synced {count}d ago",
+      "failedNotice": "Couldn’t sync — showing data from {time}",
+      "failedNoticeNever": "Couldn’t sync — no synced data yet",
+      "startFailed": "Couldn’t start sync"
+    }
   },
   "timeline": {
     "goToReview": "Jump to this run’s findings below",

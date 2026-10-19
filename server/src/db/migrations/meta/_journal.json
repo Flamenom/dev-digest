@@ -134,6 +134,13 @@
       "when": 1788363979942,
       "tag": "0018_demonic_jocasta",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1792166150997,
+      "tag": "0019_cuddly_glorian",
+      "breakpoints": true
     }
   ]
 }

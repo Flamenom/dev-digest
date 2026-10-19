@@ -59,6 +59,10 @@ export interface RepoBasics {
   id: string;
   owner: string;
   name: string;
+  /** Host identity (migration 0019) — feeds `hostRepoRef` for the GitClient. */
+  fullName: string;
+  provider: 'github' | 'gitlab';
+  host: string;
   defaultBranch: string;
   clonePath: string | null;
 }
@@ -139,6 +143,9 @@ export class RepoIntelRepository {
         id: t.repos.id,
         owner: t.repos.owner,
         name: t.repos.name,
+        fullName: t.repos.fullName,
+        provider: t.repos.provider,
+        host: t.repos.host,
         defaultBranch: t.repos.defaultBranch,
         clonePath: t.repos.clonePath,
       })

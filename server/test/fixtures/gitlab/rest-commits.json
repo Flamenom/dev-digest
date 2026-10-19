@@ -1,0 +1,20 @@
+[
+  {
+    "id": "f00dbabe5f00dbabe5f00dbabe5f00dbabe5f00d",
+    "short_id": "f00dbabe",
+    "title": "Wire import into CI",
+    "message": "Wire import into CI\n",
+    "author_name": "Olena",
+    "author_email": "olena@example.com",
+    "committed_date": "2026-10-02T10:00:00Z"
+  },
+  {
+    "id": "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee",
+    "short_id": "aaaaaaaa",
+    "title": "Add contact import",
+    "message": "Add contact import\n",
+    "author_name": "Olena",
+    "author_email": "olena@example.com",
+    "committed_date": "2026-10-01T09:00:00Z"
+  }
+]

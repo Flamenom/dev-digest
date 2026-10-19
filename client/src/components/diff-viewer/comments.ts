@@ -9,6 +9,12 @@ import type { Line } from "./helpers";
 export interface DiffCommentApi {
   comments: PrReviewComment[];
   canComment: boolean;
+  /**
+   * The host does not accept posted comments (GitLab in the MVP). The composer
+   * still opens so a reviewer can draft + copy, but its post button is disabled
+   * and explained by a visible note (AC-43). Optional — absent ⇒ false.
+   */
+  readOnly?: boolean;
   /** When false, existing comment threads are hidden (the "+" still works). */
   showComments: boolean;
   posting: boolean;

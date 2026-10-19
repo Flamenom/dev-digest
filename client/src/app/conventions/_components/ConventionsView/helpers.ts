@@ -1,4 +1,7 @@
 import type { Convention, Repo } from "@devdigest/shared";
+import { githubBlobUrlAtRef } from "@/lib/github-urls";
+import { hostBlobUrl } from "@/lib/host-urls";
+import type { RepoWithHost } from "@/lib/types";
 
 /** Kebab-case slug of the first ~6 words of a rule ("## section" anchors). */
 export function slugifyRule(rule: string): string {
@@ -45,14 +48,44 @@ export function evidenceGitHubUrl(
   c: Convention,
 ): string | null {
   if (!repo) return null;
-  let anchor = "";
-  if (c.evidence_start_line != null) {
-    anchor = `#L${c.evidence_start_line}`;
-    if (c.evidence_end_line != null && c.evidence_end_line !== c.evidence_start_line) {
-      anchor += `-L${c.evidence_end_line}`;
-    }
+  return githubBlobUrlAtRef(
+    repo.full_name,
+    repo.default_branch,
+    c.evidence_path,
+    c.evidence_start_line ?? undefined,
+    c.evidence_end_line ?? undefined,
+  );
+}
+
+/**
+ * The repo fields an evidence link needs. Host fields are optional because the
+ * active-repo context is typed as the legacy `Repo`; at runtime it carries them.
+ */
+export type EvidenceLinkRepo = Pick<Repo, "full_name" | "default_branch"> &
+  Partial<Pick<RepoWithHost, "provider" | "host" | "web_url">>;
+
+/**
+ * Host-aware evidence link (AC-37/38): GitLab →
+ * `<web_url>/-/blob/<default_branch>/<path>#L<a>-<b>` via `host-urls` (null when
+ * the repo's host fields can't produce a safe link); GitHub (or a repo without
+ * a provider) → exactly `evidenceGitHubUrl`. Null without a repo.
+ */
+export function evidenceHostUrl(
+  repo: EvidenceLinkRepo | null | undefined,
+  c: Convention,
+): string | null {
+  if (!repo) return null;
+  if (repo.provider === "gitlab") {
+    if (!repo.host || !repo.web_url) return null;
+    return hostBlobUrl(
+      { provider: "gitlab", host: repo.host, web_url: repo.web_url, full_name: repo.full_name },
+      repo.default_branch,
+      c.evidence_path,
+      c.evidence_start_line ?? undefined,
+      c.evidence_end_line ?? undefined,
+    );
   }
-  return `https://github.com/${repo.full_name}/blob/${repo.default_branch}/${c.evidence_path}${anchor}`;
+  return evidenceGitHubUrl(repo, c);
 }
 
 const FENCE_LANG: Record<string, string> = {

@@ -1,12 +1,15 @@
 import type { Container } from '../../platform/container.js';
-import { type Repo } from '@devdigest/shared';
-import { NotFoundError } from '../../platform/errors.js';
-import { RepoRepository } from './repository.js';
-import { parseRepoUrl, withGitHubToken, toRepoDto } from './helpers.js';
+import type { RepoHost, RepoProvider, RepoWithHost } from '@devdigest/shared';
+import { AppError, NotFoundError } from '../../platform/errors.js';
+import { redactSecret } from '../../platform/redact.js';
+import { cloneRemoteUrl, hostRepoRef } from '../_shared/repo-ref.js';
+import { RepoRepository, type RepoRow } from './repository.js';
+import { parseGitLabPath, parseRepoUrlHost, toRepoDto } from './helpers.js';
 import {
   CLONE_JOB_KIND,
   CLONE_DEPTH,
-  GITHUB_TOKEN_SECRET,
+  GIT_AUTH_FAILURE_REGEX,
+  GITLAB_CLONE_AUTH_MESSAGE,
 } from './constants.js';
 import {
   INDEX_JOB_KIND,
@@ -27,6 +30,13 @@ export interface CloneJobPayload {
   repoId: string;
   owner: string;
   name: string;
+  /** Missing (payloads from before GitLab support) ⇒ github. */
+  provider?: RepoProvider;
+  host?: RepoHost;
+  /**
+   * Informational, ALWAYS tokenless. The job rebuilds the remote from
+   * provider + full name (`cloneRemoteUrl`) and never trusts this value.
+   */
   url: string;
 }
 
@@ -38,9 +48,9 @@ export class RepoService {
   }
 
   /**
-   * Register the `clone` job handler once. Authenticates the clone with the
-   * stored GitHub PAT (so private repos work), clones via the GitClient adapter,
-   * then persists the resulting path + last_polled_at.
+   * Register the `clone` job handler once. Clones via the GitClient adapter —
+   * which supplies per-provider credentials per invocation (Q8) — then persists
+   * the resulting path + last_polled_at.
    */
   registerCloneJobHandler(): void {
     this.container.jobs.register(CLONE_JOB_KIND, async (payload) => {
@@ -49,12 +59,23 @@ export class RepoService {
   }
 
   async runCloneJob(payload: CloneJobPayload): Promise<void> {
-    const { repoId, owner, name, url } = payload;
-    const token = await this.container.secrets.get(GITHUB_TOKEN_SECRET);
-    const cloneUrl = token ? withGitHubToken(url, token) : url;
-    const { path } = await this.container.git.clone({ owner, name }, cloneUrl, {
-      depth: CLONE_DEPTH,
+    const { repoId, owner, name } = payload;
+    const ref = hostRepoRef({
+      owner,
+      name,
+      fullName: `${owner}/${name}`,
+      provider: payload.provider,
+      host: payload.host,
     });
+    // Q8 — NO token handling here: the remote is tokenless and the git adapter
+    // adds the provider's own credential per invocation.
+    const cloneUrl = cloneRemoteUrl(ref.provider, ref.fullName);
+    let path: string;
+    try {
+      ({ path } = await this.container.git.clone(ref, cloneUrl, { depth: CLONE_DEPTH }));
+    } catch (err) {
+      throw cloneError(ref.provider, err);
+    }
     await this.repo.updateClonePath(repoId, path);
 
     // T2.2 — kick off the indexer in the background. ENQUEUE (not call) so the
@@ -87,39 +108,71 @@ export class RepoService {
     workspaceId: string,
     userId: string,
     url: string,
-  ): Promise<{ repo: Repo; created: boolean }> {
-    const { owner, name } = parseRepoUrl(url);
-    const fullName = `${owner}/${name}`;
+  ): Promise<{ repo: RepoWithHost; created: boolean }> {
+    // Pure validation first: an unsupported host / unsafe path never reaches the
+    // network (AC-9/AC-10).
+    let parsed = parseRepoUrlHost(url);
 
-    const existing = await this.repo.findByFullName(workspaceId, fullName);
+    const existing = await this.repo.findByIdentity(workspaceId, parsed);
     if (existing) return { repo: toRepoDto(existing), created: false };
 
-    const row = await this.repo.insert({ workspaceId, owner, name, fullName, createdBy: userId });
-    await this.container.jobs.enqueue(workspaceId, CLONE_JOB_KIND, {
-      repoId: row.id,
-      owner,
-      name,
-      url,
-    } satisfies CloneJobPayload);
+    let defaultBranch: string | undefined;
+    if (parsed.provider === 'gitlab') {
+      // Canonical identity = gitlab.com's `path_with_namespace` (AC-52). The
+      // adapter maps private/no-token → gitlab_token_missing (AC-13) and
+      // token-without-access → gitlab_project_inaccessible (AC-14).
+      const project = await (await this.container.gitlab()).getProject(parsed.fullName);
+      parsed = parseGitLabPath(project.fullPath);
+      defaultBranch = project.defaultBranch || undefined;
+      const canonical = await this.repo.findByIdentity(workspaceId, parsed);
+      if (canonical) return { repo: toRepoDto(canonical), created: false };
+    }
 
+    const row = await this.repo.insert({
+      workspaceId,
+      owner: parsed.owner,
+      name: parsed.name,
+      fullName: parsed.fullName,
+      provider: parsed.provider,
+      host: parsed.host,
+      defaultBranch,
+      createdBy: userId,
+    });
+    if (!row) {
+      // Lost a concurrent-add race on the identity unique index.
+      const winner = await this.repo.findByIdentity(workspaceId, parsed);
+      if (winner) return { repo: toRepoDto(winner), created: false };
+      throw new AppError('repo_conflict', 'Repository could not be added; try again', 409);
+    }
+    await this.enqueueClone(workspaceId, row);
     return { repo: toRepoDto(row), created: true };
   }
 
-  async list(workspaceId: string): Promise<Repo[]> {
+  async list(workspaceId: string): Promise<RepoWithHost[]> {
     const rows = await this.repo.list(workspaceId);
-    return rows.map(toRepoDto);
+    // `running` lives only in the in-memory sync coordinator (never persisted).
+    const prSync = this.container.prSync;
+    return rows.map((row) => toRepoDto(row, { syncRunning: prSync.isRunning(row.id) }));
+  }
+
+  /** Enqueue the clone job; the remote is rebuilt from the stored identity (AC-17). */
+  private async enqueueClone(workspaceId: string, row: RepoRow): Promise<void> {
+    const ref = hostRepoRef(row);
+    await this.container.jobs.enqueue(workspaceId, CLONE_JOB_KIND, {
+      repoId: row.id,
+      owner: ref.owner,
+      name: ref.name,
+      provider: ref.provider,
+      host: ref.host,
+      url: cloneRemoteUrl(ref.provider, ref.fullName),
+    } satisfies CloneJobPayload);
   }
 
   /** Re-fetch the clone for an existing repo (enqueues a fresh `clone` job). */
   async refresh(workspaceId: string, id: string): Promise<{ status: 'refreshing' }> {
     const repo = await this.repo.getById(workspaceId, id);
     if (!repo) throw new NotFoundError('Repo not found');
-    await this.container.jobs.enqueue(workspaceId, CLONE_JOB_KIND, {
-      repoId: repo.id,
-      owner: repo.owner,
-      name: repo.name,
-      url: `https://github.com/${repo.fullName}.git`,
-    } satisfies CloneJobPayload);
+    await this.enqueueClone(workspaceId, repo);
     // T2.2 — also enqueue an incremental refresh. The two queue positions are
     // independent (p-queue doesn't FIFO across kinds), but `runIncremental` is
     // a no-op when `currentHead === lastIndexedSha`, so ordering is safe: if
@@ -141,4 +194,19 @@ export class RepoService {
     const ok = await this.repo.remove(workspaceId, id);
     if (!ok) throw new NotFoundError('Repo not found');
   }
+}
+
+/**
+ * Clone failures: for GitLab, an auth-shaped failure becomes the actionable
+ * "connect a GitLab token" hint (AC-12/13). Every message is redacted — the
+ * adapter already masks the token, this strips any stray userinfo too.
+ */
+function cloneError(provider: RepoProvider, err: unknown): Error {
+  const message = redactSecret(err instanceof Error ? err.message : String(err));
+  if (provider === 'gitlab' && GIT_AUTH_FAILURE_REGEX.test(message)) {
+    return new AppError('gitlab_token_missing', GITLAB_CLONE_AUTH_MESSAGE, 400, { cause: message });
+  }
+  const out = new Error(message);
+  out.name = err instanceof Error ? err.name : 'GitError';
+  return out;
 }

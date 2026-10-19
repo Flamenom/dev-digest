@@ -1,0 +1,24 @@
+{
+  "viewOn": "View on {provider, select, gitlab {GitLab} other {GitHub}}",
+  "draft": "Draft",
+  "readOnly": {
+    "postComment": "Post comment",
+    "note": "Posting comments to GitLab isn't supported yet — copy the text instead.",
+    "copyFinding": "Copy finding",
+    "copyComment": "Copy text",
+    "copied": "Copied to the clipboard.",
+    "copyFailed": "Couldn't copy to the clipboard."
+  },
+  "comments": {
+    "postFailed": "Couldn't post the comment to {provider, select, gitlab {GitLab} other {GitHub}}."
+  },
+  "files": {
+    "renamed": "{from} → {to}",
+    "tooLarge": "Diff too large on GitLab",
+    "collapsed": "Diff collapsed on GitLab",
+    "omittedByHost": "{count, plural, one {# file} other {# files}} not reviewed (diff unavailable)"
+  },
+  "finding": {
+    "suggestedFix": "Suggested fix"
+  }
+}

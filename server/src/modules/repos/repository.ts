@@ -1,4 +1,5 @@
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
+import type { RepoHost, RepoProvider } from '@devdigest/shared';
 import type { Db } from '../../db/client.js';
 import * as t from '../../db/schema.js';
 
@@ -15,22 +16,55 @@ export interface InsertRepo {
   name: string;
   fullName: string;
   createdBy: string;
+  /** Missing ⇒ github / github.com (column defaults). */
+  provider?: RepoProvider;
+  host?: RepoHost;
+  /** Missing ⇒ column default (`main`). */
+  defaultBranch?: string;
+}
+
+/** A repo's identity on its host — the dedupe key (AC-15/AC-16). */
+export interface RepoIdentity {
+  provider: RepoProvider;
+  host: RepoHost;
+  fullName: string;
 }
 
 export class RepoRepository {
   constructor(private db: Db) {}
 
-  /** Find a repo in a workspace by its `owner/name` full name (dedupe on add). */
-  async findByFullName(workspaceId: string, fullName: string): Promise<RepoRow | undefined> {
+  /**
+   * Find a repo in a workspace by (provider, host, full name) — dedupe on add.
+   * GitLab paths compare case-insensitively (gitlab.com paths are); GitHub keeps
+   * its existing exact match.
+   */
+  async findByIdentity(workspaceId: string, id: RepoIdentity): Promise<RepoRow | undefined> {
+    const fullNameMatch =
+      id.provider === 'gitlab'
+        ? sql`lower(${t.repos.fullName}) = lower(${id.fullName})`
+        : eq(t.repos.fullName, id.fullName);
     const [row] = await this.db
       .select()
       .from(t.repos)
-      .where(and(eq(t.repos.workspaceId, workspaceId), eq(t.repos.fullName, fullName)));
+      .where(
+        and(
+          eq(t.repos.workspaceId, workspaceId),
+          eq(t.repos.provider, id.provider),
+          eq(t.repos.host, id.host),
+          fullNameMatch,
+        ),
+      )
+      .orderBy(asc(t.repos.createdAt))
+      .limit(1);
     return row;
   }
 
   async list(workspaceId: string): Promise<RepoRow[]> {
-    return this.db.select().from(t.repos).where(eq(t.repos.workspaceId, workspaceId));
+    return this.db
+      .select()
+      .from(t.repos)
+      .where(eq(t.repos.workspaceId, workspaceId))
+      .orderBy(asc(t.repos.createdAt), asc(t.repos.id));
   }
 
   async getById(workspaceId: string, id: string): Promise<RepoRow | undefined> {
@@ -41,7 +75,12 @@ export class RepoRepository {
     return row;
   }
 
-  async insert(values: InsertRepo): Promise<RepoRow> {
+  /**
+   * Insert a repo. Returns `undefined` when the (workspace, provider, host,
+   * full_name) unique index already holds the row (a concurrent add won) —
+   * the caller re-reads it instead of surfacing a raw constraint error.
+   */
+  async insert(values: InsertRepo): Promise<RepoRow | undefined> {
     const [row] = await this.db
       .insert(t.repos)
       .values({
@@ -50,9 +89,13 @@ export class RepoRepository {
         name: values.name,
         fullName: values.fullName,
         createdBy: values.createdBy,
+        ...(values.provider ? { provider: values.provider } : {}),
+        ...(values.host ? { host: values.host } : {}),
+        ...(values.defaultBranch ? { defaultBranch: values.defaultBranch } : {}),
       })
+      .onConflictDoNothing()
       .returning();
-    return row!;
+    return row;
   }
 
   /**

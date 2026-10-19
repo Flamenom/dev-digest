@@ -34,6 +34,31 @@ export type {
 export type { Review, Finding, Severity, Verdict } from "@devdigest/shared";
 export type { PrBrief, SmartDiff } from "@devdigest/shared";
 
+// Repository hosts — GitHub + GitLab (contracts/repo-host.ts). Additive "*Host"
+// supersets of the platform contracts above.
+export type {
+  RepoProvider,
+  RepoHost,
+  RepoSyncState,
+  RepoWithHost,
+  PrMetaHost,
+  PrFileHost,
+  PrFileChangeType,
+  PrPatchOmitted,
+  PrDetailHost,
+  IssueMetaHost,
+  PrSyncTrigger,
+  PrListSync,
+  PrListPage,
+  PrSyncStartResult,
+  PrSyncDoneEvent,
+  ConnTestProviderHost,
+  ConnTestRequestHost,
+  ConnTestResultHost,
+  SecretsStatusHost,
+  HostErrorCode,
+} from "@devdigest/shared";
+
 /** UI-only view model for a PR list row (derives display fields from PrMeta). */
 export interface PrRowView {
   number: number;

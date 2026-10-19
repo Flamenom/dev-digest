@@ -4,9 +4,9 @@ import type {
   ConventionListResponse,
   ConventionScanStats,
   ConventionStatus,
-  RepoRef,
   UpdateConventionBody,
 } from '@devdigest/shared';
+import { hostRepoRef } from '../_shared/repo-ref.js';
 import type { Container } from '../../platform/container.js';
 import { NotFoundError, ValidationError } from '../../platform/errors.js';
 import { resolveFeatureModel } from '../settings/feature-models.js';
@@ -62,7 +62,7 @@ export class ConventionsService {
   async extract(workspaceId: string, repoId: string): Promise<ConventionExtractResponse> {
     const repo = await this.repo.getRepo(workspaceId, repoId);
     if (!repo) throw new NotFoundError('Repo not found');
-    const repoRef: RepoRef = { owner: repo.owner, name: repo.name };
+    const repoRef = hostRepoRef(repo);
 
     const poolPaths = await this.container.repoIntel.getConventionSamples(
       repoId,

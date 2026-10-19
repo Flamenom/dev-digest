@@ -7,7 +7,7 @@
 import React from "react";
 import { useTranslations } from "next-intl";
 import { Icon } from "@devdigest/ui";
-import type { PrFile } from "@/lib/types";
+import type { PrFileHost } from "@/lib/types";
 import { AUTO_EXPAND_MAX_LINES, type LineFinding } from "../constants";
 import { parsePatch, type Line } from "../helpers";
 import {
@@ -32,6 +32,20 @@ function threadsForLine(ln: Line, matched: Map<string, CommentThread[]>): Commen
   return out;
 }
 
+/* Host-only bits read the `prHost` namespace — kept in their own components so
+   a plain GitHub file never resolves it (catalog-less callers stay warning-free). */
+function RenamedPath({ from, to }: { from: string; to: string }) {
+  const t = useTranslations("prHost");
+  return <>{t("files.renamed", { from, to })}</>;
+}
+
+function OmittedNote({ kind }: { kind: NonNullable<PrFileHost["patch_omitted"]> }) {
+  const t = useTranslations("prHost");
+  return (
+    <div style={s.noDiff}>{t(kind === "collapsed" ? "files.collapsed" : "files.tooLarge")}</div>
+  );
+}
+
 export function FileCard({
   file,
   commenting,
@@ -41,7 +55,7 @@ export function FileCard({
   onFindingClick,
   highlightLarge,
 }: {
-  file: PrFile;
+  file: PrFileHost;
   commenting?: DiffCommentApi;
   /** Overrides the auto-expand-by-size initial state (user can still toggle). */
   defaultOpen?: boolean;
@@ -54,8 +68,15 @@ export function FileCard({
   highlightLarge?: boolean;
 }) {
   const t = useTranslations("shell");
+  // A host-omitted patch has nothing to render but its note — open it so the
+  // reason is visible without a click.
+  const omitted = file.patch_omitted ?? null;
+  const renamedFrom =
+    file.previous_path && file.previous_path !== file.path ? file.previous_path : null;
   const [open, setOpen] = React.useState(
-    defaultOpen ?? (file.additions ?? 0) + (file.deletions ?? 0) <= AUTO_EXPAND_MAX_LINES
+    defaultOpen ??
+      (omitted != null ||
+        (file.additions ?? 0) + (file.deletions ?? 0) <= AUTO_EXPAND_MAX_LINES)
   );
   const lines = React.useMemo(() => parsePatch(file.patch), [file.patch]);
 
@@ -84,7 +105,7 @@ export function FileCard({
         <Icon.ChevronRight size={13} style={chevronFor(open)} />
         <Icon.FileText size={14} style={s.fileIcon} />
         <span className="mono" style={s.filePath}>
-          {file.path}
+          {renamedFrom ? <RenamedPath from={renamedFrom} to={file.path} /> : file.path}
         </span>
         <span className="mono tnum" style={s.fileStat}>
           <span style={s.addText}>+{file.additions}</span>{" "}
@@ -102,7 +123,9 @@ export function FileCard({
       </div>
       {open && (
         <div style={s.fileBody}>
-          {lines.length === 0 ? (
+          {omitted ? (
+            <OmittedNote kind={omitted} />
+          ) : lines.length === 0 ? (
             <div style={s.noDiff}>{t("diffViewer.noDiffText")}</div>
           ) : (
             lines.map((ln, i) => (

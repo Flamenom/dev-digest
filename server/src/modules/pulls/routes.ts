@@ -1,7 +1,15 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import type { PrMeta, PrDetail, GitHubClient, PrReviewComment } from '@devdigest/shared';
+import type {
+  PrDetailHost,
+  GitHubClient,
+  PrListPage,
+  PrMetaHost,
+  PrReviewComment,
+  PrSyncDoneEvent,
+  PrSyncStartResult,
+} from '@devdigest/shared';
 import { PrCommentInput } from '@devdigest/shared';
 import * as t from '../../db/schema.js';
 import { getContext } from '../_shared/context.js';
@@ -9,13 +17,21 @@ import { IdParams } from '../_shared/schemas.js';
 import { latestReviewPerAgent, rollupReviews } from '../_shared/review-rollup.js';
 import { AppError, NotFoundError } from '../../platform/errors.js';
 import { deriveReviewStatus } from './status.js';
+import type { SyncRepo } from './sync-service.js';
 
 /**
- * F1 — pulls module. PR import via Octokit (list + per-PR detail).
- *   GET /repos/:id/pulls → list PRs for a repo (open + recently merged/closed,
- *                          synced from GitHub, persisted). `status` is GitHub's
- *                          merge state (open/merged/closed).
- *   GET /pulls/:id       → full PR detail (diff/files, commits, body, linked issue)
+ * F1 — pulls module. PR list (persisted, synced on open) + per-PR detail.
+ *   GET  /repos/:id/pulls             → persisted PR list (bare array — MCP
+ *                                        relies on it); triggers sync-on-open
+ *   GET  /repos/:id/pulls/page        → { pulls, sync } for the UI
+ *   POST /repos/:id/pulls/sync        → manual list sync → { trigger }
+ *   GET  /repos/:id/pulls/sync/events → SSE: ONE `done` event, then close
+ *   GET  /pulls/:id                   → full PR detail (diff/files, commits, body, linked issue)
+ *   GET  /pulls/:id/comments          → inline review comments (GitHub; GitLab → [])
+ *   POST /pulls/:id/comments          → post one (GitHub; GitLab → 400 provider_read_only)
+ *
+ * List reads hit the DB only; the host sync runs detached in the container's
+ * single-flight `prSync` coordinator (TTL / back-off / join — AC-55..64).
  *
  * Import is idempotent (unique repo_id+number). Review trigger is MANUAL
  * and owned by A2 — this module only imports/reads.
@@ -24,67 +40,37 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
   const app = appBase.withTypeProvider<ZodTypeProvider>();
   const { container } = app;
 
-  app.get('/repos/:id/pulls', { schema: { params: IdParams } }, async (req): Promise<PrMeta[]> => {
-    const { workspaceId } = await getContext(container, req);
+  /** The workspace-scoped repo row, or 404. */
+  async function loadRepo(workspaceId: string, repoId: string) {
     const [repo] = await container.db
       .select()
       .from(t.repos)
-      .where(and(eq(t.repos.workspaceId, workspaceId), eq(t.repos.id, req.params.id)));
+      .where(and(eq(t.repos.workspaceId, workspaceId), eq(t.repos.id, repoId)));
     if (!repo) throw new NotFoundError('Repo not found');
+    return repo;
+  }
 
-    let gh: GitHubClient | null = null;
-    try {
-      gh = await container.github();
-    } catch (err) {
-      app.log.warn({ err }, 'GitHub client unavailable (no token / offline); serving persisted PRs');
-    }
+  /**
+   * Sync-on-open (AC-55/56): ask the coordinator to start/join a sync, but
+   * NEVER make the list read wait on it — the read serves persisted rows only.
+   * `onOpen` itself only reads the sync status; the sync is detached.
+   */
+  function triggerOnOpen(repo: SyncRepo, log: FastifyBaseLogger): void {
+    container.prSync.onOpen(repo).catch((err: unknown) => {
+      log.warn({ err, repoId: repo.id }, 'PR sync-on-open trigger failed; serving persisted PRs');
+    });
+  }
 
-    // Local-first: sync from GitHub when a token is configured, but never
-    // fail the read — already-imported/seeded PRs stay viewable offline.
-    if (gh) {
-      try {
-        const pulls = await gh.listPullRequests({ owner: repo.owner, name: repo.name });
-        await container.pullRequestRepo.upsertList({ workspaceId, repoId: repo.id }, pulls);
-      } catch (err) {
-        app.log.warn({ err }, 'GitHub PR sync skipped (no token / offline); serving persisted PRs');
-      }
-    }
-
+  /**
+   * The persisted PR list + per-PR review rollups. DB only — no host calls.
+   * `is_draft` / `stats_known` are mapped ONLY when non-null, so a GitHub row
+   * (where they are never written) keeps the exact pre-GitLab DTO field set (AC-60).
+   */
+  async function readPersistedList(workspaceId: string, repoId: string): Promise<PrMetaHost[]> {
     const rows = await container.db
       .select()
       .from(t.pullRequests)
-      .where(eq(t.pullRequests.repoId, repo.id));
-
-    // Diff stats aren't on GitHub's PR-list payload, so freshly-imported PRs
-    // land with zeroed size/diff. Backfill them once from the detail endpoint
-    // so the list shows real S/M/L + ± counts. Capped per request (each backfill
-    // is a detail fetch) — the periodic refetch chips away at any remainder.
-    const BACKFILL_LIMIT = 10;
-    if (gh) {
-      const needStats = rows
-        .filter((r) => r.additions === 0 && r.deletions === 0 && r.filesCount === 0)
-        .slice(0, BACKFILL_LIMIT);
-      // Detail fetches are independent — run them concurrently (bounded by
-      // BACKFILL_LIMIT); one failure skips only that PR.
-      const client = gh;
-      await Promise.all(
-        needStats.map(async (r) => {
-          try {
-            const detail = await client.getPullRequest({ owner: repo.owner, name: repo.name }, r.number);
-            await container.pullRequestRepo.updateDiffStats(workspaceId, r.id, {
-              additions: detail.additions,
-              deletions: detail.deletions,
-              filesCount: detail.files_count,
-            });
-            r.additions = detail.additions;
-            r.deletions = detail.deletions;
-            r.filesCount = detail.files_count;
-          } catch (err) {
-            req.log.warn({ err, number: r.number }, 'PR diff-stat backfill skipped');
-          }
-        }),
-      );
-    }
+      .where(and(eq(t.pullRequests.workspaceId, workspaceId), eq(t.pullRequests.repoId, repoId)));
 
     // SCORE + FINDINGS severity breakdown per PR for the list's score ring and
     // findings column, aggregated across ALL agents that reviewed the PR (a PR is
@@ -205,110 +191,135 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
         score: scoreByPr.get(r.id) ?? null,
         cost_usd: costByPr.get(r.id) ?? null,
         findings: findingsByPr.get(r.id) ?? null,
+        ...(r.isDraft != null ? { is_draft: r.isDraft } : {}),
+        ...(r.statsKnown != null ? { stats_known: r.statsKnown } : {}),
       };
     });
+  }
+
+  // GET /repos/:id/pulls — bare PrMeta[] (MCP depends on this shape, Q2).
+  app.get('/repos/:id/pulls', { schema: { params: IdParams } }, async (req): Promise<PrMetaHost[]> => {
+    const { workspaceId } = await getContext(container, req);
+    const repo = await loadRepo(workspaceId, req.params.id);
+    triggerOnOpen(repo, req.log);
+    return readPersistedList(workspaceId, repo.id);
   });
 
-  app.get('/pulls/:id', { schema: { params: IdParams } }, async (req): Promise<PrDetail> => {
-    const { workspaceId } = await getContext(container, req);
-    const [pr] = await container.db
-      .select()
-      .from(t.pullRequests)
-      .where(
-        and(eq(t.pullRequests.workspaceId, workspaceId), eq(t.pullRequests.id, req.params.id)),
-      );
-    if (!pr) throw new NotFoundError('Pull request not found');
-    const [repo] = await container.db
-      .select()
-      .from(t.repos)
-      .where(eq(t.repos.id, pr.repoId));
-    if (!repo) throw new NotFoundError('Repo not found');
+  // GET /repos/:id/pulls/page — the UI's list read: rows + sync status (Q2).
+  app.get(
+    '/repos/:id/pulls/page',
+    { schema: { params: IdParams } },
+    async (req): Promise<PrListPage> => {
+      const { workspaceId } = await getContext(container, req);
+      const repo = await loadRepo(workspaceId, req.params.id);
+      // Only the status read is awaited here, never the sync itself (AC-55).
+      const trigger = await container.prSync.onOpen(repo);
+      const [pulls, snapshot] = await Promise.all([
+        readPersistedList(workspaceId, repo.id),
+        container.prSync.snapshot(repo),
+      ]);
+      return { pulls, sync: { trigger, ...snapshot } };
+    },
+  );
 
-    // Local-first: refresh detail from GitHub when a token is configured;
-    // otherwise serve the persisted files/commits/body (seeded or previously
-    // imported) so PR detail works offline.
-    try {
-      const gh = await container.github();
-      const detail = await gh.getPullRequest({ owner: repo.owner, name: repo.name }, pr.number);
+  // POST /repos/:id/pulls/sync — manual refresh: bypasses TTL/back-off,
+  // single-flight (joins a running sync) (AC-57/58).
+  app.post(
+    '/repos/:id/pulls/sync',
+    { schema: { params: IdParams } },
+    async (req): Promise<PrSyncStartResult> => {
+      const { workspaceId } = await getContext(container, req);
+      const repo = await loadRepo(workspaceId, req.params.id);
+      return { trigger: container.prSync.manual(repo) };
+    },
+  );
 
-      // Replace-in-place of the mirrored files/commits, in ONE transaction.
-      // These are delete-then-insert: without the transaction a failure between
-      // the two (constraint, dropped connection, process exit) leaves the PR with
-      // NO diff and no way back except another successful GitHub fetch. The
-      // metadata UPDATE joins the same transaction so a PR's stats never describe
-      // a file set that isn't there.
-      await container.db.transaction(async (tx) => {
-        await tx.delete(t.prFiles).where(eq(t.prFiles.prId, pr.id));
-        if (detail.files.length > 0) {
-          await tx.insert(t.prFiles).values(
-            detail.files.map((f) => ({
-              prId: pr.id,
-              path: f.path,
-              additions: f.additions,
-              deletions: f.deletions,
-              patch: f.patch ?? null,
-            })),
-          );
-        }
-        await tx.delete(t.prCommits).where(eq(t.prCommits.prId, pr.id));
-        if (detail.commits.length > 0) {
-          await tx.insert(t.prCommits).values(
-            detail.commits.map((c) => ({
-              prId: pr.id,
-              sha: c.sha,
-              message: c.message,
-              author: c.author,
-              committedAt: c.committed_at ? new Date(c.committed_at) : null,
-            })),
-          );
-        }
-        await tx
-          .update(t.pullRequests)
-          .set({
-            body: detail.body ?? null,
-            // Diff stats aren't on GitHub's PR-list payload — backfill them from
-            // the detail fetch so the Pull Requests list shows real size/files.
-            additions: detail.additions,
-            deletions: detail.deletions,
-            filesCount: detail.files_count,
-          })
-          .where(eq(t.pullRequests.id, pr.id));
-      });
+  // GET /repos/:id/pulls/sync/events — completion signal: exactly ONE `done`
+  // event, then the server closes the stream (no polling, AC-63). A client
+  // disconnect only drops the listener; the sync itself keeps running (AC-64).
+  // No rate limit: one long-lived connection, like /runs/:id/events.
+  app.get(
+    '/repos/:id/pulls/sync/events',
+    { schema: { params: IdParams }, config: { rateLimit: false } },
+    async (req, reply) => {
+      const { workspaceId } = await getContext(container, req);
+      // Authorize BEFORE the SSE handshake so an unknown repo is a normal 404.
+      const repo = await loadRepo(workspaceId, req.params.id);
+      const coordinator = container.prSync;
 
-      return { ...detail, id: pr.id };
-    } catch (err) {
-      app.log.warn({ err }, 'GitHub PR detail refresh skipped (no token / offline); serving persisted detail');
-      const files = await container.db.select().from(t.prFiles).where(eq(t.prFiles.prId, pr.id));
-      const commits = await container.db.select().from(t.prCommits).where(eq(t.prCommits.prId, pr.id));
-      return {
-        id: pr.id,
-        number: pr.number,
-        title: pr.title,
-        author: pr.author,
-        branch: pr.branch,
-        base: pr.base,
-        head_sha: pr.headSha,
-        additions: pr.additions,
-        deletions: pr.deletions,
-        files_count: pr.filesCount,
-        status: pr.status as PrDetail['status'],
-        opened_at: pr.openedAt?.toISOString() ?? null,
-        updated_at: pr.updatedAt?.toISOString() ?? null,
-        body: pr.body ?? null,
-        files: files.map((f) => ({
-          path: f.path,
-          additions: f.additions,
-          deletions: f.deletions,
-          patch: f.patch ?? null,
-        })),
-        commits: commits.map((c) => ({
-          sha: c.sha,
-          message: c.message,
-          author: c.author,
-          committed_at: c.committedAt?.toISOString() ?? null,
-        })),
+      const noop = () => undefined;
+      let closed = false;
+      // Cancels the pending `waitForDone` (drops the coordinator listener).
+      let cancelWait: () => void = noop;
+      const onClose = () => {
+        closed = true;
+        cancelWait();
       };
-    }
+      reply.raw.once('close', onClose);
+
+      /** Resolves with the running sync's outcome, or null if the client left first. */
+      const waitForDone = () =>
+        new Promise<PrSyncDoneEvent | null>((resolve) => {
+          const off = coordinator.onDone(repo.id, (event) => {
+            cancelWait = noop;
+            resolve(event);
+          });
+          cancelWait = () => {
+            cancelWait = noop;
+            off();
+            resolve(null);
+          };
+          if (closed) cancelWait();
+        });
+
+      reply.sse(
+        (async function* () {
+          try {
+            while (!closed) {
+              let event: PrSyncDoneEvent | null = null;
+              if (coordinator.isRunning(repo.id)) {
+                event = await waitForDone();
+              } else {
+                const snap = await coordinator.snapshot(repo);
+                // A sync started while the status was being read → wait for it.
+                if (snap.state === 'running') continue;
+                event = {
+                  state: snap.state,
+                  last_synced_at: snap.last_synced_at,
+                  last_sync_error: snap.last_sync_error,
+                };
+              }
+              if (!event) break;
+              yield { event: 'done', data: JSON.stringify(event) };
+              break;
+            }
+          } catch (err) {
+            // The status read failed after the handshake: still honour the
+            // "exactly ONE terminal `done`" contract so the client never hangs.
+            req.log.error({ err, repoId: repo.id }, 'PR sync status unavailable; closing SSE as failed');
+            if (!closed) {
+              const failed: PrSyncDoneEvent = {
+                state: 'failed',
+                last_synced_at: repo.lastSyncedAt?.toISOString() ?? null,
+                last_sync_error: 'sync status unavailable',
+              };
+              yield { event: 'done', data: JSON.stringify(failed) };
+            }
+          } finally {
+            cancelWait();
+            reply.raw.off('close', onClose);
+          }
+        })(),
+      );
+    },
+  );
+
+  // PR detail — the only place diffs/patches/commits are fetched from a host.
+  // GitHub always refetches; GitLab only when the head moved (Q6).
+  app.get('/pulls/:id', { schema: { params: IdParams } }, async (req): Promise<PrDetailHost> => {
+    const { workspaceId } = await getContext(container, req);
+    const { pr, repo } = await resolvePrAndRepo(req.params.id, workspaceId);
+    return container.pullDetail.refresh(pr, repo, req.log);
   });
 
   // ---- Inline review comments (Files changed tab) -------------------------
@@ -332,6 +343,8 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
     async (req): Promise<PrReviewComment[]> => {
       const { workspaceId } = await getContext(container, req);
       const { pr, repo } = await resolvePrAndRepo(req.params.id, workspaceId);
+      // GitLab (read-only in the MVP): no comments, and no client is resolved (AC-45).
+      if (container.pullDetail.isReadOnly(repo)) return [];
       let gh: GitHubClient;
       try {
         gh = await container.github();
@@ -354,6 +367,8 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
     async (req): Promise<PrReviewComment> => {
       const { workspaceId } = await getContext(container, req);
       const { pr, repo } = await resolvePrAndRepo(req.params.id, workspaceId);
+      // Reject BEFORE any host client is resolved or called (AC-44).
+      container.pullDetail.assertWritable(repo);
       const input = req.body;
       let gh: GitHubClient;
       try {

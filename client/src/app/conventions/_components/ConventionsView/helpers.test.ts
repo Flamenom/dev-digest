@@ -3,6 +3,7 @@ import type { Convention } from "@devdigest/shared";
 import {
   defaultSkillDescription,
   defaultSkillName,
+  evidenceHostUrl,
   evidenceLabel,
   generateSkillBody,
   relativeTime,
@@ -48,6 +49,44 @@ describe("evidenceLabel", () => {
     expect(
       evidenceLabel(convention({ evidence_start_line: null, evidence_end_line: null })),
     ).toBe("src/api/users.ts");
+  });
+});
+
+describe("evidenceHostUrl", () => {
+  const github = { full_name: "acme/payments-api", default_branch: "main" };
+  const gitlab = {
+    full_name: "space-profit/platform/crm-frontend",
+    default_branch: "main",
+    provider: "gitlab" as const,
+    host: "gitlab.com" as const,
+    web_url: "https://gitlab.com/space-profit/platform/crm-frontend",
+  };
+
+  it("keeps the GitHub link unchanged (with and without provider)", () => {
+    const c = convention({ evidence_start_line: 3, evidence_end_line: 5 });
+    const expected = "https://github.com/acme/payments-api/blob/main/src/api/users.ts#L3-L5";
+    expect(evidenceHostUrl(github, c)).toBe(expected);
+    expect(
+      evidenceHostUrl(
+        { ...github, provider: "github", host: "github.com", web_url: "https://github.com/acme/payments-api" },
+        c,
+      ),
+    ).toBe(expected);
+  });
+
+  it("builds a GitLab blob link on the default branch with #La-b anchors", () => {
+    expect(evidenceHostUrl(gitlab, convention({ evidence_start_line: 3, evidence_end_line: 5 }))).toBe(
+      "https://gitlab.com/space-profit/platform/crm-frontend/-/blob/main/src/api/users.ts#L3-5",
+    );
+    expect(
+      evidenceHostUrl(gitlab, convention({ evidence_start_line: null, evidence_end_line: null })),
+    ).toBe("https://gitlab.com/space-profit/platform/crm-frontend/-/blob/main/src/api/users.ts");
+  });
+
+  it("returns null without a repo or for an unsafe GitLab web_url", () => {
+    expect(evidenceHostUrl(null, convention())).toBeNull();
+    expect(evidenceHostUrl({ ...gitlab, web_url: "javascript:alert(1)" }, convention())).toBeNull();
+    expect(evidenceHostUrl({ ...gitlab, web_url: "https://evil.example/x" }, convention())).toBeNull();
   });
 });
 

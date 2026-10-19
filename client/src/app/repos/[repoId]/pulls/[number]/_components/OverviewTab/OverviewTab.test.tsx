@@ -76,8 +76,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
   };
 });
 
-// Repo identity feeds repoFullName (the blob-URL owner/repo) — provide it
-// directly instead of booting RepoProvider + the /repos query.
+// The repo-not-found guard reads the context — stub it instead of booting
+// RepoProvider. The page's link repo itself comes from GET /repos (routeGet).
 vi.mock("@/lib/repo-context", () => ({
   useActiveRepo: () => ({
     repoId: REPO_ID,
@@ -205,11 +205,31 @@ const BRIEF: PrBriefDetail = {
   generation: { state: "ok", reason: null },
 };
 
+/** The repo DTO the page builds host links from (GitHub → links unchanged, AC-38). */
+const REPO = {
+  id: REPO_ID,
+  owner: "acme",
+  name: "widgets",
+  full_name: REPO_FULL_NAME,
+  provider: "github",
+  host: "github.com",
+  web_url: `https://github.com/${REPO_FULL_NAME}`,
+  sync_state: "idle",
+};
+
 /** Route every GET the Overview tree fires; unknown paths fail loudly. */
 function routeGet(path: string): Promise<unknown> {
   switch (path) {
+    case "/repos":
+      return Promise.resolve([REPO]);
     case `/repos/${REPO_ID}/pulls`:
       return Promise.resolve([PR_META]);
+    // T17: usePulls reads the `{ pulls, sync }` page (PrListPage contract).
+    case `/repos/${REPO_ID}/pulls/page`:
+      return Promise.resolve({
+        pulls: [PR_META],
+        sync: { trigger: "fresh", state: "idle", last_synced_at: null },
+      });
     case `/pulls/${PR_ID}`:
       return Promise.resolve(PR);
     case `/pulls/${PR_ID}/brief`:

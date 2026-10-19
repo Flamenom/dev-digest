@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, integer, boolean, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core';
 import { workspaces } from './core';
 import { repos } from './repos';
 
@@ -26,6 +26,13 @@ export const pullRequests = pgTable(
     body: text('body'),
     openedAt: timestamp('opened_at', { withTimezone: true }),
     updatedAt: timestamp('updated_at', { withTimezone: true }),
+    // Migration 0019 (GitLab support) — all nullable so pre-existing rows survive.
+    /** Draft / WIP flag from the host; null = unknown (rows written before 0019). */
+    isDraft: boolean('is_draft'),
+    /** False when the host list payload carried no diff stats (additions/deletions are placeholders). */
+    statsKnown: boolean('stats_known'),
+    /** head_sha the stored files/commits detail was fetched at (head-unchanged short-circuit). */
+    detailHeadSha: text('detail_head_sha'),
   },
   (t) => ({
     uq: uniqueIndex('pr_repo_number_uq').on(t.repoId, t.number), // idempotent import
@@ -42,6 +49,13 @@ export const prFiles = pgTable('pr_files', {
   additions: integer('additions').notNull().default(0),
   deletions: integer('deletions').notNull().default(0),
   patch: text('patch'),
+  // Migration 0019 (GitLab support) — nullable, so GitHub rows are unaffected.
+  /** Old path for renamed files. */
+  previousPath: text('previous_path'),
+  /** 'added' | 'modified' | 'deleted' | 'renamed' — text, not a pg enum. */
+  changeType: text('change_type'),
+  /** Why `patch` is null: 'too_large' | 'collapsed' (host omitted the diff). */
+  patchOmitted: text('patch_omitted'),
 });
 
 export const prCommits = pgTable('pr_commits', {

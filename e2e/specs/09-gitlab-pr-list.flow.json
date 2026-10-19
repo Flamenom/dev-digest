@@ -1,0 +1,19 @@
+{
+  "name": "GitLab repo PR list: draft badge, unknown diff stats and sync status",
+  "description": "Spec 2026-10-16-gitlab-merge-requests (AC-50, AC-24). Switches the active repo to the seeded GitLab fixture space-profit/platform/crm-frontend (seeded only with SEED_GITLAB_FIXTURE=1 — the hermetic runner sets it) via the sidebar repo switcher, then asserts the PR list renders the fixture rows from persisted data: PR #5 with its Draft badge, PR #6 with an em dash for its unknown diff stats (aria-label 'Diff stats not available yet'), and the sync status line. The server runs with DEVDIGEST_HOSTS_OFFLINE=true, so no request ever reaches gitlab.com. Assumes the hermetic runner (scripts/e2e.sh).",
+  "steps": [
+    { "cmd": ["open", "{BASE}/"], "label": "load the app root" },
+    { "cmd": ["wait", "--url", "/pulls"], "label": "land on the first repo's PR list" },
+    { "cmd": ["wait", "--load", "networkidle"], "label": "repo list + PR list settle" },
+    { "cmd": ["find", "text", "acme/payments-api", "click"], "label": "open the sidebar repo switcher (active repo = seeded GitHub demo)" },
+    { "cmd": ["find", "text", "space-profit/platform/crm-frontend", "click"], "label": "select the seeded GitLab repo" },
+    { "cmd": ["wait", "--load", "networkidle"], "label": "GitLab repo PR list settles" },
+    { "cmd": ["wait", "--text", "Lead filters on the CRM list view"], "label": "GitLab PR #5 row is visible" },
+    { "cmd": ["wait", "--text", "#5"], "label": "PR number #5 renders" },
+    { "cmd": ["wait", "--text", "Bump vite to 6.x"], "label": "GitLab PR #6 row is visible" },
+    { "cmd": ["wait", "--text", "Draft"], "label": "Draft badge renders" },
+    { "cmd": ["wait", "[aria-label='Diff stats not available yet']"], "label": "unknown diff stats render as an em dash with an accessible label" },
+    { "cmd": ["get", "text", "[aria-label='Diff stats not available yet']"], "label": "the unknown-stats cell shows an em dash", "assert": { "stdoutIncludes": "—" } },
+    { "cmd": ["wait", "--text", "Synced"], "label": "sync status shows the last successful sync from persisted data" }
+  ]
+}

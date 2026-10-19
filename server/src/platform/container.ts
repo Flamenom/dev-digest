@@ -6,6 +6,13 @@ import type {
   CodeIndex,
   Embedder,
   LLMProvider,
+  GitLabClient,
+  GitCredential,
+  GitCredentialResolver,
+  HostRepoRef,
+  PullRequestHost,
+  RepoProvider,
+  SecretKey,
 } from '@devdigest/shared';
 import type { AppConfig } from './config.js';
 import type { Db } from '../db/client.js';
@@ -14,6 +21,10 @@ import { runBus, type RunBus } from './sse.js';
 import { LocalSecretsProvider } from '../adapters/secrets/local.js';
 import { LocalNoAuthProvider } from '../adapters/auth/local.js';
 import { OctokitGitHubClient } from '../adapters/github/octokit.js';
+import { GitHubPullRequestHost } from '../adapters/github/host.js';
+// The gitlab barrel is imported directly (not via adapters/index.ts): only the
+// composition root may construct the concrete client.
+import { RestGitLabClient } from '../adapters/gitlab/index.js';
 import { SimpleGitClient } from '../adapters/git/simple-git.js';
 import { RipgrepCodeIndex } from '../adapters/codeindex/ripgrep.js';
 import { OpenAIProvider } from '../adapters/llm/openai.js';
@@ -26,7 +37,14 @@ import { ConfigError } from './errors.js';
 import { AgentsRepository } from '../modules/agents/repository.js';
 import { SkillsRepository } from '../modules/skills/repository.js';
 import { ReviewRepository } from '../modules/reviews/repository.js';
-import { PullRequestRepository, type PullRequestStore } from '../modules/pulls/repository.js';
+import {
+  PullRequestRepository,
+  SyncStatusRepository,
+  type PullRequestStore,
+} from '../modules/pulls/repository.js';
+import { PrListSyncService, type SyncRepo } from '../modules/pulls/sync-service.js';
+import { PrSyncCoordinator } from '../modules/pulls/sync-coordinator.js';
+import { PullDetailService, type PullDetail } from '../modules/pulls/detail-service.js';
 import type { RepoIntel } from '../modules/repo-intel/types.js';
 import { RepoIntelService } from '../modules/repo-intel/service.js';
 import { createIntentDeriver, type IntentDeriver } from '../modules/reviews/intent-deriver.js';
@@ -75,6 +93,8 @@ export interface ContainerOverrides {
   secrets?: SecretsProvider;
   auth?: AuthProvider;
   github?: GitHubClient;
+  /** gitlab.com read-side client — tests inject `MockGitLabClient`. */
+  gitlab?: GitLabClient;
   git?: GitClient;
   codeIndex?: CodeIndex;
   embedder?: Embedder;
@@ -82,6 +102,10 @@ export interface ContainerOverrides {
   llm?: Partial<Record<'openai' | 'anthropic' | 'openrouter', LLMProvider>>;
   /** `pull_requests` writes (list sync + diff-stat backfill) — tests inject a fake. */
   pullRequestRepo?: PullRequestStore;
+  /** Clock (epoch ms) for the PR-list sync coordinator's TTL/back-off — tests fake time. */
+  prSyncClock?: () => number;
+  /** PR/MR detail service (`GET /pulls/:id`, comment gating) — tests inject one over fakes. */
+  pullDetail?: PullDetail;
   /** repo-intel facade (T1.1+) — tests inject mock RepoIntel implementations. */
   repoIntel?: RepoIntel;
   /** L04 blast service — tests inject a service over mocked deps. */
@@ -95,6 +119,14 @@ export interface ContainerOverrides {
   tokenizer?: Tokenizer;
 }
 
+/** Q8 — which secret authenticates git network ops for each provider, and as whom. */
+const GIT_CREDENTIALS: Readonly<
+  Record<RepoProvider, { host: HostRepoRef['host']; secret: SecretKey; username: string }>
+> = {
+  github: { host: 'github.com', secret: 'GITHUB_TOKEN', username: 'x-access-token' },
+  gitlab: { host: 'gitlab.com', secret: 'GITLAB_TOKEN', username: 'oauth2' },
+};
+
 export class Container {
   readonly config: AppConfig;
   readonly db: Db;
@@ -105,6 +137,7 @@ export class Container {
 
   private _git?: GitClient;
   private _github?: GitHubClient;
+  private _gitlab?: GitLabClient;
   private _codeIndex?: CodeIndex;
   private _embedder?: Embedder;
   private llmCache = new Map<string, LLMProvider>();
@@ -116,6 +149,8 @@ export class Container {
   private _skillsRepo?: SkillsRepository;
   private _reviewRepo?: ReviewRepository;
   private _pullRequestRepo?: PullRequestRepository;
+  private _prSync?: PrSyncCoordinator<SyncRepo>;
+  private _pullDetail?: PullDetail;
   private _repoIntel?: RepoIntel;
   private _intent?: IntentDeriver;
   private _smartDiffService?: SmartDiffService;
@@ -137,8 +172,23 @@ export class Container {
 
   get git(): GitClient {
     if (this.overrides.git) return this.overrides.git;
-    this._git ??= new SimpleGitClient(this.config.cloneDir);
+    const credentials: GitCredentialResolver = (ref) => this.gitCredential(ref);
+    this._git ??= new SimpleGitClient(this.config.cloneDir, { credentials });
     return this._git;
+  }
+
+  /**
+   * Q8 — per-invocation git credential for one network op. Each provider's
+   * token is scoped to its OWN host (the adapter sends it as a host-scoped
+   * `http.extraHeader`), and is never handed to the other provider. Read through
+   * SecretsProvider on EVERY call (not cached) so a rotated/removed token takes
+   * effect on the next clone/fetch. A missing secret ⇒ `null` (anonymous).
+   */
+  async gitCredential(ref: HostRepoRef): Promise<GitCredential | null> {
+    const spec = GIT_CREDENTIALS[ref.provider];
+    if (!spec || ref.host !== spec.host) return null;
+    const token = await this.secrets.get(spec.secret);
+    return token ? { username: spec.username, token } : null;
   }
 
   get agentsRepo(): AgentsRepository {
@@ -162,6 +212,44 @@ export class Container {
   get pullRequestRepo(): PullRequestStore {
     if (this.overrides.pullRequestRepo) return this.overrides.pullRequestRepo;
     return (this._pullRequestRepo ??= new PullRequestRepository(this.db));
+  }
+
+  /**
+   * PR-list sync-on-open coordinator — ONE per container (= one per API
+   * process): its in-memory in-flight map IS the single-flight guarantee, so a
+   * second instance would be a second lock. Each sync runs against the repo's
+   * OWN provider host (AC-27), detached from the request that triggered it
+   * (AC-64). Not routed through JobRunner: its retries/timeouts and persisted
+   * job rows conflict with single-flight + TTL semantics.
+   */
+  get prSync(): PrSyncCoordinator<SyncRepo> {
+    if (!this._prSync) {
+      const sync = new PrListSyncService({
+        hosts: (provider) => this.prHost(provider),
+        store: this.pullRequestRepo,
+      });
+      this._prSync = new PrSyncCoordinator<SyncRepo>({
+        ttlMs: this.config.prSyncTtlMs,
+        backoffMs: this.config.prSyncTtlMs,
+        now: this.overrides.prSyncClock ?? (() => Date.now()),
+        status: new SyncStatusRepository(this.db),
+        run: (repo) => sync.syncRepo(repo),
+      });
+    }
+    return this._prSync;
+  }
+
+  /**
+   * PR/MR detail (`GET /pulls/:id`) — the only place diffs/patches/commits are
+   * fetched from a host. Stateless, so one per container; the request logger is
+   * passed per call.
+   */
+  get pullDetail(): PullDetail {
+    if (this.overrides.pullDetail) return this.overrides.pullDetail;
+    return (this._pullDetail ??= new PullDetailService({
+      hosts: (provider) => this.prHost(provider),
+      store: this.pullRequestRepo,
+    }));
   }
 
   get codeIndex(): CodeIndex {
@@ -192,6 +280,7 @@ export class Container {
     this._intent ??= createIntentDeriver({
       repo: this.reviewRepo,
       github: () => this.github(),
+      prHost: (provider) => this.prHost(provider),
       git: this.git,
       llm: (id) => this.llm(id),
       resolveModel: (workspaceId) => resolveFeatureModel(this, workspaceId, 'review_intent'),
@@ -243,6 +332,7 @@ export class Container {
       intent: this.intent,
       blast: this.blastService,
       github: () => this.github(),
+      prHost: (provider) => this.prHost(provider),
       git: this.git,
       llm: (id) => this.llm(id),
       resolveModel: (workspaceId) => resolveFeatureModel(this, workspaceId, 'risk_brief'),
@@ -332,6 +422,34 @@ export class Container {
     return this._github;
   }
 
+  /**
+   * gitlab.com read-side client. The token is OPTIONAL (anonymous access works
+   * for public projects); only `GITLAB_TOKEN` is ever read here — never
+   * `GITHUB_TOKEN` (AC-13). Offline mode rejects before any client is built.
+   */
+  async gitlab(): Promise<GitLabClient> {
+    if (this.config.hostsOffline) {
+      throw new ConfigError('Repository hosts are offline (DEVDIGEST_HOSTS_OFFLINE=true)');
+    }
+    if (this.overrides.gitlab) return this.overrides.gitlab;
+    if (this._gitlab) return this._gitlab;
+    const token = await this.secrets.get('GITLAB_TOKEN');
+    this._gitlab = new RestGitLabClient({ token: token || null });
+    return this._gitlab;
+  }
+
+  /**
+   * Provider-neutral read-side host. A missing `GITHUB_TOKEN` rejects only the
+   * GitHub host — GitLab still resolves (AC-27).
+   */
+  async prHost(provider: RepoProvider): Promise<PullRequestHost> {
+    if (this.config.hostsOffline) {
+      throw new ConfigError('Repository hosts are offline (DEVDIGEST_HOSTS_OFFLINE=true)');
+    }
+    if (provider === 'gitlab') return this.gitlab();
+    return new GitHubPullRequestHost(await this.github());
+  }
+
   /** Resolve an LLM provider by id; constructs from the secret key, cached. */
   async llm(id: 'openai' | 'anthropic' | 'openrouter'): Promise<LLMProvider> {
     const injected = this.overrides.llm?.[id];
@@ -387,6 +505,7 @@ export class Container {
   invalidateSecretCaches(): void {
     this.llmCache.clear();
     this._github = undefined;
+    this._gitlab = undefined;
     this._embedder = undefined;
   }
 }

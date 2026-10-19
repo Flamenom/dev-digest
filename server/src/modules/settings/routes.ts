@@ -3,24 +3,43 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { eq } from 'drizzle-orm';
 import {
   SettingsUpdate,
-  ConnTestRequest,
-  type ConnTestResult,
-  type SecretsStatus,
+  ConnTestRequestHost,
+  type ConnTestResultHost,
+  type GitLabTokenCheck,
+  type SecretsStatusHost,
 } from '@devdigest/shared';
 import * as t from '../../db/schema.js';
+import { redactSecret } from '../../platform/redact.js';
 import { getContext } from '../_shared/context.js';
-import { GITHUB_PROVIDER, SECRET_KEY_BY_PROVIDER } from './constants.js';
+import { GITHUB_PROVIDER, GITLAB_PROVIDER, SECRET_KEY_BY_PROVIDER } from './constants.js';
 import { rowsToSettings } from './helpers.js';
 
 /**
  * F1 — settings module.
  *   GET  /settings                 → current non-secret prefs
  *   PUT  /settings                 → upsert prefs (key/value rows)
- *   POST /settings/test-connection → test a provider key (OpenAI/Anthropic/GitHub)
+ *   POST /settings/test-connection → test a provider key (OpenAI/Anthropic/OpenRouter/GitHub/GitLab)
  *
  * Secrets are NOT stored here — only non-secret prefs. test-connection reads
  * the key via SecretsProvider and does a cheap live call (listModels / GET user).
+ * The key is never echoed back: failure messages pass through `redactSecret`.
  */
+
+/** Translate a GitLab token check into the connection-test outcome (AC-2..AC-5). */
+function gitlabCheckToResult(check: GitLabTokenCheck): { ok: boolean; message: string } {
+  if (!check.ok) return { ok: false, message: `GitLab token is ${check.reason}` };
+  if (check.missingScopes.length > 0) {
+    return { ok: false, message: `Missing scopes: ${check.missingScopes.join(', ')}` };
+  }
+  const connected = `Connected as @${check.username}`;
+  if (check.scopes === null) {
+    return {
+      ok: true,
+      message: `${connected} (scope sufficiency is verified on first repo access)`,
+    };
+  }
+  return { ok: true, message: connected };
+}
 export default async function settingsRoutes(appBase: FastifyInstance) {
   const app = appBase.withTypeProvider<ZodTypeProvider>();
   const { container } = app;
@@ -36,14 +55,14 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
 
   // Which provider keys are configured (booleans only — the values are NEVER
   // returned). Drives the "Configured / Not set" badges in the API Keys panel.
-  app.get('/settings/secrets-status', async (req): Promise<SecretsStatus> => {
+  app.get('/settings/secrets-status', async (req): Promise<SecretsStatusHost> => {
     await getContext(container, req);
     const entries = await Promise.all(
-      (Object.entries(SECRET_KEY_BY_PROVIDER) as [keyof SecretsStatus, string][]).map(
+      (Object.entries(SECRET_KEY_BY_PROVIDER) as [keyof SecretsStatusHost, string][]).map(
         async ([provider, key]) => [provider, Boolean(await container.secrets.get(key))] as const,
       ),
     );
-    return Object.fromEntries(entries) as SecretsStatus;
+    return Object.fromEntries(entries) as SecretsStatusHost;
   });
 
   app.put('/settings', { schema: { body: SettingsUpdate } }, async (req) => {
@@ -68,10 +87,10 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
   app.post(
     '/settings/test-connection',
     {
-      schema: { body: ConnTestRequest },
+      schema: { body: ConnTestRequestHost },
       config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
     },
-    async (req): Promise<ConnTestResult> => {
+    async (req): Promise<ConnTestResultHost> => {
     const { provider, key } = req.body;
     try {
       // If the UI supplied a key, persist it (BYO key) before testing so the
@@ -83,6 +102,10 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
         await container.secrets.set(SECRET_KEY_BY_PROVIDER[provider], key);
         container.invalidateSecretCaches();
       }
+      if (provider === GITLAB_PROVIDER) {
+        const gl = await container.gitlab();
+        return { provider, ...gitlabCheckToResult(await gl.checkToken()) };
+      }
       if (provider === GITHUB_PROVIDER) {
         const gh = await container.github();
         const login = await gh.currentLogin();
@@ -92,7 +115,7 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
       const models = await llm.listModels();
       return { provider, ok: true, message: `OK — ${models.length} models available` };
     } catch (err) {
-      return { provider, ok: false, message: (err as Error).message };
+      return { provider, ok: false, message: redactSecret((err as Error).message, key) };
     }
   });
 }

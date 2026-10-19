@@ -1,1 +1,1 @@
-export { AddRepoView } from "./AddRepoView";
+export { AddRepoView, AddRepoView as default } from "./AddRepoView";

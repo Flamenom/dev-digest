@@ -34,13 +34,25 @@ export class ConventionsRepository {
   async getRepo(
     workspaceId: string,
     repoId: string,
-  ): Promise<{ id: string; owner: string; name: string; fullName: string } | undefined> {
+  ): Promise<
+    | {
+        id: string;
+        owner: string;
+        name: string;
+        fullName: string;
+        provider: 'github' | 'gitlab';
+        host: string;
+      }
+    | undefined
+  > {
     const [row] = await this.db
       .select({
         id: t.repos.id,
         owner: t.repos.owner,
         name: t.repos.name,
         fullName: t.repos.fullName,
+        provider: t.repos.provider,
+        host: t.repos.host,
       })
       .from(t.repos)
       .where(and(eq(t.repos.workspaceId, workspaceId), eq(t.repos.id, repoId)));

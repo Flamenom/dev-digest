@@ -4,17 +4,18 @@
    and are re-exported alongside these from hooks/index.ts. */
 "use client";
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
 import type {
   Settings,
   SettingsUpdate,
-  ConnTestProvider,
-  ConnTestResult,
-  SecretsStatus,
-  Repo,
-  PrMeta,
-  PrDetail,
+  ConnTestProviderHost,
+  ConnTestResultHost,
+  SecretsStatusHost,
+  RepoWithHost,
+  PrListPage,
+  PrDetailHost,
+  PrSyncStartResult,
   SpecFile,
   IndexStatus,
 } from "../types";
@@ -38,9 +39,11 @@ export function useUpdateSettings() {
 export function useTestConnection() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: ConnTestProvider | { provider: ConnTestProvider; key?: string }) => {
+    mutationFn: (
+      input: ConnTestProviderHost | { provider: ConnTestProviderHost; key?: string },
+    ) => {
       const body = typeof input === "string" ? { provider: input } : input;
-      return api.post<ConnTestResult>("/settings/test-connection", body);
+      return api.post<ConnTestResultHost>("/settings/test-connection", body);
     },
     // Saving/validating a provider key can change which models resolve — drop the
     // cached (possibly empty) model lists so the agent picker refetches, and
@@ -58,7 +61,7 @@ export function useTestConnection() {
 export function useSecretsStatus() {
   return useQuery({
     queryKey: ["secrets-status"],
-    queryFn: () => api.get<SecretsStatus>("/settings/secrets-status"),
+    queryFn: () => api.get<SecretsStatusHost>("/settings/secrets-status"),
     staleTime: 30_000,
   });
 }
@@ -67,14 +70,14 @@ export function useSecretsStatus() {
 export function useRepos() {
   return useQuery({
     queryKey: ["repos"],
-    queryFn: () => api.get<Repo[]>("/repos"),
+    queryFn: () => api.get<RepoWithHost[]>("/repos"),
   });
 }
 
 export function useAddRepo() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (url: string) => api.post<Repo>("/repos", { url }),
+    mutationFn: (url: string) => api.post<RepoWithHost>("/repos", { url }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["repos"] }),
   });
 }
@@ -82,7 +85,7 @@ export function useAddRepo() {
 export function useRefreshRepo() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (repoId: string) => api.post<Repo>(`/repos/${repoId}/refresh`),
+    mutationFn: (repoId: string) => api.post<RepoWithHost>(`/repos/${repoId}/refresh`),
     onSuccess: (_d, repoId) => {
       qc.invalidateQueries({ queryKey: ["repos"] });
       qc.invalidateQueries({ queryKey: ["pulls", repoId] });
@@ -98,23 +101,50 @@ export function useDeleteRepo() {
   });
 }
 
-// ---- Pull requests (F1: GET /repos/:id/pulls, GET /pulls/:id) ----
-export function usePulls(repoId: string | null | undefined) {
-  return useQuery({
+// ---- Pull requests (GET /repos/:id/pulls/page, POST /repos/:id/pulls/sync, GET /pulls/:id) ----
+/**
+ * ONE cache entry per repo (`["pulls", repoId]`) holding the `{ pulls, sync }`
+ * page. `usePullsPage` and `usePulls` share it (same key + same queryFn), so the
+ * detail page's number→uuid lookup keeps reading the list the PR page loaded.
+ *
+ * No periodic refetch (AC-63): the list re-fetches only on open, on manual
+ * refresh, or ONCE when a sync it started/joined completes (`usePrSyncCompletion`).
+ * Hence no `refetchInterval` and no refetch on window focus.
+ */
+function pullsPageQuery(repoId: string | null | undefined) {
+  return queryOptions({
     queryKey: ["pulls", repoId],
-    queryFn: () => api.get<PrMeta[]>(`/repos/${repoId}/pulls`),
+    queryFn: () => api.get<PrListPage>(`/repos/${repoId}/pulls/page`),
     enabled: !!repoId,
-    // Auto-refresh PR statuses: re-sync from GitHub every 60s while the page is
-    // open, and whenever the window regains focus.
-    refetchInterval: 60_000,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** The PR list plus its sync status (trigger/state/last-synced time). */
+export function usePullsPage(repoId: string | null | undefined) {
+  return useQuery(pullsPageQuery(repoId));
+}
+
+/** Just the PR rows of the shared `["pulls", repoId]` page. */
+export function usePulls(repoId: string | null | undefined) {
+  return useQuery({ ...pullsPageQuery(repoId), select: (page) => page.pulls });
+}
+
+/**
+ * Manual PR-list sync: starts one, or joins the running one (`trigger`). The
+ * list update arrives via `usePrSyncCompletion`, not by invalidating here.
+ */
+export function useSyncPulls() {
+  return useMutation({
+    mutationFn: (repoId: string) =>
+      api.post<PrSyncStartResult>(`/repos/${repoId}/pulls/sync`),
   });
 }
 
 export function usePullDetail(prId: string | number | null | undefined) {
   return useQuery({
     queryKey: ["pull", prId],
-    queryFn: () => api.get<PrDetail>(`/pulls/${prId}`),
+    queryFn: () => api.get<PrDetailHost>(`/pulls/${prId}`),
     enabled: prId != null,
   });
 }
