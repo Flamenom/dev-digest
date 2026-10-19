@@ -8,7 +8,13 @@ Cap ~5 new/session, ~80–100 lines/file (then prune/split). Promote persistent 
 
 ## What Doesn't Work — antipatterns & mistakes
 
+- In `PrSyncCoordinator`, never call anything that can throw before releasing the single-flight slot in the last-resort `.catch` — a throwing `describeError` there left the repo "in flight" forever (no sync ever started again for it). Release `inflight.delete(repo.id)` first, and keep `describeError` wrapped so it can't throw. Evidence: server/src/modules/pulls/sync-coordinator.ts:72-80,185-189. Confidence: high. (2026-10-19)
+
 ## Codebase Patterns & Tool/Library Notes
+
+- Declare host-port members (`HostGitClient`, `HostCodeIndex`) as function-typed PROPERTIES (`clone: (repo: HostRepoRef, …) => …`), never method syntax. TS compares method parameters bivariantly, so with methods an implementation taking the wider `RepoRef` (or a narrowed `HostRepoRef` param) type-checks silently; property syntax makes `strictFunctionTypes` enforce it. The reverse upcast `HostGitClient` → legacy `GitClient` still compiles (GitClient uses methods, `adapters.ts` is do-not-touch) — never write it. Evidence: server/src/vendor/shared/host-git.ts:15-54. Confidence: high. (2026-10-19)
+- Drizzle 0.38 `onConflictDoNothing({ target })` can't express an expression index target like `lower(full_name)`, so the GitLab repo insert is raw SQL with columns from `sql.identifier(col.name)`, and the partial-index predicate lives once in `reposIdentityWhere` (used by both the schema index `.where()` and the `ON CONFLICT … WHERE` arbiter). If the two drift, Postgres can't infer the arbiter and RAISES instead of DO NOTHING. Evidence: server/src/db/schema/repos.ts:22-27,68-71; server/src/modules/repos/repository.ts:155-176. Confidence: high. (2026-10-19)
+- Drizzle's pg migrator runs ALL pending migrations in ONE transaction, so a `DO $$ … RAISE EXCEPTION … $$` guard in a migration (e.g. 0020 aborting on case-only duplicate repos) rolls back every pending migration cleanly — prefer abort-with-message over silently deleting data. Evidence: server/src/db/migrations/0020_cool_lucky_pierre.sql:16,22; node_modules/drizzle-orm/pg-core/dialect.js:60 (`session.transaction`). Confidence: high. (2026-10-19)
 
 - `MockGitClient.readFile` returns `''` for missing files instead of throwing — code whose semantics are "throw ⇒ file absent" (e.g. the conventions config probe) must inject a custom fake GitClient in tests, or every probed path counts as present. Evidence: server/src/adapters/mocks.ts:293-294; server/test/conventions.it.test.ts:41-47. Confidence: high. (2026-08-19)
 
