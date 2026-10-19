@@ -45,7 +45,7 @@ export function registerRunAgentOnPr(server: McpServer, api: DevDigestApi): void
         pr: z
           .number()
           .int()
-          .describe('Pull request number as shown on GitHub, e.g. 482 — not an internal uuid.'),
+          .describe('Pull request number as shown in DevDigest (GitHub PR number or GitLab MR iid), e.g. 482 — not an internal uuid.'),
         agent: z
           .string()
           .describe(

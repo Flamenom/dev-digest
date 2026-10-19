@@ -23,7 +23,8 @@ import { readFile } from 'node:fs/promises';
 import { cpus } from 'node:os';
 import { join } from 'node:path';
 import PQueue from 'p-queue';
-import type { RepoRef } from '@devdigest/shared';
+import type { HostRepoRef } from '@devdigest/shared';
+import { hostRepoRef } from '../../_shared/repo-ref.js';
 import type { Container } from '../../../platform/container.js';
 import { withTimeout } from '../../../platform/resilience.js';
 import { parseSymbols, parseReferences, langForFile } from '../../../adapters/astgrep/index.js';
@@ -93,7 +94,7 @@ export async function runFullIndex(
     return degradedResult(startedAt, 'no_clone');
   }
 
-  const ref: RepoRef = { owner: repo.owner, name: repo.name };
+  const ref = hostRepoRef(repo);
   const currentSha = await safeCurrentHead(container, ref);
 
   // Walk + filter -------------------------------------------------------
@@ -298,7 +299,7 @@ function sha1(s: string): string {
   return createHash('sha1').update(s).digest('hex');
 }
 
-async function safeCurrentHead(container: Container, ref: RepoRef): Promise<string> {
+async function safeCurrentHead(container: Container, ref: HostRepoRef): Promise<string> {
   try {
     return await container.git.currentHead(ref);
   } catch {

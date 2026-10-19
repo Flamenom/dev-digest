@@ -1,0 +1,22 @@
+{
+  "add": {
+    "brand": "DevDigest",
+    "close": "Close",
+    "title": "Add a repository",
+    "intro": "Paste a github.com or gitlab.com repository URL — DevDigest clones it locally and imports open pull requests. API keys aren’t needed here; set them once in <link>Settings → API Keys</link>.",
+    "urlLabel": "Repository URL (github.com or gitlab.com)",
+    "urlHint": "e.g. https://github.com/acme/payments-api or https://gitlab.com/space-profit/platform/crm-frontend",
+    "urlPlaceholder": "https://github.com/owner/repo · https://gitlab.com/group/project",
+    "cancel": "Cancel",
+    "submit": "Add repository",
+    "cloning": "Cloning…",
+    "footer": "API keys live in Settings · <kbd>esc</kbd> to close",
+    "errors": {
+      "generic": "Could not add repository",
+      "unsupported_repo_host": "Only github.com and gitlab.com repository URLs are supported.",
+      "gitlab_token_missing": "Add a GitLab access token in Settings → API Keys before adding a gitlab.com repository.",
+      "gitlab_token_invalid": "The GitLab access token was rejected. Update it in Settings → API Keys.",
+      "gitlab_project_inaccessible": "This GitLab project can’t be accessed with the configured token. Check the URL and the token’s access."
+    }
+  }
+}

@@ -15,6 +15,7 @@ import {
 } from './seed-prompts.js';
 import { API_CONTRACT_SEED_SKILLS, SEED_SKILLS } from './seed-skills.js';
 import { SEED_EVAL_CASES } from './seed-evals.js';
+import { seedGitlabFixture } from './seed-gitlab.js';
 
 /** Default provider/model for the built-in reviewer agents. */
 const DEFAULT_PROVIDER = 'openrouter' as const;
@@ -573,6 +574,13 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
     if (cost != null) {
       await db.update(t.agentRuns).set({ costUsd: cost }).where(eq(t.agentRuns.id, run.id));
     }
+  }
+
+  // ---- GitLab demo fixture (opt-in). Inserted LAST so the GitHub demo repo
+  // stays the oldest (first) repo the e2e home redirect lands on; gated so the
+  // default seed output is unchanged.
+  if (process.env.SEED_GITLAB_FIXTURE === '1') {
+    await seedGitlabFixture(db, { workspaceId, userId });
   }
 
   return { workspaceId, userId };

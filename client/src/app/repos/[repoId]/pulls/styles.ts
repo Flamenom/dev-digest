@@ -22,7 +22,15 @@ export const s = {
   } satisfies CSSProperties,
   rowIcon: (color: string): CSSProperties => ({ color, flexShrink: 0 }),
   rowTitleWrap: { minWidth: 0 } satisfies CSSProperties,
+  rowTitleLine: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    minWidth: 0,
+  } satisfies CSSProperties,
+  draftBadge: { flexShrink: 0, fontSize: 11, padding: "0 8px" } satisfies CSSProperties,
   rowTitle: (hover: boolean): CSSProperties => ({
+    minWidth: 0,
     fontSize: 14,
     fontWeight: 550,
     whiteSpace: "nowrap",

@@ -3,6 +3,21 @@ import type { CSSProperties } from "react";
 /** Segmented Smart/Original order control — the vendored Button only honors
  *  `active` for kind="tertiary", so the toggle draws its own active state. */
 export const styles = {
+  /** Inline host notice under the section label (read-only / omitted files). */
+  notice: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    flexWrap: "wrap",
+    margin: "0 0 12px",
+    padding: "8px 12px",
+    borderRadius: 8,
+    border: "1px solid var(--border)",
+    background: "var(--bg-surface)",
+    fontSize: 12.5,
+    color: "var(--text-muted)",
+  } as CSSProperties,
+
   segmented: {
     display: "inline-flex",
     alignItems: "center",

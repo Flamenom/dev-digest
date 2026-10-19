@@ -37,7 +37,7 @@
     "copy": "Copy",
     "copied": "Copied",
     "detectedIn": "Detected in",
-    "viewOnGitHub": "GitHub"
+    "viewOn": "View on {provider, select, gitlab {GitLab} other {GitHub}}"
   },
   "modal": {
     "title": "Create skill from conventions",

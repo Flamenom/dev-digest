@@ -1,3 +1,4 @@
+import type { PrMetaHost } from "@/lib/types";
 import { OPEN_STATUSES, SIZE_MEDIUM_MAX, SIZE_SMALL_MAX, type PrMeta, type SizeInfo } from "./constants";
 
 /** Filters used by the PR list (all sourced from the URL: ?status&q&sort). */
@@ -33,8 +34,13 @@ export function countPulls(pulls: PrMeta[]): { open: number; needsReview: number
   };
 }
 
-/** Bucket a PR into S/M/L by total changed lines. */
-export function sizeOf(pr: PrMeta): SizeInfo {
+/**
+ * Bucket a PR into S/M/L by total changed lines. Returns `null` when the host
+ * did not report diff stats (`stats_known === false`, AC-54) — the row then
+ * shows "—" instead of a misleading "S · 0". Absent flag (GitHub) = known.
+ */
+export function sizeOf(pr: PrMetaHost): SizeInfo | null {
+  if (pr.stats_known === false) return null;
   const lines = pr.additions + pr.deletions;
   const size = lines < SIZE_SMALL_MAX ? "S" : lines < SIZE_MEDIUM_MAX ? "M" : "L";
   return { size, lines };
@@ -52,3 +58,4 @@ export function relativeTime(iso: string | null | undefined): string {
   if (h < 24) return `${h}h`;
   return `${Math.round(h / 24)}d`;
 }
+

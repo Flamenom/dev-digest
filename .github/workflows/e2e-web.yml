@@ -75,6 +75,10 @@ jobs:
       # --- API: install, migrate, seed, then start in the background ---
       - name: Install + migrate + seed (server)
         working-directory: server
+        # GitLab e2e flows (09/10) need the deterministic GitLab fixture seeded —
+        # mirrors scripts/e2e.sh, which exports this before migrate/seed.
+        env:
+          SEED_GITLAB_FIXTURE: "1"
         run: |
           pnpm install --frozen-lockfile
           pnpm db:migrate
@@ -82,6 +86,10 @@ jobs:
 
       - name: Start API (:3001)
         working-directory: server
+        # Seeded GitLab fixture has no reachable host: keep the API from calling
+        # GitHub/GitLab so flows 09/10 stay deterministic — mirrors scripts/e2e.sh.
+        env:
+          DEVDIGEST_HOSTS_OFFLINE: "true"
         run: |
           # tsx directly (not `pnpm start`): the committed package.json's start
           # is `node dist/server.js`, which would need a build first. tsx runs

@@ -65,8 +65,15 @@ npm i -g agent-browser && agent-browser install
 ```
 
 The isolated Postgres is ephemeral (no persistent volume), so it's empty every
-run and the seeded demo repo `acme/payments-api` is the only one — which is
+run and the seeded demo repo `acme/payments-api` is the first repo — which is
 exactly what flows 02/04/05 need.
+
+The hermetic runner also exports `SEED_GITLAB_FIXTURE=1` (seeds the GitLab demo
+repo `space-profit/platform/crm-frontend` with PRs #5/#6, inserted *after* the
+GitHub demo repo so the home redirect is unchanged) and
+`DEVDIGEST_HOSTS_OFFLINE=true` (the API never calls github.com/gitlab.com; read
+paths serve persisted data). Flows 09–11 depend on both — they are not
+covered by a plain `npm test` against a default-seeded stack.
 
 ### Against your own running stack
 
@@ -100,3 +107,7 @@ a CI artifact by `.github/workflows/e2e-web.yml`).
 | `05-pr-diff` | PR #482 → Files changed tab → seeded file renders in the diff viewer |
 | `06-onboarding` | `/onboarding` → add-repository form renders (no submit) |
 | `07-settings` | `/settings/api-keys` + `/settings/models` → section titles render |
+| `08-project-context-invariant` | Security Reviewer Context tab lists the attached spec → PR #482 run trace shows it injected |
+| `09-gitlab-pr-list` | switch to the seeded GitLab repo `space-profit/platform/crm-frontend` → PR #5 + Draft badge, PR #6 unknown stats as `—`, "Synced …" status |
+| `10-gitlab-pr-detail` | GitLab PR #5 → `/pulls/5`, "View on GitLab" targets `/-/merge_requests/5`, Draft, read-only posting note, rename `old → new`, "Diff too large on GitLab", host-omitted notice |
+| `11-settings-gitlab` | `/settings/api-keys` → GitLab access token row with `read_api` + `read_repository` scopes hint |

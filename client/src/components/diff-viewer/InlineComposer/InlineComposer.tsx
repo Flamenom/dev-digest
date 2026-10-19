@@ -1,11 +1,37 @@
 /* InlineComposer — shared inline comment composer (new comment or reply to a
-   thread). Posts live to GitHub via the DiffCommentApi. */
+   thread). Posts live to the host via the DiffCommentApi. On a read-only host
+   (GitLab) the draft can still be written and copied, but posting is disabled
+   and explained by a visible note (AC-43). */
 "use client";
 
 import React from "react";
 import { useTranslations } from "next-intl";
 import { Textarea, Button } from "@devdigest/ui";
+import { notify } from "@/lib/toast";
 import { cs, type DiffCommentApi } from "../comments";
+
+/** Copy button + the visible note the disabled post button points at. */
+function ReadOnlyExtras({ text, noteId }: { text: string; noteId: string }) {
+  const t = useTranslations("prHost");
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text.trim());
+      notify.success(t("readOnly.copied"));
+    } catch {
+      notify.error(t("readOnly.copyFailed"));
+    }
+  };
+  return (
+    <>
+      <Button kind="secondary" size="sm" icon="Copy" disabled={!text.trim()} onClick={() => void copy()}>
+        {t("readOnly.copyComment")}
+      </Button>
+      <span id={noteId} style={cs.hint}>
+        {t("readOnly.note")}
+      </span>
+    </>
+  );
+}
 
 export function InlineComposer({
   commenting,
@@ -23,10 +49,12 @@ export function InlineComposer({
   onClose: () => void;
 }) {
   const t = useTranslations("shell");
+  const noteId = React.useId();
+  const readOnly = !!commenting.readOnly;
   const [text, setText] = React.useState("");
   const submit = async () => {
     const body = text.trim();
-    if (!body) return;
+    if (!body || readOnly) return;
     try {
       await commenting.onSubmit({
         path,
@@ -60,8 +88,9 @@ export function InlineComposer({
           kind="primary"
           size="sm"
           icon="MessageSquare"
-          loading={commenting.posting}
-          disabled={commenting.posting || !text.trim()}
+          loading={!readOnly && commenting.posting}
+          disabled={readOnly || commenting.posting || !text.trim()}
+          aria-describedby={readOnly ? noteId : undefined}
           onClick={() => void submit()}
         >
           {t("diffViewer.post")}
@@ -69,7 +98,11 @@ export function InlineComposer({
         <Button kind="ghost" size="sm" onClick={onClose} disabled={commenting.posting}>
           {t("diffViewer.cancel")}
         </Button>
-        <span style={cs.hint}>{t("diffViewer.postedToGitHub")}</span>
+        {readOnly ? (
+          <ReadOnlyExtras text={text} noteId={noteId} />
+        ) : (
+          <span style={cs.hint}>{t("diffViewer.postedToGitHub")}</span>
+        )}
       </div>
     </div>
   );

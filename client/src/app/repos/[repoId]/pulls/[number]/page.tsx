@@ -14,18 +14,23 @@ import { OverviewTab } from "./_components/OverviewTab";
 import { FindingsTab } from "./_components/FindingsTab";
 import { DiffTab } from "./_components/DiffTab";
 import RunTraceDrawer from "./_components/RunTraceDrawer";
-import { usePullDetail, usePulls, useQueryParam, useSetQueryParams } from "@/lib/hooks";
+import { usePullDetail, usePulls, useQueryParam, useRepos, useSetQueryParams } from "@/lib/hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { usePrReviews, useCancelRun, usePrActiveRuns, usePrRuns, useDeleteRun } from "@/lib/hooks/reviews";
-import { useActiveRepo, useRepoNotFound } from "@/lib/repo-context";
+import { useRepoNotFound } from "@/lib/repo-context";
 import { ApiError } from "@/lib/api";
-import { githubBlobUrl, githubPrUrl } from "@/lib/github-urls";
+import { hostBlobUrl, hostLabelKey, hostPrUrl } from "@/lib/host-urls";
 import type { FindingRecord } from "@devdigest/shared";
 
 export default function PRDetailPage() {
   const params = useParams<{ repoId: string; number: string }>();
   const { repoId, number } = params;
-  const { activeRepo } = useActiveRepo();
+  // The repo DTO carries provider/host/web_url — every external link on this
+  // page is built from it through `host-urls` (AC-36/37/38).
+  const { data: repos, isLoading: reposLoading } = useRepos();
+  const repo = repos?.find((r) => r.id === repoId) ?? null;
+  // GitLab accepts no posted comments in the MVP (server: `provider_read_only`).
+  const readOnly = repo?.provider === "gitlab";
   const repoNotFound = useRepoNotFound(repoId);
   // The route is keyed by PR number, but every PR API is keyed by the row's
   // uuid — resolve number → uuid via the (cached) pulls list before fetching.
@@ -33,7 +38,7 @@ export default function PRDetailPage() {
   const prId = pulls?.find((p) => p.number === Number(number))?.id ?? null;
   const { data: pr, isLoading: detailLoading, isError, error, refetch } = usePullDetail(prId);
 
-  const isLoading = pullsLoading || (prId != null && detailLoading);
+  const isLoading = reposLoading || pullsLoading || (prId != null && detailLoading);
   const { data: reviews, refetch: refetchReviews } = usePrReviews(prId);
 
   // Live run tracking is SERVER-SOURCED (agent_runs status='running'): survives
@@ -80,10 +85,7 @@ export default function PRDetailPage() {
   const lethalTrifecta = allFindings.filter((f) => f.kind === "lethal_trifecta");
   const findingsCount = allFindings.length;
 
-  const repoName = activeRepo?.full_name ?? repoId;
-  // The real "owner/repo" (null until the repo is loaded) — used to build
-  // github.com deep-links for the header and finding file references.
-  const repoFullName = activeRepo?.full_name ?? null;
+  const repoName = repo?.full_name ?? repoId;
   const crumb = [
     { label: repoName, mono: true, href: `/repos/${repoId}/pulls` },
     { label: "Pull Requests", href: `/repos/${repoId}/pulls` },
@@ -125,14 +127,16 @@ export default function PRDetailPage() {
   }
 
   // Blast file:line click: in-app when the file is part of this PR's diff,
-  // otherwise a GitHub blob link pinned to the head SHA (new tab).
+  // otherwise a host blob link pinned to the head SHA (new tab). No safe link
+  // (unknown repo / rejected host URL) → nothing opens.
   const goToFile = (file: string, line?: number) => {
     const inDiff = pr.files.some((f) => f.path === file);
     if (inDiff) {
       setParams({ tab: "diff", file, line: line != null ? String(line) : null });
-    } else if (repoFullName) {
-      window.open(githubBlobUrl(repoFullName, pr.head_sha, file, line), "_blank", "noopener,noreferrer");
+      return;
     }
+    const href = repo ? hostBlobUrl(repo, pr.head_sha, file, line) : null;
+    if (href) window.open(href, "_blank", "noopener,noreferrer");
   };
 
   return (
@@ -142,7 +146,8 @@ export default function PRDetailPage() {
         prId={prId}
         tab={tab}
         findingsCount={findingsCount}
-        githubUrl={repoFullName ? githubPrUrl(repoFullName, pr.number) : null}
+        hostUrl={repo ? hostPrUrl(repo, pr.number) : null}
+        provider={repo ? hostLabelKey(repo) : "github"}
         onSetTab={setTab}
         onRunStart={() => setTab("findings")}
         onRunsStarted={() => invalidateActiveRuns()}
@@ -154,7 +159,7 @@ export default function PRDetailPage() {
             prBody={pr.body}
             prId={prId}
             headSha={pr.head_sha}
-            repoFullName={repoFullName}
+            repo={repo}
             onGoToFile={goToFile}
             onGoToFinding={goToFinding}
           />
@@ -169,7 +174,8 @@ export default function PRDetailPage() {
             runs={runs}
             prRuns={prRuns}
             prCommits={pr.commits}
-            repoFullName={repoFullName}
+            repo={repo}
+            readOnly={readOnly}
             headSha={pr.head_sha}
             targetFindingId={findingTarget || null}
             onFindingTargetConsumed={() => setFindingTarget(null)}
@@ -198,6 +204,9 @@ export default function PRDetailPage() {
             filesCount={pr.files_count}
             files={pr.files}
             canComment={pr.status === "open"}
+            readOnly={readOnly}
+            provider={repo ? hostLabelKey(repo) : "github"}
+            filesOmittedByHost={pr.files_omitted_by_host ?? 0}
             reviews={runs}
             onGoToFinding={goToFinding}
             fileTarget={fileTarget}

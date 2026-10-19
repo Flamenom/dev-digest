@@ -1,5 +1,5 @@
 /* SnippetBlock — evidence excerpt: mono header with the `path:lines` label,
-   an optional GitHub ↗ link to the evidence lines, and a copy button
+   an optional host (GitHub / GitLab) ↗ link to the evidence lines, and a copy button
    (PromptBlock idiom), plus the verbatim snippet in a code well. */
 "use client";
 
@@ -12,11 +12,14 @@ export function SnippetBlock({
   label,
   snippet,
   href,
+  linkLabel,
 }: {
   label: string;
   snippet: string;
-  /** External link for the evidence (GitHub blob URL); omitted → no link. */
+  /** External link for the evidence (host blob URL); omitted → no link. */
   href?: string | null;
+  /** Localized link text, e.g. "View on GitLab" / "View on GitHub". */
+  linkLabel?: string;
 }) {
   const t = useTranslations("conventions");
   const [copied, setCopied] = React.useState(false);
@@ -38,10 +41,10 @@ export function SnippetBlock({
             href={href}
             target="_blank"
             rel="noreferrer"
-            title={t("card.viewOnGitHub")}
-            style={s.githubLink}
+            title={linkLabel}
+            style={s.hostLink}
           >
-            {t("card.viewOnGitHub")}
+            {linkLabel}
             <Icon.ExternalLink size={11} />
           </a>
         )}

@@ -10,6 +10,7 @@ vi.mock("@/lib/hooks/conventions", () => ({
 }));
 
 import { ConventionCard } from "./ConventionCard";
+import type { EvidenceLinkRepo } from "../../helpers";
 
 afterEach(() => {
   cleanup();
@@ -33,9 +34,16 @@ function convention(overrides: Partial<Convention> = {}): Convention {
   };
 }
 
-const REPO = { full_name: "acme/payments-api", default_branch: "main" };
+const REPO: EvidenceLinkRepo = { full_name: "acme/payments-api", default_branch: "main" };
+const GITLAB_REPO: EvidenceLinkRepo = {
+  full_name: "space-profit/platform/crm-frontend",
+  default_branch: "main",
+  provider: "gitlab",
+  host: "gitlab.com",
+  web_url: "https://gitlab.com/space-profit/platform/crm-frontend",
+};
 
-function renderCard(c: Convention, repo: typeof REPO | null = REPO) {
+function renderCard(c: Convention, repo: EvidenceLinkRepo | null = REPO) {
   render(
     <NextIntlClientProvider locale="en" messages={{ conventions: messages }}>
       <ConventionCard convention={c} repoId="r1" repo={repo} />
@@ -55,7 +63,7 @@ describe("ConventionCard", () => {
 
   it("links the evidence to GitHub with line anchors; no repo -> no link", () => {
     renderCard(convention());
-    const link = screen.getByRole("link", { name: /GitHub/ });
+    const link = screen.getByRole("link", { name: "View on GitHub" });
     expect(link).toHaveAttribute(
       "href",
       "https://github.com/acme/payments-api/blob/main/src/api/users.ts#L23-L31",
@@ -71,6 +79,16 @@ describe("ConventionCard", () => {
 
     cleanup();
     renderCard(convention(), null);
+    expect(screen.queryByRole("link", { name: /GitHub/ })).not.toBeInTheDocument();
+  });
+
+  it("labels and links GitLab evidence as View on GitLab", () => {
+    renderCard(convention({ evidence_start_line: 3, evidence_end_line: 5 }), GITLAB_REPO);
+    const link = screen.getByRole("link", { name: "View on GitLab" });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://gitlab.com/space-profit/platform/crm-frontend/-/blob/main/src/api/users.ts#L3-5",
+    );
     expect(screen.queryByRole("link", { name: /GitHub/ })).not.toBeInTheDocument();
   });
 

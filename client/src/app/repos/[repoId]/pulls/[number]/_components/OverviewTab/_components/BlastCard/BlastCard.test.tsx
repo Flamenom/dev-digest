@@ -16,6 +16,15 @@ vi.mock("@/lib/api", () => ({
 
 import { api } from "@/lib/api";
 import { BlastCard } from "./BlastCard";
+import type { HostLinkRepo } from "@/lib/host-urls";
+
+/** A GitHub repo DTO's link fields — prior-PR hrefs must be byte-identical to before (AC-38). */
+const GITHUB_REPO: HostLinkRepo = {
+  provider: "github",
+  host: "github.com",
+  web_url: "https://github.com/acme/payments-api",
+  full_name: "acme/payments-api",
+};
 
 afterEach(cleanup);
 beforeEach(() => {
@@ -77,7 +86,7 @@ function renderCard(props: { onGoToFile?: (file: string, line?: number) => void 
   render(
     <QueryClientProvider client={qc}>
       <NextIntlClientProvider locale="en" messages={{ blast: messages }}>
-        <BlastCard prId="pr-1" repoFullName="acme/payments-api" onGoToFile={onGoToFile} />
+        <BlastCard prId="pr-1" repo={GITHUB_REPO} onGoToFile={onGoToFile} />
       </NextIntlClientProvider>
     </QueryClientProvider>,
   );

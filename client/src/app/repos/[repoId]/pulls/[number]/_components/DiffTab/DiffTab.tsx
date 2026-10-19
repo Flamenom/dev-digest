@@ -7,7 +7,9 @@ import { DiffViewer, type DiffCommentApi } from "@/components/diff-viewer";
 import { usePrComments, useCreatePrComment } from "@/lib/hooks/reviews";
 import { usePrSmartDiff } from "@/lib/hooks/smart-diff";
 import { notify } from "@/lib/toast";
-import type { PrFile, ReviewRecord } from "@devdigest/shared";
+import type { ReviewRecord } from "@devdigest/shared";
+import type { PrFileHost } from "@/lib/types";
+import type { HostLabelKey } from "@/lib/host-urls";
 import { SmartDiffViewer } from "./_components/SmartDiffViewer";
 import { styles as s } from "./styles";
 
@@ -16,9 +18,16 @@ type DiffMode = "smart" | "original";
 interface DiffTabProps {
   prId: string | null;
   filesCount: number;
-  files: PrFile[];
+  files: PrFileHost[];
   /** Inline commenting is offered only on open PRs (GitHub rejects otherwise). */
   canComment?: boolean;
+  /** The host does not accept posted comments (GitLab): the post control is
+   *  disabled and explained, copying the text is the alternative (AC-43). */
+  readOnly?: boolean;
+  /** Names the host in the post-failure toast. Defaults to GitHub. */
+  provider?: HostLabelKey;
+  /** Files whose patch the host withheld — not reviewable (AC-31 UI). */
+  filesOmittedByHost?: number;
   /** The PR's reviews, already loaded by the page — Smart order's severity join
    *  source (no second fetch). */
   reviews?: ReviewRecord[];
@@ -30,17 +39,48 @@ interface DiffTabProps {
   onFileTargetConsumed?: () => void;
 }
 
+/** Read-only host (GitLab): a disabled post control described by a VISIBLE
+ *  note — keyboard/screen-reader reachable, never hover-only (AC-43). */
+function ReadOnlyNotice() {
+  const t = useTranslations("prHost");
+  const noteId = React.useId();
+  return (
+    <div style={s.notice}>
+      <Button kind="ghost" size="sm" icon="MessageSquare" disabled aria-describedby={noteId}>
+        {t("readOnly.postComment")}
+      </Button>
+      <span id={noteId}>{t("readOnly.note")}</span>
+    </div>
+  );
+}
+
+/** Files whose patch the host withheld are not reviewed (AC-31 UI). */
+function OmittedFilesNotice({ count }: { count: number }) {
+  const t = useTranslations("prHost");
+  return (
+    <div style={s.notice} role="note">
+      {t("files.omittedByHost", { count })}
+    </div>
+  );
+}
+
 export function DiffTab({
   prId,
   filesCount,
   files,
   canComment,
+  readOnly = false,
+  provider = "github",
+  filesOmittedByHost = 0,
   reviews,
   onGoToFinding,
   fileTarget,
   onFileTargetConsumed,
 }: DiffTabProps) {
   const t = useTranslations("prReview");
+  // Root translator: the `prHost` key is only resolved on the (rare) failure
+  // path, so GitHub-only callers never need that catalog.
+  const tRoot = useTranslations();
   // Smart order is the DEFAULT when the tab opens (user-confirmed decision).
   const [mode, setMode] = React.useState<DiffMode>("smart");
   const smart = usePrSmartDiff(prId, mode === "smart");
@@ -75,7 +115,8 @@ export function DiffTab({
 
   const commenting: DiffCommentApi = {
     comments: comments ?? [],
-    canComment: !!canComment && !!prId,
+    canComment: !readOnly && !!canComment && !!prId,
+    readOnly,
     showComments,
     posting: create.isPending,
     onSubmit: async (input) => {
@@ -84,7 +125,9 @@ export function DiffTab({
         setShowComments(true); // a just-posted comment shouldn't stay hidden
         return res;
       } catch (err) {
-        notify.error(err instanceof Error ? err.message : "Couldn't post the comment to GitHub.");
+        notify.error(
+          err instanceof Error ? err.message : tRoot("prHost.comments.postFailed", { provider }),
+        );
         throw err;
       }
     },
@@ -129,6 +172,9 @@ export function DiffTab({
       >
         Files changed · {filesCount} files
       </SectionLabel>
+
+      {readOnly && <ReadOnlyNotice />}
+      {filesOmittedByHost > 0 && <OmittedFilesNotice count={filesOmittedByHost} />}
 
       {mode === "original" ? (
         // Original order: today's viewer untouched — commenting kept, NO finding overlays.

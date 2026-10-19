@@ -26,7 +26,7 @@ export const s = {
     whiteSpace: "nowrap",
     marginRight: "auto",
   } satisfies CSSProperties,
-  githubLink: {
+  hostLink: {
     display: "inline-flex",
     alignItems: "center",
     gap: 4,

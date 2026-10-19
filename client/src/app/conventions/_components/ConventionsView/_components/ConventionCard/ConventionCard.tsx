@@ -1,5 +1,5 @@
 /* ConventionCard — one extracted candidate: category badge + rule title
-   (inline-editable), evidence snippet with `path:lines` and a GitHub ↗ link
+   (inline-editable), evidence snippet with `path:lines` and a host ↗ link
    to the evidence lines, confidence bar,
    Accept / Reject actions (FindingCard's accept/dismiss idiom: active state on
    the buttons, 0.6-opacity muting for rejected cards). */
@@ -8,10 +8,11 @@
 import React from "react";
 import { useTranslations } from "next-intl";
 import { Badge, Button, IconBtn, ProgressBar, TextInput } from "@devdigest/ui";
-import type { Convention, Repo } from "@devdigest/shared";
+import type { Convention } from "@devdigest/shared";
+import { hostLabelKey } from "@/lib/host-urls";
 import { useUpdateConvention } from "@/lib/hooks/conventions";
 import { CATEGORY_COLORS } from "../../constants";
-import { evidenceGitHubUrl, evidenceLabel } from "../../helpers";
+import { evidenceHostUrl, evidenceLabel, type EvidenceLinkRepo } from "../../helpers";
 import { SnippetBlock } from "../SnippetBlock";
 import { s } from "./styles";
 
@@ -22,8 +23,8 @@ export function ConventionCard({
 }: {
   convention: Convention;
   repoId: string | null | undefined;
-  /** The active repo — source of the GitHub evidence link (absent → no link). */
-  repo?: Pick<Repo, "full_name" | "default_branch"> | null;
+  /** The active repo — source of the host evidence link (absent → no link). */
+  repo?: EvidenceLinkRepo | null;
 }) {
   const t = useTranslations("conventions");
   const update = useUpdateConvention(repoId);
@@ -84,7 +85,8 @@ export function ConventionCard({
         <SnippetBlock
           label={evidenceLabel(convention)}
           snippet={convention.evidence_snippet}
-          href={evidenceGitHubUrl(repo, convention)}
+          href={evidenceHostUrl(repo, convention)}
+          linkLabel={t("card.viewOn", { provider: hostLabelKey({ provider: repo?.provider ?? "github" }) })}
         />
 
         <div style={s.confidenceRow}>

@@ -35,3 +35,24 @@ export function githubBlobUrl(
   }
   return url;
 }
+
+/**
+ * https://github.com/{owner}/{repo}/blob/{ref}/{path}#L{start}[-L{end}]
+ * Branch/ref variant used for convention evidence (default branch, not a PR
+ * sha). The path is emitted verbatim (not segment-encoded) to keep the link
+ * byte-identical to what the conventions page has always produced.
+ */
+export function githubBlobUrlAtRef(
+  repoFullName: string,
+  ref: string,
+  path: string,
+  startLine?: number,
+  endLine?: number,
+): string {
+  let url = `${HOST}/${repoFullName}/blob/${ref}/${path}`;
+  if (startLine != null) {
+    url += `#L${startLine}`;
+    if (endLine != null && endLine !== startLine) url += `-L${endLine}`;
+  }
+  return url;
+}

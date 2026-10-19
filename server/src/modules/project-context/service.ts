@@ -3,9 +3,10 @@ import type {
   DiscoveredDocument,
   DiscoverySummary,
   DocumentContent,
-  RepoRef,
+  HostRepoRef,
 } from '@devdigest/shared';
 import { NotFoundError } from '../../platform/errors.js';
+import { hostRepoRef } from '../_shared/repo-ref.js';
 import { discover } from './discovery.js';
 import * as documents from './documents.js';
 
@@ -23,14 +24,14 @@ export class ProjectContextService {
   constructor(private container: Container) {}
 
   /**
-   * Resolve a repo row to its `{ owner, name }` ref, workspace-scoped: a repo
+   * Resolve a repo row to its host-aware `HostRepoRef`, workspace-scoped: a repo
    * outside the caller's workspace is indistinguishable from a missing one
    * (404), so project docs can't be read or written across tenants.
    */
-  private async resolveRepoRef(workspaceId: string, repoId: string): Promise<RepoRef> {
+  private async resolveRepoRef(workspaceId: string, repoId: string): Promise<HostRepoRef> {
     const repo = await this.container.reviewRepo.getRepo(repoId);
     if (!repo || repo.workspaceId !== workspaceId) throw new NotFoundError('Repo not found');
-    return { owner: repo.owner, name: repo.name };
+    return hostRepoRef(repo);
   }
 
   /**

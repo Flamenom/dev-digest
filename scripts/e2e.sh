@@ -41,6 +41,13 @@ export DATABASE_URL="postgres://${PG_USER}:${PG_PASS}@127.0.0.1:${PG_PORT}/${PG_
 export API_PORT WEB_PORT
 export NEXT_PUBLIC_API_BASE="http://localhost:${API_PORT}"
 export E2E_BASE_URL="http://localhost:${WEB_PORT}"
+# GitLab e2e (flows 09–11): seed the deterministic GitLab fixture
+# (space-profit/platform/crm-frontend, inserted AFTER the GitHub demo repo so the
+# home redirect still lands on acme/payments-api), and run the API with every
+# repository host offline — prHost()/gitlab() reject before building a client,
+# so read paths serve persisted data and nothing ever calls gitlab.com/github.com.
+export SEED_GITLAB_FIXTURE=1
+export DEVDIGEST_HOSTS_OFFLINE=true
 
 log()  { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m! %s\033[0m\n' "$*"; }

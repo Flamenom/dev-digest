@@ -4,6 +4,9 @@ import { NextIntlClientProvider } from "next-intl";
 import type { EvalCaseLink, FindingRecord } from "@devdigest/shared";
 import messages from "../../../../../../../../messages/en/prReview.json";
 import { FindingCard } from "./FindingCard";
+import prHost from "../../../../../../../../messages/en/prHost.json";
+import { FindingHostProvider } from "./host-context";
+import type { HostLinkRepo } from "@/lib/host-urls";
 
 afterEach(cleanup);
 
@@ -112,5 +115,73 @@ describe("FindingCard eval case action", () => {
 
     fireEvent.click(created);
     expect(onOpenEvalCase).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* --- GitLab: host links + read-only commenting (AC-37/38/43) --------------- */
+
+
+const SHA = "0123abcd";
+const RANGE: FindingRecord = { ...FINDING, start_line: 10, end_line: 20 };
+const GITLAB: HostLinkRepo = {
+  provider: "gitlab",
+  host: "gitlab.com",
+  web_url: "https://gitlab.com/space-profit/platform/crm-frontend",
+  full_name: "space-profit/platform/crm-frontend",
+};
+const GITHUB: HostLinkRepo = {
+  provider: "github",
+  host: "github.com",
+  web_url: "https://github.com/acme/payments-api",
+  full_name: "acme/payments-api",
+};
+
+function renderHosted(repo: HostLinkRepo, readOnly: boolean) {
+  return render(
+    <NextIntlClientProvider locale="en" messages={{ prReview: messages, prHost }}>
+      <FindingHostProvider value={{ repo, readOnly }}>
+        <FindingCard f={RANGE} defaultExpanded headSha={SHA} />
+      </FindingHostProvider>
+    </NextIntlClientProvider>,
+  );
+}
+
+describe("FindingCard on a host", () => {
+  it("GitLab: blob link, disabled post with a visible note, and copy writes the finding text", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    renderHosted(GITLAB, true);
+
+    expect(screen.getByText("src/config.ts:10-20").closest("a")).toHaveAttribute(
+      "href",
+      `https://gitlab.com/space-profit/platform/crm-frontend/-/blob/${SHA}/src/config.ts#L10-20`,
+    );
+
+    const post = screen.getByRole("button", { name: "Post comment" });
+    expect(post).toBeDisabled();
+    expect(post).toHaveAccessibleDescription(
+      "Posting comments to GitLab isn't supported yet — copy the text instead.",
+    );
+    // The note is visible text, not a hover-only tooltip.
+    expect(
+      screen.getByText("Posting comments to GitLab isn't supported yet — copy the text instead."),
+    ).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy finding" }));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const text = writeText.mock.calls[0]![0] as string;
+    expect(text).toContain("Hardcoded Stripe secret key");
+    expect(text).toContain("src/config.ts:10-20");
+    expect(text).toContain("Move the key to an environment variable.");
+  });
+
+  it("GitHub: the same blob link as today and no read-only controls", () => {
+    renderHosted(GITHUB, false);
+    expect(screen.getByText("src/config.ts:10-20").closest("a")).toHaveAttribute(
+      "href",
+      `https://github.com/acme/payments-api/blob/${SHA}/src/config.ts#L10-L20`,
+    );
+    expect(screen.queryByRole("button", { name: "Copy finding" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Post comment" })).not.toBeInTheDocument();
   });
 });

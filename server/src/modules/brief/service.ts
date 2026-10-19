@@ -11,10 +11,13 @@ import type {
   PrBriefDetail,
   PrBriefGenerationStatus,
   Provider,
+  PullRequestHost,
+  RepoProvider,
   RepoRef,
 } from '@devdigest/shared';
 import { PrBriefContent, PrBriefGeneration, riskLevelFromScore } from '@devdigest/shared';
 import { NotFoundError } from '../../platform/errors.js';
+import { hostRepoRef } from '../_shared/repo-ref.js';
 import {
   latestReviewPerAgent,
   rollupReviews,
@@ -89,6 +92,10 @@ export interface BriefPull {
 export interface BriefRepo {
   owner: string;
   name: string;
+  /** Host identity (repos row). Absent ⇒ GitHub on github.com (pre-GitLab rows / fixtures). */
+  fullName?: string;
+  provider?: RepoProvider | string | null;
+  host?: string | null;
 }
 
 export interface BriefPrFile {
@@ -137,7 +144,13 @@ export interface BriefServiceDeps {
    * `status`; never infer emptiness from empty arrays (AC-33).
    */
   blast: { get(workspaceId: string, prId: string): Promise<BlastResponse> };
+  /** GitHub linked-issue path (unchanged): `GitHubClient.getIssue`, throws on failure. */
   github: () => Promise<{ getIssue(repo: RepoRef, n: number): Promise<IssueMeta> }>;
+  /**
+   * Provider-neutral read-side host (`container.prHost`), used for non-GitHub
+   * repos only — the GitHub host answers null for both methods.
+   */
+  prHost: (provider: RepoProvider) => Promise<Pick<PullRequestHost, 'getIssue' | 'getLinkedIssueNumber'>>;
   git: { readFile(repo: RepoRef, path: string): Promise<string> };
   llm: (id: Provider) => Promise<LLMProvider>;
   /** Resolves the `risk_brief` feature model for the workspace (Rec-5). */
@@ -174,6 +187,65 @@ function extractRepoDocPaths(body: string | null | undefined): string[] {
     if (out.length >= MAX_REPO_DOCS) break;
   }
   return out;
+}
+
+type LinkedIssue =
+  | { status: 'fetched'; ref: string; title: string; body: string | null }
+  | { status: 'unavailable'; ref: string };
+
+/**
+ * Resolve + fetch the PR's linked issue exactly as `deriveIntent` does (kept in
+ * step by hand — `no-cross-module`). `undefined` ⇒ no linked issue;
+ * `unavailable` ⇒ linked but not fetchable (any failure, incl. a
+ * confidential/404 GitLab issue — AC-23).
+ *
+ * GitHub: body regex + `GitHubClient.getIssue`, unchanged. GitLab: body regex,
+ * else the MR's same-project `closes_issues` relation. Text is returned RAW —
+ * the prompt builder wraps it as untrusted; never wrap or strip it here.
+ */
+async function fetchLinkedIssue(
+  deps: BriefServiceDeps,
+  repo: BriefRepo,
+  prNumber: number,
+  body: string | null,
+): Promise<LinkedIssue | undefined> {
+  const ref = hostRepoRef({ ...repo, fullName: repo.fullName ?? `${repo.owner}/${repo.name}` });
+  if (ref.provider === 'github') {
+    const issueNumber = extractIssueRef(body);
+    if (issueNumber == null) return undefined;
+    try {
+      const gh = await deps.github();
+      const meta = await gh.getIssue({ owner: repo.owner, name: repo.name }, issueNumber);
+      return { status: 'fetched', ref: `#${issueNumber}`, title: meta.title, body: meta.body ?? null };
+    } catch {
+      return { status: 'unavailable', ref: `#${issueNumber}` };
+    }
+  }
+
+  let issueNumber = extractIssueRef(body);
+  let host: Pick<PullRequestHost, 'getIssue' | 'getLinkedIssueNumber'>;
+  try {
+    host = await deps.prHost(ref.provider);
+    issueNumber ??= (await host.getLinkedIssueNumber(ref, prNumber)) ?? undefined;
+  } catch {
+    return issueNumber == null ? undefined : { status: 'unavailable', ref: `#${issueNumber}` };
+  }
+  if (issueNumber == null) return undefined;
+  const issueRef = `#${issueNumber}`;
+  try {
+    const meta = await host.getIssue(ref, issueNumber);
+    return meta
+      ? { status: 'fetched', ref: issueRef, title: meta.title, body: meta.body ?? null }
+      : { status: 'unavailable', ref: issueRef };
+  } catch {
+    return { status: 'unavailable', ref: issueRef };
+  }
+}
+
+/** `git.readFile` ref: GitHub keeps plain `{owner, name}`; other hosts carry provider/fullName. */
+function gitRepoRef(repo: BriefRepo): RepoRef {
+  const ref = hostRepoRef({ ...repo, fullName: repo.fullName ?? `${repo.owner}/${repo.name}` });
+  return ref.provider === 'github' ? { owner: repo.owner, name: repo.name } : ref;
 }
 
 // ------------------------------------------------------------- internal shapes
@@ -294,7 +366,7 @@ export class BriefService {
     const pull = await this.resolvePull(workspaceId, prId);
     const repo = await this.deps.repo.getRepo(pull.repoId);
     if (!repo) throw new NotFoundError('Repo not found');
-    const repoRef: RepoRef = { owner: repo.owner, name: repo.name };
+    const repoRef = gitRepoRef(repo);
 
     const header = await this.headerRollup(prId);
     const prFiles = await this.deps.repo.getPrFiles(prId);
@@ -326,23 +398,18 @@ export class BriefService {
     const inputs = await this.gatherInputs(workspaceId, prId, header);
     const missing = [...inputs.missing];
 
-    // Linked issue (Q4): re-fetched exactly as `deriveIntent` does. One GitHub
-    // call per GENERATION, never per cached read; any failure is a missing input,
+    // Linked issue (Q4): re-fetched exactly as `deriveIntent` does. Host calls
+    // happen per GENERATION, never per cached read; any failure is a missing input,
     // never an error (AC-32 precedent).
     let issue: { ref: string; title?: string | null; body?: string | null } | undefined;
-    const issueNumber = extractIssueRef(pull.body);
-    if (issueNumber != null) {
-      const ref = `#${issueNumber}`;
-      try {
-        const gh = await this.deps.github();
-        const meta = await gh.getIssue(repoRef, issueNumber);
-        issue = { ref, title: meta.title, body: meta.body ?? null };
-      } catch {
-        missing.push({
-          input: 'linked_issue',
-          reason: `The linked issue ${ref} could not be fetched, so the brief was written without it.`,
-        });
-      }
+    const linked = await fetchLinkedIssue(this.deps, repo, pull.number, pull.body);
+    if (linked?.status === 'fetched') {
+      issue = { ref: linked.ref, title: linked.title, body: linked.body };
+    } else if (linked) {
+      missing.push({
+        input: 'linked_issue',
+        reason: `The linked issue ${linked.ref} could not be fetched, so the brief was written without it.`,
+      });
     }
 
     // Repo-doc / spec excerpts from the local clone (no network), same source

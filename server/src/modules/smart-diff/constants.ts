@@ -67,6 +67,9 @@ export const WIRING_BASENAMES: ReadonlySet<string> = new Set([
   'pnpm-workspace.yaml',
   'Dockerfile',
   'Makefile',
+  // GitLab CI entry point — also matched by the dotfile + YAML rules, listed
+  // explicitly so a change to either of those can't regress it (spec AC-35).
+  '.gitlab-ci.yml',
 ]);
 
 /** `tsconfig.json`, `tsconfig.base.json`, `tsconfig.build.json`, … */
@@ -75,8 +78,14 @@ export const TSCONFIG_RE = /^tsconfig(\..+)?\.json$/;
 /** Tool-config basename suffixes (`vitest.config.ts`, `next.config.mjs`, …). */
 export const WIRING_CONFIG_SUFFIXES = ['.config.js', '.config.ts', '.config.cjs', '.config.mjs'] as const;
 
-/** CI lives here regardless of extension. */
+/**
+ * CI lives here regardless of extension. Kept exported for compatibility;
+ * the classifier matches the full `WIRING_PATH_PREFIXES` list.
+ */
 export const WIRING_PATH_PREFIX = '.github/';
+
+/** Every git host's CI/config folder: GitHub + GitLab. */
+export const WIRING_PATH_PREFIXES = [WIRING_PATH_PREFIX, '.gitlab/'] as const;
 
 /** YAML anywhere = CI / compose / pipeline config. */
 export const WIRING_YAML_SUFFIXES = ['.yml', '.yaml'] as const;

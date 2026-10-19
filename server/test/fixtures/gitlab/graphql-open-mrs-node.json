@@ -1,0 +1,13 @@
+{
+  "iid": "5",
+  "title": "Add CRM contact import",
+  "draft": true,
+  "state": "opened",
+  "sourceBranch": "feat/contact-import",
+  "targetBranch": "main",
+  "diffHeadSha": "f00dbabe5f00dbabe5f00dbabe5f00dbabe5f00d",
+  "createdAt": "2026-10-01T09:00:00Z",
+  "updatedAt": "2026-10-02T10:30:00Z",
+  "author": { "username": "olena.dev" },
+  "diffStatsSummary": { "additions": 120, "deletions": 14, "fileCount": 6 }
+}

@@ -37,7 +37,7 @@ export async function resolveRepo(api: DevDigestApi, repo: string): Promise<Repo
 }
 
 /**
- * Resolve a PR by its GitHub number within a repo. `repoLabel` is only used in
+ * Resolve a pull request by its provider number within a repo. `repoLabel` is only used in
  * the error text (pass the repo full_name for readable guidance).
  */
 export async function resolvePull(

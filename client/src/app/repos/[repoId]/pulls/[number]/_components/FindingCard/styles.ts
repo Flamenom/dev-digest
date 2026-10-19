@@ -120,4 +120,11 @@ export const s = {
     gap: 10,
   } satisfies CSSProperties,
   composerActions: { display: "flex", gap: 8 } satisfies CSSProperties,
+  /** Visible read-only explanation under the actions (aria-describedby target). */
+  readOnlyNote: {
+    flexBasis: "100%",
+    margin: "2px 0 0",
+    fontSize: 12.5,
+    color: "var(--text-muted)",
+  } satisfies CSSProperties,
 } as const;

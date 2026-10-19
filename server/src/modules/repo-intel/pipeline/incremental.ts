@@ -16,7 +16,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
-import type { RepoRef } from '@devdigest/shared';
+import { hostRepoRef } from '../../_shared/repo-ref.js';
 import type { Container } from '../../../platform/container.js';
 import { withTimeout } from '../../../platform/resilience.js';
 import { parseSymbols, parseReferences, langForFile } from '../../../adapters/astgrep/index.js';
@@ -79,7 +79,7 @@ export async function runIncremental(
     return runFullIndex(container, repository, payload);
   }
 
-  const ref: RepoRef = { owner: repo.owner, name: repo.name };
+  const ref = hostRepoRef(repo);
   let currentSha: string;
   try {
     currentSha = await container.git.currentHead(ref);

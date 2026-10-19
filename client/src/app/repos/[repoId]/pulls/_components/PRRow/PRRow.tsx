@@ -5,7 +5,7 @@ import React from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Icon, Avatar, Badge, CircularScore } from "@devdigest/ui";
-import type { PrMeta } from "@/lib/types";
+import type { PrMetaHost } from "@/lib/types";
 import { usePrReviews } from "@/lib/hooks/reviews";
 import {
   FindingsHoverCard,
@@ -18,12 +18,12 @@ import { SIZE_COLOR, STATUS_META } from "../../constants";
 import { relativeTime, sizeOf } from "../../helpers";
 import { s } from "../../styles";
 
-export function PRRow({ pr, repoId }: { pr: PrMeta; repoId: string }) {
+export function PRRow({ pr, repoId }: { pr: PrMetaHost; repoId: string }) {
   const t = useTranslations("prReview");
   const router = useRouter();
   const [h, setH] = React.useState(false);
   const st = STATUS_META[pr.status] ?? STATUS_META.needs_review!;
-  const { size, lines } = sizeOf(pr);
+  const sizeInfo = sizeOf(pr); // null ⇒ host did not report stats (AC-54)
   const reviewed = pr.score != null; // null score ⇒ PR has never been reviewed
   return (
     <div
@@ -35,7 +35,14 @@ export function PRRow({ pr, repoId }: { pr: PrMeta; repoId: string }) {
       <div style={s.rowTitleCell}>
         <Icon.GitPullRequest size={15} style={s.rowIcon(st.c)} />
         <div style={s.rowTitleWrap}>
-          <div style={s.rowTitle(h)}>{pr.title}</div>
+          <div style={s.rowTitleLine}>
+            <div style={s.rowTitle(h)}>{pr.title}</div>
+            {pr.is_draft && (
+              <Badge color="var(--text-muted)" style={s.draftBadge}>
+                {t("list.draft")}
+              </Badge>
+            )}
+          </div>
           <span className="mono" style={s.rowNumber}>
             #{pr.number}
           </span>
@@ -46,13 +53,19 @@ export function PRRow({ pr, repoId }: { pr: PrMeta; repoId: string }) {
         {pr.author}
       </div>
       <div>
-        <Badge
-          color={SIZE_COLOR[size]}
-          bg="transparent"
-          style={s.sizeBadgeBorder(SIZE_COLOR[size]!)}
-        >
-          {size} · {lines}
-        </Badge>
+        {sizeInfo ? (
+          <Badge
+            color={SIZE_COLOR[sizeInfo.size]}
+            bg="transparent"
+            style={s.sizeBadgeBorder(SIZE_COLOR[sizeInfo.size]!)}
+          >
+            {sizeInfo.size} · {sizeInfo.lines}
+          </Badge>
+        ) : (
+          <span style={s.muted} title={t("list.statsUnknown")} aria-label={t("list.statsUnknown")}>
+            —
+          </span>
+        )}
       </div>
       <div style={s.scoreCell}>
         {reviewed ? (
