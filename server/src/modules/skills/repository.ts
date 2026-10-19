@@ -24,6 +24,8 @@ export interface InsertSkill {
   source?: SkillSource;
   enabled?: boolean;
   evidenceFiles?: string[];
+  /** Acting user (AC-47): creator, last updater and v1 author. Omitted → null (legacy). */
+  actorId?: string;
 }
 
 export interface UpdateSkillPatch {
@@ -32,12 +34,16 @@ export interface UpdateSkillPatch {
   type?: SkillType;
   body?: string;
   enabled?: boolean;
+  /** Acting user recorded as `skills.updated_by` (AC-47). */
+  updatedBy?: string;
 }
 
 /** Instruction to bump the version + snapshot the (new) body with a note. */
 export interface VersionBump {
   nextVersion: number;
   note: string | null;
+  /** The new version's author (`skill_versions.author_id`, AC-47). */
+  authorId?: string;
 }
 
 /** One row of the usage join — a skill and (maybe) one agent linking it. */
@@ -90,6 +96,8 @@ export class SkillsRepository {
         enabled: values.enabled ?? true,
         ...(values.evidenceFiles !== undefined ? { evidenceFiles: values.evidenceFiles } : {}),
         version: INITIAL_SKILL_VERSION,
+        createdBy: values.actorId ?? null,
+        updatedBy: values.actorId ?? null,
       })
       .returning();
     await this.insertVersionSnapshot(
@@ -97,6 +105,7 @@ export class SkillsRepository {
       INITIAL_SKILL_VERSION,
       row!.body,
       INITIAL_VERSION_NOTE,
+      values.actorId ?? null,
     );
     return row!;
   }
@@ -119,12 +128,19 @@ export class SkillsRepository {
         ...(patch.type !== undefined ? { type: patch.type } : {}),
         ...(patch.body !== undefined ? { body: patch.body } : {}),
         ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+        ...(patch.updatedBy !== undefined ? { updatedBy: patch.updatedBy } : {}),
         ...(bump ? { version: bump.nextVersion } : {}),
       })
       .where(and(eq(t.skills.workspaceId, workspaceId), eq(t.skills.id, id)))
       .returning();
     if (bump && row) {
-      await this.insertVersionSnapshot(row.id, bump.nextVersion, row.body, bump.note);
+      await this.insertVersionSnapshot(
+        row.id,
+        bump.nextVersion,
+        row.body,
+        bump.note,
+        bump.authorId ?? null,
+      );
     }
     return row;
   }
@@ -138,10 +154,11 @@ export class SkillsRepository {
     workspaceId: string,
     id: string,
     paths: string[],
+    actorId?: string,
   ): Promise<SkillRow | undefined> {
     const [row] = await this.db
       .update(t.skills)
-      .set({ attachedDocPaths: paths })
+      .set({ attachedDocPaths: paths, ...(actorId !== undefined ? { updatedBy: actorId } : {}) })
       .where(and(eq(t.skills.workspaceId, workspaceId), eq(t.skills.id, id)))
       .returning();
     return row;
@@ -152,10 +169,11 @@ export class SkillsRepository {
     version: number,
     body: string,
     note: string | null,
+    authorId: string | null,
   ): Promise<void> {
     await this.db
       .insert(t.skillVersions)
-      .values({ skillId, version, body, note })
+      .values({ skillId, version, body, note, authorId })
       .onConflictDoNothing();
   }
 

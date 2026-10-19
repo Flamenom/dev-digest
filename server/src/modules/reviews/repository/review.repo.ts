@@ -54,22 +54,29 @@ export async function insertFindings(
   return rows;
 }
 
-/** Reviews for a PR (newest first), each with its findings. */
+/**
+ * Reviews for a PR (newest first), each with its findings and the raw id of
+ * the user who started the producing run (`agent_runs.initiated_by`; null for
+ * legacy rows or reviews without a run). `reviews.run_id` has no FK, hence the
+ * LEFT JOIN.
+ */
 export async function reviewsForPull(
   db: Db,
   prId: string,
-): Promise<{ review: ReviewRow; findings: FindingRow[] }[]> {
-  const reviews = await db
-    .select()
+): Promise<{ review: ReviewRow; findings: FindingRow[]; initiatedBy: string | null }[]> {
+  const rows = await db
+    .select({ review: t.reviews, initiatedBy: t.agentRuns.initiatedBy })
     .from(t.reviews)
+    .leftJoin(t.agentRuns, eq(t.agentRuns.id, t.reviews.runId))
     .where(eq(t.reviews.prId, prId))
     .orderBy(desc(t.reviews.createdAt));
-  if (reviews.length === 0) return [];
-  const ids = reviews.map((r) => r.id);
+  if (rows.length === 0) return [];
+  const ids = rows.map((r) => r.review.id);
   const findings = await db.select().from(t.findings).where(inArray(t.findings.reviewId, ids));
-  return reviews.map((review) => ({
+  return rows.map(({ review, initiatedBy }) => ({
     review,
     findings: findings.filter((f) => f.reviewId === review.id),
+    initiatedBy: initiatedBy ?? null,
   }));
 }
 
@@ -120,10 +127,11 @@ export async function setFindingAccepted(
   db: Db,
   findingId: string,
   at: Date | null,
+  actedBy: string | null = null,
 ): Promise<FindingRow | undefined> {
   const [row] = await db
     .update(t.findings)
-    .set({ acceptedAt: at, dismissedAt: null })
+    .set({ acceptedAt: at, dismissedAt: null, actedBy })
     .where(eq(t.findings.id, findingId))
     .returning();
   return row;
@@ -133,10 +141,11 @@ export async function setFindingDismissed(
   db: Db,
   findingId: string,
   at: Date | null,
+  actedBy: string | null = null,
 ): Promise<FindingRow | undefined> {
   const [row] = await db
     .update(t.findings)
-    .set({ dismissedAt: at, acceptedAt: null })
+    .set({ dismissedAt: at, acceptedAt: null, actedBy })
     .where(eq(t.findings.id, findingId))
     .returning();
   return row;

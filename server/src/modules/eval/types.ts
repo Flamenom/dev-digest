@@ -67,6 +67,12 @@ export interface EvalCaseDomain {
   notes: string | null;
   /** Soft provenance pointer — no FK, so a dangling value is legal (§3). */
   sourceFindingId: string | null;
+  /**
+   * Creating user (multi-user AC-47). `null` for legacy / seeded cases — those
+   * are Admin-only to edit or delete (AC-30). Optional so older fakes that omit
+   * it read as legacy.
+   */
+  createdBy?: string | null;
 }
 
 /** What `insertCase` needs. `workspaceId` is mandatory: there is no "current tenant" ambient state. */
@@ -81,6 +87,8 @@ export interface NewEvalCase {
   expectedOutput?: unknown;
   notes?: string | null;
   sourceFindingId?: string | null;
+  /** The acting user (AC-47). Never taken from a request body. */
+  createdBy?: string | null;
 }
 
 /** Patch for `updateCase`. Only the keys present are written (no body spreading). */

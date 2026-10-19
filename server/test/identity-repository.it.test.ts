@@ -282,6 +282,25 @@ d('identity repository', () => {
     expect(row!.status).toBe('deactivated');
   });
 
+  it('countActiveAdmins + list: the seeded system user (google_sub NULL) is not a real Admin', async () => {
+    const [w] = await pg.handle.db.insert(t.workspaces).values({ name: 'sys-ws' }).returning();
+    const sws = w!.id;
+    const [sys] = await pg.handle.db
+      .insert(t.users)
+      .values({ email: `system-${++seq}@local`, name: 'System' })
+      .returning();
+    await repo.memberships.ensureMember(sws, sys!.id, 'admin', T0);
+    expect(await repo.memberships.countActiveAdmins(sws)).toBe(0);
+
+    const { user } = await repo.users.upsertBySub(claims('admin'), T0);
+    await repo.memberships.ensureMember(sws, user.id, 'admin', T0);
+    expect(await repo.memberships.countActiveAdmins(sws)).toBe(1);
+
+    const list = await repo.memberships.list(sws);
+    expect(list.find((m) => m.userId === sys!.id)?.isSystem).toBe(true);
+    expect(list.find((m) => m.userId === user.id)?.isSystem).toBe(false);
+  });
+
   it('AC-48: actor directory flags the system user and omits unknown ids', async () => {
     const [sys] = await pg.handle.db
       .insert(t.users)

@@ -7,8 +7,12 @@
  *   R3  GET    /agents/:id/eval-cases         → EvalCaseRecord[]    200 · 404 agent
  *   R4  POST   /eval-cases                    → EvalCaseRecord      201 · 404 owner · 422
  *   R5  GET    /eval-cases/:id                → EvalCaseRecord      200 · 404
- *   R6  PUT    /eval-cases/:id                → EvalCaseRecord      200 · 404 · 422
- *   R7  DELETE /eval-cases/:id[?force=true]   → { deleted: true }   200 · 404 · 409 case_has_runs
+ *   R6  PUT    /eval-cases/:id                → EvalCaseRecord      200 · 403 · 404 · 422
+ *   R7  DELETE /eval-cases/:id[?force=true]   → { deleted: true }   200 · 403 · 404 · 409 case_has_runs
+ *
+ * Case DTOs (R1/R3/R4/R5/R6) are `EvalCaseRecordWithActor`: `created_by` is the
+ * creating user's ActorRef (null for legacy cases). R6/R7 are "Member own /
+ * Admin any" (AC-30) — 403 `forbidden_owner` is raised by `EvalService`.
  *   R8b POST   /agents/:id/eval-cases/run-draft → EvalRunResult   200 · 404 · 422 (runs, never writes)
  *   R8  POST   /eval-cases/:id/run            → EvalRunResult       200 · 404 · 409 · 422 · 502
  *   R9  POST   /agents/:id/eval-runs          → EvalBatchStarted    202 · 404 · 409 · 422
@@ -58,6 +62,7 @@ import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
 import { ValidationError } from '../../platform/errors.js';
 import { DEFAULT_WINDOW_DAYS } from './constants.js';
+import { withCaseCreator, withCaseCreators } from './actors.js';
 
 /** `/evals/batches/:batchId` — a batch id is the uuid minted at batch start. */
 const BatchParams = z.object({ batchId: z.string().uuid() });
@@ -132,6 +137,9 @@ export default async function evalRoutes(appBase: FastifyInstance) {
   // place in the codebase allowed to name `EvalRepository` / `EvalRunner` /
   // `EvalDashboardService` / `EvalService` (onion §2).
   const { cases, runner, dashboard } = container.evalService;
+  // Batch creator-name resolution for case DTOs (AC-47). Resolved per call so a
+  // lazily-built directory is never touched by routes that don't need it.
+  const lookup = (ids: readonly string[]) => container.actorDirectory.lookup(ids);
 
   // -------------------------------------------------------------------------
   // R1 — one-click case creation from a judged finding (§7)
@@ -148,7 +156,7 @@ export default async function evalRoutes(appBase: FastifyInstance) {
    * body-less request that is the common case.
    */
   app.post('/findings/:id/eval-case', { schema: { params: IdParams } }, async (req, reply) => {
-    const { workspaceId } = await getContext(container, req);
+    const { workspaceId, userId, role } = await getContext(container, req);
     const parsed = EvalCaseFromFindingInput.safeParse(req.body ?? {});
     if (!parsed.success) {
       throw new ValidationError('Invalid eval case input', parsed.error.flatten());
@@ -157,9 +165,10 @@ export default async function evalRoutes(appBase: FastifyInstance) {
       workspaceId,
       req.params.id,
       parsed.data,
+      { userId, role },
     );
     reply.status(created ? 201 : 200);
-    return record;
+    return withCaseCreator(record, lookup);
   });
 
   /**
@@ -186,12 +195,12 @@ export default async function evalRoutes(appBase: FastifyInstance) {
 
   app.get('/agents/:id/eval-cases', { schema: { params: IdParams } }, async (req) => {
     const { workspaceId } = await getContext(container, req);
-    return cases.listForAgent(workspaceId, req.params.id);
+    return withCaseCreators(await cases.listForAgent(workspaceId, req.params.id), lookup);
   });
 
   app.get('/eval-cases/:id', { schema: { params: IdParams } }, async (req) => {
     const { workspaceId } = await getContext(container, req);
-    return cases.getCase(workspaceId, req.params.id);
+    return withCaseCreator(await cases.getCase(workspaceId, req.params.id), lookup);
   });
 
   // -------------------------------------------------------------------------
@@ -199,20 +208,26 @@ export default async function evalRoutes(appBase: FastifyInstance) {
   // -------------------------------------------------------------------------
 
   app.post('/eval-cases', { schema: { body: EvalCaseInput } }, async (req, reply) => {
-    const { workspaceId } = await getContext(container, req);
+    const { workspaceId, userId, role } = await getContext(container, req);
     assertCaseInput(req.body);
-    const record = await cases.createCase(workspaceId, req.body);
+    const record = await cases.createCase(workspaceId, req.body, { userId, role });
     reply.status(201);
-    return record;
+    return withCaseCreator(record, lookup);
   });
 
   app.put(
     '/eval-cases/:id',
     { schema: { params: IdParams, body: EvalCaseInput.partial() } },
     async (req) => {
-      const { workspaceId } = await getContext(container, req);
+      const { workspaceId, userId, role } = await getContext(container, req);
       assertCaseInput(req.body);
-      return cases.updateCase(workspaceId, req.params.id, req.body);
+      // AC-30: creator or Admin; legacy (no creator) → Admin only. Enforced in
+      // the service (route policy: `ownership: 'service'`).
+      const record = await cases.updateCase(workspaceId, req.params.id, req.body, {
+        userId,
+        role,
+      });
+      return withCaseCreator(record, lookup);
     },
   );
 
@@ -221,8 +236,13 @@ export default async function evalRoutes(appBase: FastifyInstance) {
     '/eval-cases/:id',
     { schema: { params: IdParams, querystring: ForceQuery } },
     async (req) => {
-      const { workspaceId } = await getContext(container, req);
-      return cases.deleteCase(workspaceId, req.params.id, { force: req.query.force === 'true' });
+      const { workspaceId, userId, role } = await getContext(container, req);
+      return cases.deleteCase(
+        workspaceId,
+        req.params.id,
+        { force: req.query.force === 'true' },
+        { userId, role },
+      );
     },
   );
 

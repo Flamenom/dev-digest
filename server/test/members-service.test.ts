@@ -51,12 +51,17 @@ function makeFake(world: World): MembersIdentityPort {
               status: m.status,
               joinedAt: m.joinedAt ?? u.createdAt,
               lastSignInAt: u.lastSignInAt,
+              isSystem: u.googleSub === null,
             };
           }),
       countActiveAdmins: async (ws, tx) => {
         world.txSeen.push(tx);
         return [...world.members.values()].filter(
-          (m) => m.workspaceId === ws && m.role === 'admin' && m.status === 'active',
+          (m) =>
+            m.workspaceId === ws &&
+            m.role === 'admin' &&
+            m.status === 'active' &&
+            world.users.get(m.userId)?.googleSub != null,
         ).length;
       },
       setRole: async (ws, u, role, tx) => {
@@ -108,13 +113,19 @@ describe('MembersService', () => {
   let audit: AuditEventInput[];
   let svc: MembersService;
 
-  function addMember(id: string, role: Role, status: MemberStatus = 'active', joinedAt: Date | null = NOW) {
+  function addMember(
+    id: string,
+    role: Role,
+    status: MemberStatus = 'active',
+    joinedAt: Date | null = NOW,
+    googleSub: string | null = `sub-${id}`,
+  ) {
     world.users.set(id, {
       id,
       email: `${id}@onlytraf.com`,
       name: id.toUpperCase(),
       avatarUrl: null,
-      googleSub: `sub-${id}`,
+      googleSub,
       createdAt: CREATED,
       lastSignInAt: null,
     });
@@ -160,6 +171,22 @@ describe('MembersService', () => {
 
     world.members.set(`${WS}:alice`, { ...world.members.get(`${WS}:alice`)!, status: 'deactivated' });
     expect((await svc.list(WS)).has_active_admin).toBe(false);
+  });
+
+  it('the seeded system user (no google sub) never counts as an active Admin', async () => {
+    addMember('system', 'admin', 'active', NOW, null);
+    addMember('bob', 'member');
+    expect((await svc.list(WS)).has_active_admin).toBe(false);
+
+    // Promote bob → a real Admin exists; he is now the LAST real admin.
+    await svc.update(admin, 'bob', { role: 'admin' });
+    expect((await svc.list(WS)).has_active_admin).toBe(true);
+    world.writes = [];
+    await expect(svc.update(admin, 'bob', { role: 'member' })).rejects.toMatchObject({ code: 'last_admin' });
+    await expect(svc.update(admin, 'bob', { status: 'deactivated' })).rejects.toMatchObject({
+      code: 'last_admin',
+    });
+    expect(world.writes).toEqual([]);
   });
 
   it('AC-21: promotes a member under the lock and audits member.role_change', async () => {

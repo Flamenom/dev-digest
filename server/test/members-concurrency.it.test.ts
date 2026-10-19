@@ -61,6 +61,23 @@ d('members service — concurrency', () => {
     via: 'session',
   });
 
+  it('the seeded system admin (google_sub NULL) never satisfies the last-admin guard', async () => {
+    const ws = await workspace();
+    const [sys] = await pg.handle.db
+      .insert(t.users)
+      .values({ email: `system-${++seq}@local`, name: 'System' })
+      .returning();
+    await repo.memberships.ensureMember(ws, sys!.id, 'admin', T0);
+    expect((await svc.list(ws)).has_active_admin).toBe(false);
+
+    const real = await member(ws, 'admin');
+    expect((await svc.list(ws)).has_active_admin).toBe(true);
+    await expect(svc.update(actor(ws, real.id), real.id, { role: 'member' })).rejects.toMatchObject({
+      code: 'last_admin',
+    });
+    expect(await repo.memberships.countActiveAdmins(ws)).toBe(1);
+  });
+
   for (const patch of [{ role: 'member' as const }, { status: 'deactivated' as const }]) {
     it(`AC-22: two Admins ${JSON.stringify(patch)} each other concurrently → one success, one last_admin`, async () => {
       for (let round = 0; round < 5; round++) {

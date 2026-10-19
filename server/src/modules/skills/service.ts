@@ -1,14 +1,14 @@
 import type { Container } from '../../platform/container.js';
-import type {
-  Skill,
-  SkillSource,
-  SkillStats,
-  SkillType,
-  SkillUsage,
-  SkillVersionEntry,
-} from '@devdigest/shared';
+import type { SkillSource, SkillStats, SkillType, SkillUsage } from '@devdigest/shared';
 import { SkillsRepository } from './repository.js';
-import { isBodyChange, restoreNote, toSkillDto, toSkillVersionDto } from './helpers.js';
+import {
+  isBodyChange,
+  restoreNote,
+  toSkillDto,
+  toSkillVersionDto,
+  type SkillDto,
+  type SkillVersionDto,
+} from './helpers.js';
 import { DEFAULT_SKILL_SOURCE } from './constants.js';
 
 /**
@@ -20,6 +20,11 @@ import { DEFAULT_SKILL_SOURCE } from './constants.js';
  * "what changed" note); enabled/name/description/type-only changes do not.
  * Restore from the UI is a plain update with an old body — it becomes a NEW
  * head version, never a rollback of history.
+ *
+ * Attribution (multi-user AC-47): every write takes the acting user as a plain
+ * trailing `actorId` (the route reads it from `getContext`, never from the
+ * body/form). It is recorded as creator / last updater and as the author of
+ * any version the write produces. Omitted (legacy callers) → nothing recorded.
  */
 
 export interface CreateSkillInput {
@@ -49,17 +54,21 @@ export class SkillsService {
     this.repo = repo ?? new SkillsRepository(container.db);
   }
 
-  async list(workspaceId: string): Promise<Skill[]> {
+  async list(workspaceId: string): Promise<SkillDto[]> {
     const rows = await this.repo.list(workspaceId);
     return rows.map(toSkillDto);
   }
 
-  async get(workspaceId: string, id: string): Promise<Skill | undefined> {
+  async get(workspaceId: string, id: string): Promise<SkillDto | undefined> {
     const row = await this.repo.getById(workspaceId, id);
     return row ? toSkillDto(row) : undefined;
   }
 
-  async create(workspaceId: string, input: CreateSkillInput): Promise<Skill> {
+  async create(
+    workspaceId: string,
+    input: CreateSkillInput,
+    actorId?: string,
+  ): Promise<SkillDto> {
     const row = await this.repo.insert({
       workspaceId,
       name: input.name,
@@ -69,6 +78,7 @@ export class SkillsService {
       source: input.source ?? DEFAULT_SKILL_SOURCE,
       ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
       ...(input.evidenceFiles !== undefined ? { evidenceFiles: input.evidenceFiles } : {}),
+      ...(actorId !== undefined ? { actorId } : {}),
     });
     return toSkillDto(row);
   }
@@ -77,13 +87,18 @@ export class SkillsService {
     workspaceId: string,
     id: string,
     patch: UpdateSkillInput,
-  ): Promise<Skill | undefined> {
+    actorId?: string,
+  ): Promise<SkillDto | undefined> {
     const existing = await this.repo.getById(workspaceId, id);
     if (!existing) return undefined;
 
     // Only a body change bumps the version + snapshots (with the note).
     const bump = isBodyChange(existing, patch)
-      ? { nextVersion: existing.version + 1, note: patch.note ?? null }
+      ? {
+          nextVersion: existing.version + 1,
+          note: patch.note ?? null,
+          ...(actorId !== undefined ? { authorId: actorId } : {}),
+        }
       : undefined;
 
     const row = await this.repo.update(
@@ -95,6 +110,7 @@ export class SkillsService {
         ...(patch.type !== undefined ? { type: patch.type } : {}),
         ...(patch.body !== undefined ? { body: patch.body } : {}),
         ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+        ...(actorId !== undefined ? { updatedBy: actorId } : {}),
       },
       bump,
     );
@@ -111,8 +127,12 @@ export class SkillsService {
     workspaceId: string,
     id: string,
     paths: string[],
-  ): Promise<Skill | undefined> {
-    const row = await this.repo.setAttachedDocs(workspaceId, id, paths);
+    actorId?: string,
+  ): Promise<SkillDto | undefined> {
+    const row =
+      actorId !== undefined
+        ? await this.repo.setAttachedDocs(workspaceId, id, paths, actorId)
+        : await this.repo.setAttachedDocs(workspaceId, id, paths);
     return row ? toSkillDto(row) : undefined;
   }
 
@@ -129,7 +149,7 @@ export class SkillsService {
   async listVersions(
     workspaceId: string,
     skillId: string,
-  ): Promise<SkillVersionEntry[] | undefined> {
+  ): Promise<SkillVersionDto[] | undefined> {
     const skill = await this.repo.getById(workspaceId, skillId);
     if (!skill) return undefined;
     const rows = await this.repo.listVersions(skillId);
@@ -141,7 +161,7 @@ export class SkillsService {
     workspaceId: string,
     skillId: string,
     version: number,
-  ): Promise<SkillVersionEntry | undefined> {
+  ): Promise<SkillVersionDto | undefined> {
     const skill = await this.repo.getById(workspaceId, skillId);
     if (!skill) return undefined;
     const row = await this.repo.getVersion(skillId, version);
@@ -155,15 +175,22 @@ export class SkillsService {
    * identical to the current one is a no-op (no bump). Undefined when the
    * skill or the requested version is unknown (route -> 404).
    */
-  async restore(workspaceId: string, id: string, version: number): Promise<Skill | undefined> {
+  async restore(
+    workspaceId: string,
+    id: string,
+    version: number,
+    actorId?: string,
+  ): Promise<SkillDto | undefined> {
     const existing = await this.repo.getById(workspaceId, id);
     if (!existing) return undefined;
     const snapshot = await this.repo.getVersion(id, version);
     if (!snapshot) return undefined;
-    return this.update(workspaceId, id, {
-      body: snapshot.body,
-      note: restoreNote(version),
-    });
+    return this.update(
+      workspaceId,
+      id,
+      { body: snapshot.body, note: restoreNote(version) },
+      actorId,
+    );
   }
 
   /**

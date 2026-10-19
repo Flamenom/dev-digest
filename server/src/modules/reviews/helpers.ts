@@ -2,7 +2,7 @@
  * Pure helpers for the review service (side-effect free; operate purely on
  * their arguments — no DB / network / `this`).
  */
-import type { Finding } from '@devdigest/shared';
+import type { ActorRef, Finding } from '@devdigest/shared';
 import type { FindingRow, PullRow, ReviewRow } from './repository.js';
 
 // reduceReviews + sliceDiff live in @devdigest/reviewer-core (pure engine logic
@@ -13,6 +13,8 @@ export interface ReviewDtoFinding extends Finding {
   review_id: string;
   accepted_at: string | null;
   dismissed_at: string | null;
+  /** Latest accept/dismiss actor (AC-46), resolved by `attachReviewActors`. */
+  acted_by?: ActorRef;
 }
 
 export interface ReviewDto {
@@ -28,6 +30,8 @@ export interface ReviewDto {
   model: string | null;
   grounding?: string | null;
   created_at: string;
+  /** Who started the producing run (AC-45), resolved by `attachReviewActors`. */
+  started_by?: ActorRef;
   findings: ReviewDtoFinding[];
 }
 

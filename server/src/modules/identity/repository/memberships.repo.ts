@@ -1,4 +1,4 @@
-import { and, asc, count, eq, sql } from 'drizzle-orm';
+import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm';
 import type { MemberStatus, Role } from '@devdigest/shared';
 import type { Db } from '../../../db/client.js';
 import * as t from '../../../db/schema.js';
@@ -29,6 +29,11 @@ export interface MemberListing {
   /** `joined_at`, falling back to the user's creation time for legacy rows (Q11). */
   joinedAt: Date;
   lastSignInAt: Date | null;
+  /**
+   * The seeded local system user (`google_sub IS NULL`). It is never an Admin
+   * a person can act as, so it never counts toward "has an active Admin".
+   */
+  isSystem: boolean;
 }
 
 export interface EnsureMemberResult {
@@ -112,30 +117,37 @@ export class MembershipsRepo {
         joinedAt: t.workspaceMembers.joinedAt,
         userCreatedAt: t.users.createdAt,
         lastSignInAt: t.users.lastSignInAt,
+        googleSub: t.users.googleSub,
       })
       .from(t.workspaceMembers)
       .innerJoin(t.users, eq(t.users.id, t.workspaceMembers.userId))
       .where(eq(t.workspaceMembers.workspaceId, workspaceId))
       .orderBy(asc(t.users.name), asc(t.users.email));
-    return rows.map(({ userCreatedAt, joinedAt, ...r }) => ({
+    return rows.map(({ userCreatedAt, joinedAt, googleSub, ...r }) => ({
       ...r,
       joinedAt: joinedAt ?? userCreatedAt,
+      isSystem: googleSub === null,
     }));
   }
 
   /**
-   * Active Admins in the workspace. Call it inside {@link withWorkspaceLock}
-   * when the answer guards a mutation (last-admin guard, AC-22).
+   * Active Admins in the workspace — REAL users only: the seeded system user
+   * (`google_sub IS NULL`) never counts, matching the boot "no admin" warning
+   * (app.ts), so AC-17 recovery promotion and the Members banner agree. Call it
+   * inside {@link withWorkspaceLock} when the answer guards a mutation
+   * (last-admin guard, AC-22).
    */
   async countActiveAdmins(workspaceId: string, tx?: IdentityExecutor): Promise<number> {
     const [row] = await execOf(this.db, tx)
       .select({ n: count() })
       .from(t.workspaceMembers)
+      .innerJoin(t.users, eq(t.users.id, t.workspaceMembers.userId))
       .where(
         and(
           eq(t.workspaceMembers.workspaceId, workspaceId),
           eq(t.workspaceMembers.role, 'admin'),
           eq(t.workspaceMembers.status, 'active'),
+          isNotNull(t.users.googleSub),
         ),
       );
     return Number(row?.n ?? 0);

@@ -4,7 +4,6 @@ import type {
   Finding,
   Intent,
   IntentDetailWrite,
-  RunSummary,
   RunTrace,
   StoredIntentDetail,
 } from '@devdigest/shared';
@@ -27,6 +26,8 @@ export type ReviewRow = typeof t.reviews.$inferSelect;
 
 import * as reviewRepo from './repository/review.repo.js';
 import * as runRepo from './repository/run.repo.js';
+import type { RunSummaryRecord } from './repository/run.repo.js';
+export type { RunSummaryRecord };
 import * as pullRepo from './repository/pull.repo.js';
 
 export class ReviewRepository {
@@ -67,7 +68,9 @@ export class ReviewRepository {
   }
 
   /** Reviews for a PR (newest first), each with its findings. */
-  reviewsForPull(prId: string): Promise<{ review: ReviewRow; findings: FindingRow[] }[]> {
+  reviewsForPull(
+    prId: string,
+  ): Promise<{ review: ReviewRow; findings: FindingRow[]; initiatedBy: string | null }[]> {
     return reviewRepo.reviewsForPull(this.db, prId);
   }
 
@@ -85,7 +88,7 @@ export class ReviewRepository {
   }
 
   /** All runs for a PR (any status), newest first — the PR run history. */
-  listRunsForPull(workspaceId: string, prId: string): Promise<RunSummary[]> {
+  listRunsForPull(workspaceId: string, prId: string): Promise<RunSummaryRecord[]> {
     return runRepo.listRunsForPull(this.db, workspaceId, prId);
   }
 
@@ -124,12 +127,22 @@ export class ReviewRepository {
     return reviewRepo.findingContext(this.db, findingId);
   }
 
-  setFindingAccepted(findingId: string, at: Date | null): Promise<FindingRow | undefined> {
-    return reviewRepo.setFindingAccepted(this.db, findingId, at);
+  /** Accept a finding; `actedBy` = the acting user (AC-46). */
+  setFindingAccepted(
+    findingId: string,
+    at: Date | null,
+    actedBy: string | null = null,
+  ): Promise<FindingRow | undefined> {
+    return reviewRepo.setFindingAccepted(this.db, findingId, at, actedBy);
   }
 
-  setFindingDismissed(findingId: string, at: Date | null): Promise<FindingRow | undefined> {
-    return reviewRepo.setFindingDismissed(this.db, findingId, at);
+  /** Dismiss a finding; `actedBy` = the acting user (AC-46). */
+  setFindingDismissed(
+    findingId: string,
+    at: Date | null,
+    actedBy: string | null = null,
+  ): Promise<FindingRow | undefined> {
+    return reviewRepo.setFindingDismissed(this.db, findingId, at, actedBy);
   }
 
   // ---- intent -------------------------------------------------------------
@@ -161,6 +174,8 @@ export class ReviewRepository {
     prId: string;
     provider: string | null;
     model: string | null;
+    /** The user who started the run (AC-45). */
+    initiatedBy?: string | null;
   }): Promise<string> {
     return runRepo.createAgentRun(this.db, values);
   }
@@ -199,6 +214,14 @@ export class ReviewRepository {
 
   getRunTrace(workspaceId: string, runId: string): Promise<RunTrace | undefined> {
     return runRepo.getRunTrace(this.db, workspaceId, runId);
+  }
+
+  /** The run's initiator (AC-30 cancel ownership); undefined = not in this workspace. */
+  getRunInitiator(
+    workspaceId: string,
+    runId: string,
+  ): Promise<{ initiatedBy: string | null } | undefined> {
+    return runRepo.getRunInitiator(this.db, workspaceId, runId);
   }
 
   /** Ownership check for runId-addressed operations (cancel, SSE subscribe). */

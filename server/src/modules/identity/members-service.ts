@@ -95,7 +95,8 @@ export class MembersService {
     const rows = await this.deps.identity.memberships.list(workspaceId);
     return {
       members: rows.map(listingToDto),
-      has_active_admin: rows.some(isActiveAdmin),
+      // The seeded system user never counts (same rule as countActiveAdmins).
+      has_active_admin: rows.some((m) => !m.isSystem && isActiveAdmin(m)),
     };
   }
 
@@ -123,7 +124,13 @@ export class MembersService {
       if (!roleChanged && !statusChanged) return toDto(user, current);
 
       // Last-admin guard (AC-22): counted under the workspace lock, before any write.
-      if (isActiveAdmin(current) && !isActiveAdmin({ role: nextRole, status: nextStatus })) {
+      // Only a REAL admin is guarded — the system user (googleSub null) is not
+      // counted by countActiveAdmins, so it can neither satisfy nor trip the guard.
+      if (
+        user.googleSub !== null &&
+        isActiveAdmin(current) &&
+        !isActiveAdmin({ role: nextRole, status: nextStatus })
+      ) {
         const admins = await identity.memberships.countActiveAdmins(ws, tx);
         if (admins - 1 < 1) throw new LastAdminError();
       }

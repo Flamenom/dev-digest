@@ -104,8 +104,13 @@ class FakeRepo implements SignInRepository {
       return { membership: { ...m }, created: true };
     },
     countActiveAdmins: async (ws) =>
-      this.s.memberships.filter((m) => m.workspaceId === ws && m.role === 'admin' && m.status === 'active')
-        .length,
+      this.s.memberships.filter(
+        (m) =>
+          m.workspaceId === ws &&
+          m.role === 'admin' &&
+          m.status === 'active' &&
+          this.s.users.find((u) => u.id === m.userId)?.googleSub != null,
+      ).length,
     setRole: async (ws, userId, role) => {
       this.writes.push('memberships.setRole');
       const m = this.s.memberships.find((x) => x.workspaceId === ws && x.userId === userId);
@@ -176,7 +181,7 @@ class FakeRepo implements SignInRepository {
     return this.writes;
   }
 
-  seedMember(opts: { sub: string; email: string; role: Role; status?: MemberStatus }): IdentityUser {
+  seedMember(opts: { sub: string | null; email: string; role: Role; status?: MemberStatus }): IdentityUser {
     const user: IdentityUser = {
       id: `user-${++this.seq}`,
       email: opts.email,
@@ -489,6 +494,26 @@ describe('SignInService.callback — admin allowlist (AC-17, AC-18)', () => {
     expect(repo.roleOf(m.id)).toBe('admin');
     const ev = audit.events.find((e) => e.event.action === 'auth.sign_in')!;
     expect(ev.event.metadata).toMatchObject({ promoted_by_allowlist: true, role: 'admin' });
+  });
+
+  it('the seeded system user (no google sub) is not an active Admin: allowlisted Member is promoted', async () => {
+    repo.seedMember({ sub: null, email: 'system@devdigest.local', role: 'admin' });
+    const m = repo.seedMember({ sub: 'sub-m', email: 'm@onlytraf.com', role: 'member' });
+    build(['m@onlytraf.com']);
+    const out = await signIn({ subject: 'sub-m', email: 'm@onlytraf.com' });
+    expect(out.role).toBe('admin');
+    expect(repo.roleOf(m.id)).toBe('admin');
+  });
+
+  it('bootstrap with only the system admin: non-allowlisted → Member, then allowlisted → Admin', async () => {
+    repo.seedMember({ sub: null, email: 'system@devdigest.local', role: 'admin' });
+    build(['lead@onlytraf.com']);
+    const plain = await signIn({ subject: 'sub-p', email: 'p@onlytraf.com' });
+    expect(plain.role).toBe('member');
+    expect(await repo.memberships.countActiveAdmins(WS)).toBe(0);
+    const lead = await signIn({ subject: 'sub-lead', email: 'lead@onlytraf.com' });
+    expect(lead.role).toBe('admin');
+    expect(await repo.memberships.countActiveAdmins(WS)).toBe(1);
   });
 
   it('a non-allowlisted user is never promoted, even with zero Admins', async () => {

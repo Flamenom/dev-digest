@@ -71,6 +71,7 @@ const CASE_COLUMNS = {
   expectedOutput: t.evalCases.expectedOutput,
   notes: t.evalCases.notes,
   sourceFindingId: t.evalCases.sourceFindingId,
+  createdBy: t.evalCases.createdBy,
 } as const;
 
 /** Row → domain. `input_diff` is nullable in the DB but not in the contract: `null → ''` (plan C6). */
@@ -86,6 +87,7 @@ function toCase(row: {
   expectedOutput: unknown;
   notes: string | null;
   sourceFindingId: string | null;
+  createdBy: string | null;
 }): EvalCaseDomain {
   return {
     id: row.id,
@@ -99,6 +101,7 @@ function toCase(row: {
     expectedOutput: row.expectedOutput,
     notes: row.notes,
     sourceFindingId: row.sourceFindingId,
+    createdBy: row.createdBy,
   };
 }
 
@@ -232,6 +235,7 @@ export class EvalRepository {
           expectedOutput: input.expectedOutput ?? null,
           notes: input.notes ?? null,
           sourceFindingId: input.sourceFindingId ?? null,
+          createdBy: input.createdBy ?? null,
         })
         .returning(CASE_COLUMNS);
       // `.returning()` on a single-row insert always yields the row; the guard
