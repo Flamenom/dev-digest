@@ -1,13 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { eq } from 'drizzle-orm';
 import {
   SettingsUpdate,
   ConnTestRequestHost,
   type ConnTestResultHost,
   type SecretsStatusHost,
 } from '@devdigest/shared';
-import * as t from '../../db/schema.js';
 import { redactSecret } from '../../platform/redact.js';
 import { getContext } from '../_shared/context.js';
 import { GITHUB_PROVIDER, GITLAB_PROVIDER, SECRET_KEY_BY_PROVIDER } from './constants.js';
@@ -30,11 +28,7 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
 
   app.get('/settings', async (req) => {
     const { workspaceId } = await getContext(container, req);
-    const rows = await container.db
-      .select()
-      .from(t.settings)
-      .where(eq(t.settings.workspaceId, workspaceId));
-    return rowsToSettings(rows);
+    return rowsToSettings(await container.settingsRepo.listRows(workspaceId));
   });
 
   // Which provider keys are configured (booleans only — the values are NEVER
@@ -51,21 +45,8 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
 
   app.put('/settings', { schema: { body: SettingsUpdate } }, async (req) => {
     const { workspaceId, userId } = await getContext(container, req);
-    const body = req.body;
-    for (const [key, value] of Object.entries(body)) {
-      await container.db
-        .insert(t.settings)
-        .values({ workspaceId, userId, key, value })
-        .onConflictDoUpdate({
-          target: [t.settings.workspaceId, t.settings.userId, t.settings.key],
-          set: { value },
-        });
-    }
-    const rows = await container.db
-      .select()
-      .from(t.settings)
-      .where(eq(t.settings.workspaceId, workspaceId));
-    return rowsToSettings(rows);
+    await container.settingsRepo.upsert(workspaceId, userId, req.body);
+    return rowsToSettings(await container.settingsRepo.listRows(workspaceId));
   });
 
   app.post(

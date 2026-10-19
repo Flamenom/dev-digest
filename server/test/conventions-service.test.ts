@@ -78,7 +78,7 @@ function makeContainer(opts: {
     opts.llm ?? new MockLLMProvider('openai', { structuredBySchema: opts.structuredBySchema });
   const container = {
     // resolveFeatureModel reads workspace settings; empty rows → registry default.
-    db: { select: () => ({ from: () => ({ where: async () => [] }) }) },
+    settingsRepo: { listRows: async () => [] },
     repoIntel: {
       getConventionSamples: vi.fn(async () => opts.pool ?? ['src/api/users.ts', 'src/api/posts.ts']),
     },

@@ -46,6 +46,7 @@ import {
 import { PrListSyncService, type SyncLogger, type SyncRepo } from '../modules/pulls/sync-service.js';
 import { PrSyncCoordinator } from '../modules/pulls/sync-coordinator.js';
 import { PullDetailService, type PullDetail } from '../modules/pulls/detail-service.js';
+import { PullListService } from '../modules/pulls/list-service.js';
 import type { RepoIntel } from '../modules/repo-intel/types.js';
 import { RepoIntelService } from '../modules/repo-intel/service.js';
 import { INDEX_JOB_KIND, REFRESH_JOB_KIND } from '../modules/repo-intel/constants.js';
@@ -62,6 +63,7 @@ import { EvalRunner } from '../modules/eval/runner.js';
 import { EvalDashboardService } from '../modules/eval/dashboard.js';
 import { EvalService } from '../modules/eval/service.js';
 import { resolveFeatureModel } from '../modules/settings/feature-models.js';
+import { SettingsRepository } from '../modules/settings/repository.js';
 import { type DepGraph, DepCruiseGraph } from '../adapters/depgraph/index.js';
 import { type Tokenizer, TiktokenTokenizer } from '../adapters/tokenizer/index.js';
 
@@ -156,8 +158,10 @@ export class Container {
   private _reviewRepo?: ReviewRepository;
   private _pullRequestRepo?: PullRequestRepository;
   private _pullsReadRepo?: PullsReadRepository;
+  private _settingsRepo?: SettingsRepository;
   private _prSync?: PrSyncCoordinator<SyncRepo>;
   private _pullDetail?: PullDetail;
+  private _pullList?: PullListService;
   private _repoService?: RepoOperations;
   private _repoIntel?: RepoIntel;
   private _intent?: IntentDeriver;
@@ -211,6 +215,11 @@ export class Container {
 
   get agentsRepo(): AgentsRepository {
     return (this._agentsRepo ??= new AgentsRepository(this.db));
+  }
+
+  /** Workspace prefs (key/value rows): settings routes + per-feature model resolution. */
+  get settingsRepo(): SettingsRepository {
+    return (this._settingsRepo ??= new SettingsRepository(this.db));
   }
 
   /**
@@ -274,6 +283,11 @@ export class Container {
    * fetched from a host. Stateless, so one per container; the request logger is
    * passed per call.
    */
+  /** PR-list read model (persisted rows + review rollups) for the pulls routes. */
+  get pullList(): PullListService {
+    return (this._pullList ??= new PullListService(this.pullsReadRepo));
+  }
+
   get pullDetail(): PullDetail {
     if (this.overrides.pullDetail) return this.overrides.pullDetail;
     return (this._pullDetail ??= new PullDetailService({
