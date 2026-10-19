@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { MockGitHubClient } from '../src/adapters/mocks.js';
+import { redactLogUrl } from '../src/app.js';
 import {
   anonymous,
   asSession,
@@ -91,5 +92,16 @@ describe('fail closed (google mode)', () => {
     expect(joined).toContain('code=%5BREDACTED%5D');
     expect(joined).not.toContain(code);
     expect(joined).not.toContain(state);
+  });
+
+  it('redactLogUrl replaces only code / state values; every other byte of the URL is identical', () => {
+    const others = '?a=%2Fx%20y&b=c+d&empty=&dup=1&dup=2&raw=%E2%9C%93&weird=a%3Db';
+    expect(redactLogUrl(`/p${others}`)).toBe(`/p${others}`);
+    expect(redactLogUrl(`/p${others}&code=s3cr3t&State=xyz&tail=%2F#frag`)).toBe(
+      `/p${others}&code=%5BREDACTED%5D&State=%5BREDACTED%5D&tail=%2F#frag`,
+    );
+    expect(redactLogUrl('/cb?code=abc')).toBe('/cb?code=%5BREDACTED%5D');
+    expect(redactLogUrl('/cb?xcode=keep&codex=keep')).toBe('/cb?xcode=keep&codex=keep');
+    expect(redactLogUrl('/no-query')).toBe('/no-query');
   });
 });

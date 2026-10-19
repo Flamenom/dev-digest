@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { request } from 'node:http';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { MockGitHubClient, MockLLMProvider } from '../src/adapters/mocks.js';
 import { registeredRouteKeys } from '../src/platform/auth/guard.js';
 import { auditWritesSettled } from '../src/platform/auth/audit-hook.js';
@@ -273,7 +274,7 @@ describe('route-driven audit descriptors (AC-52, google mode)', () => {
         }),
       );
 
-      await auditWritesSettled(t.app); // written in onResponse, after the reply
+      await auditWritesSettled(t.app); // started in onSend, tracked until written
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({
         workspaceId: admin.principal.workspaceId,
@@ -285,6 +286,100 @@ describe('route-driven audit descriptors (AC-52, google mode)', () => {
       });
       expect(JSON.stringify(events)).not.toContain(secretValue);
       expect(JSON.stringify(events)).not.toContain(admin.sessionId);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('auditWritesSettled right after inject always sees the row (write registered before the reply)', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const t = await buildHermeticGoogleApp({
+      overrides: {
+        github: new MockGitHubClient({ login: 'octocat' }),
+        // A slow write: the row lands well after the response.
+        audit: {
+          record: async (e) => {
+            await new Promise((r) => setTimeout(r, 30));
+            events.push({ ...e });
+          },
+        },
+        secrets: { get: async () => undefined, set: async () => undefined } as never,
+      },
+    });
+    try {
+      const admin = t.principals.session('admin');
+      for (let i = 0; i < 5; i++) {
+        const res = await t.app.inject(
+          asSession(admin, {
+            method: 'POST',
+            url: '/settings/test-connection',
+            payload: { provider: 'github', key: `ghp_settle_${i}` },
+          }),
+        );
+        expect(res.statusCode).toBe(200);
+        await auditWritesSettled(t.app);
+        expect(events).toHaveLength(i + 1);
+      }
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('a committed mutation whose client aborts mid-response still produces its audit row', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    let releaseSave!: () => void;
+    const saveGate = new Promise<void>((r) => (releaseSave = r));
+    let entered!: () => void;
+    const saveEntered = new Promise<void>((r) => (entered = r));
+    let aborted!: () => void;
+    const abortSeen = new Promise<void>((r) => (aborted = r));
+    const t = await buildHermeticGoogleApp({
+      overrides: {
+        github: new MockGitHubClient({ login: 'octocat' }),
+        audit: { record: async (e) => void events.push({ ...e }) },
+        // The mutation "commits" only after the client has gone away.
+        secrets: {
+          get: async () => undefined,
+          set: async () => {
+            entered();
+            await saveGate;
+          },
+        } as never,
+      },
+    });
+    try {
+      const address = await t.app.listen({ port: 0, host: '127.0.0.1' });
+      // The server-side socket closing = the client is gone before the reply.
+      t.app.server.on('connection', (socket) => socket.on('close', () => aborted()));
+      const admin = t.principals.session('admin');
+      const req = asSession(admin, { method: 'POST', url: '/settings/test-connection' });
+      const body = JSON.stringify({ provider: 'github', key: 'ghp_abort_case' });
+      const client = request(`${address}/settings/test-connection`, {
+        method: 'POST',
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'content-type': 'application/json',
+          'content-length': String(Buffer.byteLength(body)),
+        },
+      });
+      client.on('error', () => undefined); // the abort below surfaces as ECONNRESET
+      client.end(body);
+
+      // Wait until the handler is blocked in the save, then drop the socket.
+      await saveEntered;
+      client.destroy();
+      await abortSeen;
+      releaseSave();
+
+      await vi.waitFor(async () => {
+        await auditWritesSettled(t.app);
+        expect(events).toHaveLength(1);
+      });
+      expect(events[0]).toMatchObject({
+        actorUserId: admin.principal.userId,
+        action: 'secret.save',
+        targetId: 'GITHUB_TOKEN',
+      });
     } finally {
       await t.close();
     }

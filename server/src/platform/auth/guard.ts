@@ -17,9 +17,11 @@
  *  - `preHandler` (body parsed + validated): body-dependent `sessionOnly`
  *    predicates (test-connection WITH a key, AC-57).
  *
- * Rejections (401/403) are charged to a per-IP {@link RejectionLimiter}
+ * Failed-credential 401s (a bearer / session cookie was presented but did
+ * not resolve) are charged to a per-address {@link RejectionLimiter}
  * (`@fastify/rate-limit`'s route-level hook never sees a request rejected
- * here); an address over budget gets 429 before any principal lookup.
+ * here); once over budget such requests get 429 after the single principal
+ * lookup. A request that resolves to a valid principal is never blocked.
  *
  * Fail closed: a resolver error is logged (message only — never a header)
  * and answered 503 `auth_unavailable`; it never falls through to an
@@ -28,6 +30,7 @@
  * `installRoutePolicyHooks` (both modes) records every registered route for
  * the policy-completeness tests and applies `perIpRateLimit` entries.
  */
+import { isIP } from 'node:net';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Principal, PrincipalProvider } from '@devdigest/shared';
 import { AppError } from '../errors.js';
@@ -55,17 +58,17 @@ export class TooManyRejectedRequestsError extends AppError {
   }
 }
 
-/** Per-IP budget of guard rejections (401/403) per window. */
+/** Per-address budget of failed-credential rejections per window. */
 export interface RejectionLimit {
   max: number;
   windowMs: number;
 }
 
 /**
- * Default rejection budget: 60 denied requests / minute / IP. Below the global
- * 120/min so bearer/cookie guessing is throttled harder than normal traffic,
- * yet a browser with an expired session (a burst of parallel 401s) stays well
- * inside it.
+ * Default rejection budget: 60 failed-credential requests / minute / address.
+ * Below the global 120/min so bearer/cookie guessing is throttled harder than
+ * normal traffic, yet a browser with an expired session (a burst of parallel
+ * 401s) stays well inside it.
  */
 export const DEFAULT_REJECTION_LIMIT: RejectionLimit = Object.freeze({ max: 60, windowMs: 60_000 });
 
@@ -73,46 +76,105 @@ export const DEFAULT_REJECTION_LIMIT: RejectionLimit = Object.freeze({ max: 60, 
 const MAX_TRACKED_IPS = 10_000;
 
 /**
- * Fixed-window counter of guard REJECTIONS per client IP. `@fastify/rate-limit`
- * runs as a route-level hook, i.e. AFTER this root guard, so a request the
- * guard rejects never reaches it; without this, 401 floods / token guessing
- * were unlimited and each cost a principal lookup. Checked BEFORE resolving
- * the principal, so a blocked address costs no lookup at all. Authenticated,
- * accepted requests never count here — they stay on the per-user budget.
+ * The limiter bucket for a client address: an IPv4 address as is (an
+ * IPv4-mapped IPv6 address is folded to its IPv4 form); an IPv6 address by its
+ * /64 prefix — one host typically owns a whole /64, so per-address keys would
+ * let it rotate through 2^64 buckets. Anything unparseable is used verbatim.
+ */
+export function rejectionKey(ip: string): string {
+  const family = isIP(ip.split('%')[0] ?? ip);
+  if (family !== 6) return ip;
+  let s = ip.split('%')[0]!.toLowerCase();
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(s);
+  if (mapped) return mapped[1]!;
+  // A dotted IPv4 tail is always the last 32 bits — irrelevant for a /64.
+  s = s.replace(/\d{1,3}(?:\.\d{1,3}){3}$/, '0:0');
+  const [head = '', tail] = s.split('::');
+  const headParts = head ? head.split(':') : [];
+  const tailParts = tail ? tail.split(':') : [];
+  const groups =
+    tail === undefined
+      ? headParts
+      : [...headParts, ...Array<string>(8 - headParts.length - tailParts.length).fill('0'), ...tailParts];
+  const prefix = groups.slice(0, 4).map((g) => parseInt(g || '0', 16).toString(16));
+  return `${prefix.join(':')}::/64`;
+}
+
+interface RejectionWindow {
+  count: number;
+  resetAt: number;
+}
+
+/**
+ * Fixed-window counter of FAILED-CREDENTIAL rejections per client address
+ * (see {@link rejectionKey}). `@fastify/rate-limit` runs as a route-level hook,
+ * i.e. AFTER this root guard, so a request the guard rejects never reaches it;
+ * without this, bearer/cookie guessing was unlimited.
+ *
+ * Only a presented-but-unresolvable credential is charged, and the block only
+ * applies to such requests — a valid principal is never blocked, and nothing a
+ * cross-site page can make a victim's browser send (CSRF-failing or
+ * anonymous requests) counts, so the limiter can't be turned into a lockout.
+ *
+ * Memory bound: at `capacity` an amortised sweep frees ~10% of the slots —
+ * expired windows first, then the lowest-count entries that are NOT over
+ * budget. An over-budget window is never evicted before it expires; if every
+ * slot is over budget, a new address is simply not tracked until one expires.
  */
 export class RejectionLimiter {
-  private readonly windows = new Map<string, { count: number; resetAt: number }>();
+  private readonly windows = new Map<string, RejectionWindow>();
 
   constructor(
     private readonly limit: RejectionLimit,
     private readonly now: () => number = Date.now,
+    private readonly capacity: number = MAX_TRACKED_IPS,
   ) {}
 
-  /** Seconds until the window resets when `ip` is over budget, else null. */
-  blockedFor(ip: string): number | null {
-    const w = this.windows.get(ip);
+  /** Number of tracked addresses (tests). */
+  get size(): number {
+    return this.windows.size;
+  }
+
+  /** Seconds until the window resets when `key` is over budget, else null. */
+  blockedFor(key: string): number | null {
+    const w = this.windows.get(key);
+    if (!w) return null;
     const now = this.now();
-    if (!w || w.resetAt <= now) return null;
+    if (w.resetAt <= now) {
+      this.windows.delete(key);
+      return null;
+    }
     return w.count >= this.limit.max ? Math.max(1, Math.ceil((w.resetAt - now) / 1000)) : null;
   }
 
-  hit(ip: string): void {
+  hit(key: string): void {
     const now = this.now();
-    const w = this.windows.get(ip);
+    const w = this.windows.get(key);
     if (w && w.resetAt > now) {
       w.count++;
       return;
     }
-    if (this.windows.size >= MAX_TRACKED_IPS) this.evict(now);
-    this.windows.set(ip, { count: 1, resetAt: now + this.limit.windowMs });
+    if (w) this.windows.delete(key);
+    if (this.windows.size >= this.capacity) {
+      this.sweep(now);
+      if (this.windows.size >= this.capacity) return; // every slot is over budget
+    }
+    this.windows.set(key, { count: 1, resetAt: now + this.limit.windowMs });
   }
 
-  private evict(now: number): void {
-    for (const [ip, w] of this.windows) if (w.resetAt <= now) this.windows.delete(ip);
-    // Still full → drop the oldest window (Map keeps insertion order).
-    if (this.windows.size >= MAX_TRACKED_IPS) {
-      const oldest = this.windows.keys().next().value;
-      if (oldest !== undefined) this.windows.delete(oldest);
+  /** Free slots down to 90% of capacity; O(n log n), run once per ~10% of capacity inserts. */
+  private sweep(now: number): void {
+    const target = this.capacity - Math.max(1, Math.floor(this.capacity / 10));
+    const evictable: Array<[string, number]> = [];
+    for (const [key, w] of this.windows) {
+      if (w.resetAt <= now) this.windows.delete(key);
+      else if (w.count < this.limit.max) evictable.push([key, w.count]);
+    }
+    if (this.windows.size <= target) return;
+    evictable.sort((a, b) => a[1] - b[1]);
+    for (const [key] of evictable) {
+      if (this.windows.size <= target) break;
+      this.windows.delete(key);
     }
   }
 }
@@ -122,17 +184,30 @@ export interface AuthGuardDeps {
   principals: () => PrincipalProvider;
   /** `config.publicOrigin` — the only origin a cookie mutation may come from. */
   publicOrigin: string;
+  /** Name of the session cookie — its presence marks a request as carrying a credential. */
+  sessionCookie: string;
   /**
-   * Per-IP limit on rejected requests; null/absent disables it (rate limiting
-   * off, e.g. under test). See {@link RejectionLimiter}.
+   * Per-address limit on failed-credential requests; null/absent disables it
+   * (rate limiting off, e.g. under test). See {@link RejectionLimiter}.
    */
   rejectionLimit?: RejectionLimit | null;
 }
 
-/** 401/403 from the guard count against the address; 503 (our outage) does not. */
-function countsAsRejection(err: unknown): boolean {
-  const status = (err as { statusCode?: unknown })?.statusCode;
-  return status === 401 || status === 403;
+/**
+ * True when the request PRESENTS a credential: a `Bearer` authorization or the
+ * session cookie (by name; the value may be anything). Anonymous requests
+ * (signed-out probes) carry neither and are never charged.
+ */
+function presentsCredential(req: FastifyRequest, sessionCookie: string): boolean {
+  const auth = req.headers.authorization;
+  const auths = Array.isArray(auth) ? auth : auth === undefined ? [] : [auth];
+  if (auths.some((v) => /^bearer\b/i.test(v.trim()))) return true;
+  const cookie = req.headers.cookie;
+  if (typeof cookie !== 'string') return false;
+  return cookie.split(';').some((part) => {
+    const eq = part.indexOf('=');
+    return eq >= 0 && part.slice(0, eq).trim() === sessionCookie;
+  });
 }
 
 async function resolvePrincipal(
@@ -153,16 +228,6 @@ export function installAuthGuard(app: FastifyInstance, deps: AuthGuardDeps): voi
 
   const limiter = deps.rejectionLimit ? new RejectionLimiter(deps.rejectionLimit) : null;
 
-  /** Run a guard check; a 401/403 it throws is charged to the client address. */
-  const charged = async (req: FastifyRequest, check: () => Promise<void>): Promise<void> => {
-    try {
-      await check();
-    } catch (err) {
-      if (limiter && countsAsRejection(err)) limiter.hit(req.ip);
-      throw err;
-    }
-  };
-
   app.addHook('onRequest', async (req, reply) => {
     const url = req.routeOptions.url;
     if (url === undefined) return; // no matching route → Fastify answers 404
@@ -174,23 +239,27 @@ export function installAuthGuard(app: FastifyInstance, deps: AuthGuardDeps): voi
       return;
     }
 
-    // Over the rejection budget → 429 before any principal lookup.
-    const retryAfter = limiter?.blockedFor(req.ip) ?? null;
-    if (retryAfter !== null) {
-      reply.header('retry-after', String(retryAfter));
-      throw new TooManyRejectedRequestsError(retryAfter);
-    }
-
-    await charged(req, async () => {
-      const principal = await resolvePrincipal(req, deps.principals);
-      if (!principal) throw new UnauthenticatedError();
-      if (principal.via === 'session' && !passesCsrf(req.method, req.headers, deps.publicOrigin)) {
-        throw new CsrfRejectedError();
+    const principal = await resolvePrincipal(req, deps.principals);
+    if (!principal) {
+      // Only a presented-but-failed credential is charged / blocked: a valid
+      // principal is never locked out, and anonymous probes never count.
+      if (limiter && presentsCredential(req, deps.sessionCookie)) {
+        const key = rejectionKey(req.ip);
+        const retryAfter = limiter.blockedFor(key);
+        if (retryAfter !== null) {
+          reply.header('retry-after', String(retryAfter));
+          throw new TooManyRejectedRequestsError(retryAfter);
+        }
+        limiter.hit(key);
       }
-      if (principal.via === 'token' && policy.sessionOnly === true) throw new SessionRequiredError();
-      if (policy.access === 'admin' && principal.role !== 'admin') throw new ForbiddenRoleError();
-      req.principal = principal;
-    });
+      throw new UnauthenticatedError();
+    }
+    if (principal.via === 'session' && !passesCsrf(req.method, req.headers, deps.publicOrigin)) {
+      throw new CsrfRejectedError();
+    }
+    if (principal.via === 'token' && policy.sessionOnly === true) throw new SessionRequiredError();
+    if (policy.access === 'admin' && principal.role !== 'admin') throw new ForbiddenRoleError();
+    req.principal = principal;
   });
 
   app.addHook('preHandler', async (req) => {
@@ -199,7 +268,6 @@ export function installAuthGuard(app: FastifyInstance, deps: AuthGuardDeps): voi
     if (url === undefined) return;
     const { sessionOnly } = lookupPolicy(req.method, url).policy;
     if (typeof sessionOnly === 'function' && sessionOnly({ body: req.body })) {
-      limiter?.hit(req.ip);
       throw new SessionRequiredError();
     }
   });

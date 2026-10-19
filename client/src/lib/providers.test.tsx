@@ -5,6 +5,7 @@ import { NextIntlClientProvider } from "next-intl";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import authMessages from "../../messages/en/auth.json";
 import { Providers } from "./providers";
+import { AuthGate } from "@/components/auth-gate";
 import { api } from "./api";
 import {
   navigation,
@@ -84,7 +85,10 @@ function SaveButton() {
 function renderApp(ui: React.ReactNode) {
   return render(
     <NextIntlClientProvider locale="en" messages={{ auth: authMessages }}>
-      <Providers>{ui}</Providers>
+      {/* Mirrors app/layout.tsx: the gate (session probe) sits inside Providers. */}
+      <Providers>
+        <AuthGate>{ui}</AuthGate>
+      </Providers>
     </NextIntlClientProvider>,
   );
 }

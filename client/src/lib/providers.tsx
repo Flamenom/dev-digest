@@ -1,5 +1,7 @@
-/* providers.tsx — client provider stack: React Query + Theme + Toasts + the
-   auth gate + active Repo.
+/* providers.tsx — client provider stack: React Query + Theme + Toasts.
+   The auth gate + active Repo are composed by the app layer
+   (`app/layout.tsx`) INSIDE <Providers>, so shared lib never depends on
+   the UI component layer.
 
    Global error surfacing:
    - 401 `unauthenticated` (google mode, session gone) → ONE redirect to the
@@ -23,11 +25,9 @@ import {
 } from "@tanstack/react-query";
 import { AuthzErrorCode } from "@devdigest/shared";
 import { ThemeProvider } from "./theme";
-import { RepoProvider } from "./repo-context";
 import { ToastProvider, notify } from "./toast";
 import { ApiError } from "./api";
 import { SESSION_QUERY_KEY } from "./hooks/session";
-import { AuthGate } from "../components/auth-gate";
 import { redirectToSignIn } from "./sign-in-redirect";
 
 const AUTHZ_CODES: ReadonlySet<string> = new Set(AuthzErrorCode.options);
@@ -99,11 +99,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={qc}>
       <ThemeProvider>
-        <ToastProvider>
-          <AuthGate>
-            <RepoProvider>{children}</RepoProvider>
-          </AuthGate>
-        </ToastProvider>
+        <ToastProvider>{children}</ToastProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

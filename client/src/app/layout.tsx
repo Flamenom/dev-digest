@@ -4,8 +4,10 @@ import { Inter, JetBrains_Mono } from "next/font/google";
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages } from "next-intl/server";
 import "./globals.css";
-import { Providers } from "../lib/providers";
-import { themeNoFlashScript } from "../lib/theme";
+import { Providers } from "@/lib/providers";
+import { RepoProvider } from "@/lib/repo-context";
+import { AuthGate } from "@/components/auth-gate";
+import { themeNoFlashScript } from "@/lib/theme";
 
 /**
  * Self-hosted via next/font: the files are fetched at BUILD time and served from
@@ -53,7 +55,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body suppressHydrationWarning>
         <NextIntlClientProvider locale={locale} messages={messages}>
           <Suspense fallback={null}>
-            <Providers>{children}</Providers>
+            {/* AuthGate needs the QueryClient + intl providers, and gates the
+                whole repo-scoped subtree (same nesting as before). */}
+            <Providers>
+              <AuthGate>
+                <RepoProvider>{children}</RepoProvider>
+              </AuthGate>
+            </Providers>
           </Suspense>
         </NextIntlClientProvider>
       </body>

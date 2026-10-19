@@ -1,4 +1,4 @@
-/* AuthGate — mounted inside <Providers> around the app (AC-32, AC-35).
+/* AuthGate — mounted by app/layout.tsx inside <Providers> around the app (AC-32, AC-35).
 
    - local mode (or probe still in flight, or an older API without the probe):
      children render immediately — nothing changes versus before multi-user

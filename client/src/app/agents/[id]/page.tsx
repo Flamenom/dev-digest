@@ -9,8 +9,8 @@ import { Button, Dropdown, ErrorState, Skeleton, Icon, Badge } from "@devdigest/
 import { AppShell } from "../../../components/app-shell";
 import { AgentCard } from "../_components/AgentCard";
 import { AgentEditor } from "./_components/AgentEditor";
-import { AdminOnly } from "../../../components/admin-gate";
-import { ActorLabel } from "../../../components/actor-label";
+import { AdminOnly } from "@/components/admin-gate";
+import { ActorLabel } from "@/components/actor-label";
 import type { AgentWithActors } from "@devdigest/shared";
 import { useAgents, useAgent, useUpdateAgent } from "../../../lib/hooks/agents";
 import { ApiError } from "../../../lib/api";

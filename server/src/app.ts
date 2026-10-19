@@ -29,6 +29,7 @@ import { installAuditHook } from './platform/auth/audit-hook.js';
 import { decorateRequestPrincipal } from './platform/auth/request-principal.js';
 import { ReviewService } from './modules/reviews/service.js';
 import { ZIP_MAX_BYTES } from './modules/skills/constants.js';
+import { SESSION_COOKIE } from './modules/identity/constants.js';
 
 // Attach the DI container to every request/instance.
 declare module 'fastify' {
@@ -66,8 +67,12 @@ const REDACTED_LOG_PATHS = [
   'res.headers["set-cookie"]',
 ];
 
-/** Query parameters whose VALUES never reach a log line (OAuth callback `code` / `state`). */
-const REDACTED_QUERY_PARAMS = new Set(['code', 'state']);
+/**
+ * `code=` / `state=` query parameters (case-insensitive) — the OAuth callback
+ * values that must never reach a log line. Matches the value up to the next
+ * `&` or `#`.
+ */
+const REDACTED_QUERY_PARAM_RE = /([?&](?:code|state)=)[^&#]*/gi;
 
 /**
  * The request URL as logged: `code` / `state` query values replaced with
@@ -75,17 +80,10 @@ const REDACTED_QUERY_PARAMS = new Set(['code', 'state']);
  * line for any request includes the URL). Exported for tests.
  */
 export function redactLogUrl(url: string): string {
-  const q = url.indexOf('?');
-  if (q === -1) return url;
-  const params = new URLSearchParams(url.slice(q + 1));
-  let changed = false;
-  for (const key of new Set(params.keys())) {
-    if (REDACTED_QUERY_PARAMS.has(key.toLowerCase())) {
-      params.set(key, '[REDACTED]');
-      changed = true;
-    }
-  }
-  return changed ? `${url.slice(0, q)}?${params.toString()}` : url;
+  if (!url.includes('?')) return url;
+  // In-place replace: every other byte of the URL stays exactly as received.
+  // The marker is percent-encoded so the logged URL stays a valid query string.
+  return url.replace(REDACTED_QUERY_PARAM_RE, '$1%5BREDACTED%5D');
 }
 
 /** Fastify's default `req` serializer, with the URL passed through {@link redactLogUrl}. */
@@ -164,15 +162,37 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   // AC-5: one API process per database in google mode. Taken first so a
   // second instance refuses to start before touching anything else.
   let claim: InstanceClaim | null = null;
-  if (google && bootChecks) {
-    try {
-      claim = await claimInstance(config.databaseUrl);
-    } catch (err) {
-      await handle?.close();
-      throw err;
-    }
+  // Until the app exists its onClose hooks can't release the claim / handle,
+  // so a throw anywhere between the claim and those hooks is cleaned up here.
+  let app: FastifyInstance;
+  let container: Container;
+  try {
+    if (google && bootChecks) claim = await claimInstance(config.databaseUrl);
+    app = createFastify(config, opts);
+    container = new Container(config, db, opts.overrides, app.log);
+    app.decorate('container', container);
+
+    // Release the instance claim + our db handle on shutdown (and on a failed boot).
+    const ownedClaim = claim;
+    if (ownedClaim) app.addHook('onClose', async () => ownedClaim.release());
+    if (handle) app.addHook('onClose', async () => handle.close());
+  } catch (err) {
+    await claim?.release().catch(() => undefined);
+    await handle?.close().catch(() => undefined);
+    throw err;
   }
 
+  try {
+    await configureApp(app, container, db, config, opts);
+  } catch (err) {
+    // The onClose hooks above release the claim + handle exactly once.
+    await app.close().catch(() => undefined);
+    throw err;
+  }
+  return app;
+}
+
+function createFastify(config: AppConfig, opts: BuildAppOptions): FastifyInstance {
   const app = Fastify({
     // Explicit 1MB cap on request bodies (PR comments, settings payloads are
     // small). Protects against oversized/abusive payloads.
@@ -203,21 +223,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   // Routes opt in per-module via `app.withTypeProvider<ZodTypeProvider>()`.
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
-
-  const container = new Container(config, db, opts.overrides, app.log);
-  app.decorate('container', container);
-
-  // Release the instance claim + our db handle on shutdown (and on a failed boot).
-  if (claim) app.addHook('onClose', async () => claim!.release());
-  if (handle) app.addHook('onClose', async () => handle.close());
-
-  try {
-    await configureApp(app, container, db, config, opts);
-  } catch (err) {
-    // The onClose hooks above release the claim + handle exactly once.
-    await app.close().catch(() => undefined);
-    throw err;
-  }
   return app;
 }
 
@@ -277,6 +282,7 @@ async function configureApp(
     installAuthGuard(app, {
       principals: () => container.principals,
       publicOrigin: config.publicOrigin ?? config.webOrigin,
+      sessionCookie: SESSION_COOKIE,
       // Rejected requests never reach the route-level limiter below — the
       // guard charges them per IP itself.
       rejectionLimit: rateLimitOn ? DEFAULT_REJECTION_LIMIT : null,

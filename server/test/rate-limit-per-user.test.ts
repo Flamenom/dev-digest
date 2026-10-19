@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { MockGitHubClient } from '../src/adapters/mocks.js';
-import { DEFAULT_REJECTION_LIMIT, RejectionLimiter } from '../src/platform/auth/guard.js';
+import { DEFAULT_REJECTION_LIMIT, RejectionLimiter, rejectionKey } from '../src/platform/auth/guard.js';
 import {
   anonymous,
   asSession,
+  asToken,
   buildHermeticGoogleApp,
   type HermeticGoogleApp,
 } from './helpers/google-mode.js';
@@ -87,31 +88,118 @@ describe('per-user rate limits (google mode)', () => {
     expect((await call(a)).statusCode).toBe(429);
   });
 
-  it('rejected requests (bad bearer / cookie) count per IP: over budget → 429 before any principal lookup', async () => {
-    const ip = '198.51.100.23';
-    const bad = (i: number) =>
+  describe('failed-credential limiter (per address)', () => {
+    const badFrom = (ip: string, i: number) =>
       t.app.inject(
         i % 2 === 0
           ? { method: 'GET', url: '/repos', headers: { authorization: `Bearer ddg_pat_guess${i}`, 'x-forwarded-for': ip } }
           : { method: 'GET', url: '/repos', headers: { cookie: `__Host-ddg_session=guess${i}`, 'x-forwarded-for': ip } },
       );
-    for (let i = 0; i < DEFAULT_REJECTION_LIMIT.max; i++) {
-      expect((await bad(i)).statusCode).toBe(401);
-    }
-    const lookupsBefore = t.principals.calls;
-    const blocked = await bad(DEFAULT_REJECTION_LIMIT.max);
-    expect(blocked.statusCode).toBe(429);
-    expect(blocked.json().error.code).toBe('rate_limited');
-    expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0);
-    expect(t.principals.calls).toBe(lookupsBefore); // no lookup once blocked
+    const exhaust = async (ip: string) => {
+      for (let i = 0; i < DEFAULT_REJECTION_LIMIT.max; i++) {
+        expect((await badFrom(ip, i)).statusCode).toBe(401);
+      }
+    };
 
-    // Another address is unaffected; so is a valid credential from yet another IP.
-    const other = await t.app.inject({
-      method: 'GET',
-      url: '/repos',
-      headers: { authorization: 'Bearer ddg_pat_nope', 'x-forwarded-for': '198.51.100.24' },
+    it('(a) bad bearer / cookie requests from one IP: over budget → 429 for further bad credentials', async () => {
+      const ip = '198.51.100.23';
+      await exhaust(ip);
+      const lookupsBefore = t.principals.calls;
+      const blocked = await badFrom(ip, DEFAULT_REJECTION_LIMIT.max);
+      expect(blocked.statusCode).toBe(429);
+      expect(blocked.json().error.code).toBe('rate_limited');
+      expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0);
+      expect(t.principals.calls - lookupsBefore).toBe(1); // one lookup, nothing beyond it
+
+      // Another address is unaffected.
+      const other = await badFrom('198.51.100.24', 0);
+      expect(other.statusCode).toBe(401);
     });
-    expect(other.statusCode).toBe(401);
+
+    it('(b) in the same window a VALID session / bearer from the blocked IP still succeeds', async () => {
+      const ip = '198.51.100.30';
+      await exhaust(ip);
+      expect((await badFrom(ip, 0)).statusCode).toBe(429);
+
+      const session = t.principals.session('admin');
+      const token = t.principals.token('admin');
+      const viaSession = await t.app.inject(
+        asSession(session, { method: 'GET', url: '/zz-rate-probe', headers: { 'x-forwarded-for': ip } }),
+      );
+      const viaToken = await t.app.inject(
+        asToken(token, { method: 'GET', url: '/zz-rate-probe', headers: { 'x-forwarded-for': ip } }),
+      );
+      expect(viaSession.statusCode).toBe(200);
+      expect(viaToken.statusCode).toBe(200);
+      // …and the block on bad credentials still holds.
+      expect((await badFrom(ip, 1)).statusCode).toBe(429);
+    });
+
+    it('(c) 100 cross-site CSRF-failing requests (valid cookie, wrong Origin) never cause a 429', async () => {
+      const ip = '198.51.100.40';
+      const victim = t.principals.session('admin');
+      for (let i = 0; i < 100; i++) {
+        const res = await t.app.inject(
+          asSession(
+            victim,
+            {
+              method: 'POST',
+              url: '/settings/test-connection',
+              payload: { provider: 'github' },
+              headers: { 'x-forwarded-for': ip },
+            },
+            { origin: 'https://evil.example' },
+          ),
+        );
+        expect(res.statusCode).toBe(403);
+        expect(res.json().error.code).toBe('csrf_rejected');
+      }
+      const valid = await t.app.inject(
+        asSession(victim, { method: 'GET', url: '/zz-rate-probe', headers: { 'x-forwarded-for': ip } }),
+      );
+      expect(valid.statusCode).toBe(200);
+      // Nothing was charged: a bad credential from that IP is a plain 401.
+      expect((await badFrom(ip, 0)).statusCode).toBe(401);
+    });
+
+    it('(d) anonymous no-credential 401s never count', async () => {
+      const ip = '198.51.100.50';
+      for (let i = 0; i < 100; i++) {
+        const res = await t.app.inject(anonymous({ method: 'GET', url: '/repos', headers: { 'x-forwarded-for': ip } }));
+        expect(res.statusCode).toBe(401);
+      }
+      // A signed-out session probe is public and never charged either.
+      for (let i = 0; i < 5; i++) {
+        const res = await t.app.inject(
+          anonymous({ method: 'GET', url: '/auth/session', headers: { 'x-forwarded-for': ip } }),
+        );
+        expect(res.statusCode).not.toBe(429);
+      }
+      expect((await badFrom(ip, 0)).statusCode).toBe(401);
+    });
+
+    it('(e) IPv6 addresses in one /64 share a bucket; another /64 does not', async () => {
+      // Half the budget from one host, half from another in the same /64.
+      for (let i = 0; i < DEFAULT_REJECTION_LIMIT.max; i++) {
+        const ip = i % 2 === 0 ? '2001:db8:aa:1::1' : '2001:db8:aa:1:ffff:1:2:3';
+        expect((await badFrom(ip, i)).statusCode).toBe(401);
+      }
+      expect((await badFrom('2001:db8:aa:1:dead:beef::9', 0)).statusCode).toBe(429);
+      expect((await badFrom('2001:db8:aa:2::1', 0)).statusCode).toBe(401);
+    });
+  });
+});
+
+describe('rejectionKey', () => {
+  it('keeps IPv4 whole, folds IPv4-mapped IPv6, and keys IPv6 by /64', () => {
+    expect(rejectionKey('203.0.113.7')).toBe('203.0.113.7');
+    expect(rejectionKey('::ffff:203.0.113.7')).toBe('203.0.113.7');
+    expect(rejectionKey('2001:db8:aa:1::1')).toBe('2001:db8:aa:1::/64');
+    expect(rejectionKey('2001:0db8:00aa:0001:ffff:1:2:3')).toBe('2001:db8:aa:1::/64');
+    expect(rejectionKey('2001:db8::1')).toBe('2001:db8:0:0::/64');
+    expect(rejectionKey('::1')).toBe('0:0:0:0::/64');
+    expect(rejectionKey('fe80::1%eth0')).toBe('fe80:0:0:0::/64');
+    expect(rejectionKey('not-an-ip')).toBe('not-an-ip');
   });
 });
 
@@ -129,5 +217,35 @@ describe('RejectionLimiter', () => {
     expect(limiter.blockedFor('a')).toBeNull();
     limiter.hit('a');
     expect(limiter.blockedFor('a')).toBeNull();
+  });
+
+  it('(f) eviction: a blocked entry survives filling the map; low-count entries go first', () => {
+    let now = 1_000_000;
+    const capacity = 100;
+    const limiter = new RejectionLimiter({ max: 3, windowMs: 60_000 }, () => now, capacity);
+    for (let i = 0; i < 3; i++) limiter.hit('attacker');
+    limiter.hit('busy');
+    limiter.hit('busy');
+    expect(limiter.blockedFor('attacker')).not.toBeNull();
+
+    // Flood with fresh addresses well past capacity.
+    for (let i = 0; i < capacity * 5; i++) limiter.hit(`flood-${i}`);
+    expect(limiter.size).toBeLessThanOrEqual(capacity);
+    expect(limiter.blockedFor('attacker')).not.toBeNull();
+
+    // Expired windows are freed before any live one.
+    now += 60_000;
+    expect(limiter.blockedFor('attacker')).toBeNull();
+  });
+
+  it('(f) a map full of over-budget entries never evicts them; a new address is just not tracked', () => {
+    const now = 1_000_000;
+    const capacity = 10;
+    const limiter = new RejectionLimiter({ max: 2, windowMs: 60_000 }, () => now, capacity);
+    for (let k = 0; k < capacity; k++) for (let i = 0; i < 2; i++) limiter.hit(`blocked-${k}`);
+    limiter.hit('newcomer');
+    expect(limiter.size).toBe(capacity);
+    for (let k = 0; k < capacity; k++) expect(limiter.blockedFor(`blocked-${k}`)).not.toBeNull();
+    expect(limiter.blockedFor('newcomer')).toBeNull();
   });
 });

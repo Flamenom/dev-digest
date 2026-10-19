@@ -17,7 +17,7 @@ import { useTranslations } from "next-intl";
 import { Icon } from "@devdigest/ui";
 import { API_BASE } from "../../../../lib/api";
 import { useSession } from "../../../../lib/hooks/session";
-import { safeReturnTo } from "../../../../components/auth-gate";
+import { safeReturnTo } from "@/lib/sign-in-redirect";
 import { RETRYABLE_ERROR_CODES } from "./constants";
 import { buildStartHref, allowedDomainFromProbe, errorMessageKey } from "./helpers";
 import { s } from "./styles";
