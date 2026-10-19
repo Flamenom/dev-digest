@@ -13,13 +13,24 @@ import type {
   PullRequestHost,
   RepoProvider,
   SecretKey,
+  ActorDirectory,
+  AuditLog,
+  Clock,
+  IdentityProvider,
+  PrincipalProvider,
+  SecretKeyStatus,
+  SecretStore,
+  SecretsInspector,
+  SecretsWriter,
 } from '@devdigest/shared';
 import type { AppConfig } from './config.js';
 import type { Db } from '../db/client.js';
 import { JobRunner } from './jobs.js';
 import { runBus, type RunBus } from './sse.js';
 import { LocalSecretsProvider } from '../adapters/secrets/local.js';
+import { EncryptedSecretsProvider } from '../adapters/secrets/encrypted.js';
 import { LocalNoAuthProvider } from '../adapters/auth/local.js';
+import { GoogleIdentityProvider } from '../adapters/oidc/index.js';
 import { OctokitGitHubClient } from '../adapters/github/octokit.js';
 import { GitHubPullRequestHost } from '../adapters/github/host.js';
 // The gitlab barrel is imported directly (not via adapters/index.ts): only the
@@ -64,6 +75,15 @@ import { EvalDashboardService } from '../modules/eval/dashboard.js';
 import { EvalService } from '../modules/eval/service.js';
 import { resolveFeatureModel } from '../modules/settings/feature-models.js';
 import { SettingsRepository } from '../modules/settings/repository.js';
+import { SECRET_KEY_BY_PROVIDER } from '../modules/settings/constants.js';
+import { IdentityRepository } from '../modules/identity/repository.js';
+import { PrincipalService } from '../modules/identity/principal-service.js';
+import { SignInService } from '../modules/identity/sign-in-service.js';
+import { MembersService } from '../modules/identity/members-service.js';
+import { TokensService } from '../modules/identity/tokens-service.js';
+import { AuditRepository, type AuditTx } from '../modules/audit/repository.js';
+import { SecretStoreRepository, type SecretsTx } from '../modules/secrets/repository.js';
+import { SecretsMaintenance, type SecretsLogger } from '../modules/secrets/service.js';
 import { type DepGraph, DepCruiseGraph } from '../adapters/depgraph/index.js';
 import { type Tokenizer, TiktokenTokenizer } from '../adapters/tokenizer/index.js';
 
@@ -125,6 +145,17 @@ export interface ContainerOverrides {
   /** repo-intel T3 adapters — only the indexer pipeline reads these. */
   depgraph?: DepGraph;
   tokenizer?: Tokenizer;
+  // ── multi-user server mode (T19) ──────────────────────────────────────────
+  /** OIDC identity provider — tests inject `MockIdentityProvider`. */
+  identityProvider?: IdentityProvider;
+  /** Per-request principal resolver (both modes) — tests inject a fake. */
+  principals?: PrincipalProvider;
+  /** Append-only audit log — tests inject a recording fake. */
+  audit?: AuditLog<AuditTx>;
+  /** Wall clock for sessions/tokens/audit — tests inject a fixed clock. */
+  clock?: Clock;
+  /** Encrypted-secret row store (google mode) — tests inject an in-memory fake. */
+  secretStore?: SecretStore<SecretsTx>;
 }
 
 /** Q8 — which secret authenticates git network ops for each provider, and as whom. */
@@ -134,6 +165,9 @@ const GIT_CREDENTIALS: Readonly<
   github: { host: 'github.com', secret: 'GITHUB_TOKEN', username: 'x-access-token' },
   gitlab: { host: 'gitlab.com', secret: 'GITLAB_TOKEN', username: 'oauth2' },
 };
+
+/** The managed (Settings → API keys) secret names held by the encrypted store. */
+const MANAGED_SECRET_KEYS: readonly SecretKey[] = Object.values(SECRET_KEY_BY_PROVIDER);
 
 export class Container {
   readonly config: AppConfig;
@@ -172,6 +206,15 @@ export class Container {
   private _depgraph?: DepGraph;
   private _tokenizer?: Tokenizer;
   private _priceBook?: PriceBook;
+  private _identityRepo?: IdentityRepository;
+  private _audit?: AuditLog<AuditTx>;
+  private _secretStore?: SecretStore<SecretsTx>;
+  private _identityProvider?: IdentityProvider;
+  private _principals?: PrincipalProvider;
+  private _signIn?: SignInService;
+  private _members?: MembersService;
+  private _tokens?: TokensService;
+  private _clock?: Clock;
 
   /**
    * @param log process-level logger for DETACHED work that has no request to log
@@ -186,10 +229,209 @@ export class Container {
   ) {
     this.config = config;
     this.db = db;
-    this.secrets = overrides.secrets ?? new LocalSecretsProvider(config.secretsPath);
+    // `auth` resolves the seeded system user + the default (team) workspace in
+    // BOTH modes: in google mode the per-request identity comes from
+    // `principals`, while `auth.currentWorkspace()` still names the single team
+    // workspace (encrypted-secret AAD, CLI, sign-in admission).
     this.auth = overrides.auth ?? new LocalNoAuthProvider(db);
+    this.secrets = overrides.secrets ?? this.buildSecrets();
     this.runBus = runBus;
     this.jobs = new JobRunner(db);
+  }
+
+  /**
+   * Mode switch for secrets: `local` keeps the plaintext 0600 JSON file with
+   * the env fallback (unchanged); `google` reads managed keys ONLY from the
+   * encrypted store (never `process.env`, AC-39), scoped to the team workspace.
+   */
+  private buildSecrets(): SecretsProvider {
+    if (this.config.authMode !== 'google') return new LocalSecretsProvider(this.config.secretsPath);
+    return new EncryptedSecretsProvider({
+      store: this.secretStore,
+      masterKey: this.requireMasterKey(),
+      workspaceId: () => this.teamWorkspaceId(),
+      managedKeys: MANAGED_SECRET_KEYS,
+    });
+  }
+
+  private requireMasterKey(): Buffer {
+    if (!this.config.masterKey) throw new ConfigError('SECRETS_MASTER_KEY is required when AUTH_MODE=google');
+    return this.config.masterKey;
+  }
+
+  /** The single team workspace (default workspace, by name) — cached by `auth`. */
+  async teamWorkspaceId(): Promise<string> {
+    return (await this.auth.currentWorkspace({})).id;
+  }
+
+  /** System wall clock unless a test injects one. */
+  get clock(): Clock {
+    if (this.overrides.clock) return this.overrides.clock;
+    return (this._clock ??= { now: () => new Date() });
+  }
+
+  /** Users, memberships, sessions, OIDC flows, API tokens (both modes). */
+  get identityRepo(): IdentityRepository {
+    return (this._identityRepo ??= new IdentityRepository(this.db));
+  }
+
+  /** Batch actor-name lookup for DTO enrichment (Rec-3). */
+  get actorDirectory(): ActorDirectory {
+    return this.identityRepo;
+  }
+
+  /** Append-only audit log (`audit_events`). */
+  get audit(): AuditLog<AuditTx> {
+    if (this.overrides.audit) return this.overrides.audit;
+    return (this._audit ??= new AuditRepository(this.db));
+  }
+
+  /** Encrypted-secret rows (`encrypted_secrets`); used by google-mode secrets + the import CLI. */
+  get secretStore(): SecretStore<SecretsTx> {
+    if (this.overrides.secretStore) return this.overrides.secretStore;
+    return (this._secretStore ??= new SecretStoreRepository(this.db));
+  }
+
+  /**
+   * Per-key secret state (AC-38) in both modes. Both real providers implement
+   * `status()`; an injected test provider that doesn't is inspected via `get`.
+   */
+  get secretsInspector(): SecretsInspector {
+    const secrets = this.secrets as SecretsProvider & Partial<SecretsInspector>;
+    if (typeof secrets.status === 'function') return { status: secrets.status.bind(secrets) };
+    return {
+      status: async (keys) => {
+        const out = new Map<SecretKey, SecretKeyStatus>();
+        for (const key of keys) {
+          const value = await secrets.get(key);
+          out.set(key, { state: value ? 'set' : 'unset', updatedAt: null, updatedBy: null });
+        }
+        return out;
+      },
+    };
+  }
+
+  /**
+   * Secret writes with attribution. Google mode records the acting user on the
+   * encrypted row; local mode persists to the JSON file (no actor column).
+   * Callers still call `invalidateSecretCaches()` after a write.
+   */
+  get secretsWriter(): SecretsWriter {
+    const secrets = this.secrets;
+    if (secrets instanceof EncryptedSecretsProvider) {
+      return { set: (key, value, actorUserId) => secrets.set(key, value, actorUserId) };
+    }
+    return {
+      set: async (key, value) => {
+        if (!secrets.set) throw new ConfigError('The secrets backend is read-only');
+        await secrets.set(key, value);
+      },
+    };
+  }
+
+  /**
+   * Boot-time secrets maintenance (google mode only): rotation re-encrypt,
+   * undecryptable scan, ignored-env warning. Takes the boot logger (pino fits
+   * `SecretsLogger`); only env var NAMES are inspected.
+   */
+  secretsMaintenance(log: SecretsLogger): SecretsMaintenance<SecretsTx> {
+    if (this.config.authMode !== 'google') {
+      throw new ConfigError('Secrets maintenance runs only when AUTH_MODE=google');
+    }
+    return new SecretsMaintenance<SecretsTx>({
+      store: this.secretStore,
+      audit: this.audit,
+      masterKey: this.requireMasterKey(),
+      previousKey: this.config.previousMasterKey,
+      managedKeys: MANAGED_SECRET_KEYS,
+      env: process.env,
+      log,
+    });
+  }
+
+  /** Google OIDC client (google mode); tests inject `MockIdentityProvider`. */
+  get identityProvider(): IdentityProvider {
+    if (this.overrides.identityProvider) return this.overrides.identityProvider;
+    if (!this._identityProvider) {
+      const { google, publicApiBase, allowedDomain } = this.config;
+      if (this.config.authMode !== 'google' || !google || !publicApiBase || !allowedDomain) {
+        throw new ConfigError('Google sign-in is disabled (AUTH_MODE=local)');
+      }
+      this._identityProvider = new GoogleIdentityProvider({
+        clientId: google.clientId,
+        clientSecret: google.clientSecret,
+        redirectUri: `${publicApiBase}/auth/google/callback`,
+        hostedDomain: allowedDomain,
+      });
+    }
+    return this._identityProvider;
+  }
+
+  /**
+   * Who is calling. Google mode: session cookie / bearer token, re-read on
+   * every request (`PrincipalService`). Local mode: always the seeded system
+   * user in the default workspace as Admin (`via: 'local'`), through `auth`.
+   */
+  get principals(): PrincipalProvider {
+    if (this.overrides.principals) return this.overrides.principals;
+    if (!this._principals) {
+      if (this.config.authMode === 'google') {
+        this._principals = new PrincipalService({ repo: this.identityRepo, clock: this.clock });
+      } else {
+        const auth = this.auth;
+        this._principals = {
+          resolve: async (req) => {
+            const [user, workspace] = await Promise.all([
+              auth.currentUser(req),
+              auth.currentWorkspace(req),
+            ]);
+            return { userId: user.id, workspaceId: workspace.id, role: 'admin', via: 'local' };
+          },
+        };
+      }
+    }
+    return this._principals;
+  }
+
+  /**
+   * Google sign-in flow (google mode only). Async because the service is bound
+   * to the team workspace id, resolved from the DB once.
+   */
+  async signIn(): Promise<SignInService> {
+    if (this._signIn) return this._signIn;
+    const { allowedDomain, adminEmails } = this.config;
+    if (this.config.authMode !== 'google' || !allowedDomain) {
+      throw new ConfigError('Google sign-in is disabled (AUTH_MODE=local)');
+    }
+    const idp = this.identityProvider;
+    const id = await this.teamWorkspaceId();
+    this._signIn ??= new SignInService({
+      repo: this.identityRepo,
+      idp,
+      audit: this.audit,
+      clock: this.clock,
+      config: { allowedDomain, adminEmails },
+      workspace: { id },
+    });
+    return this._signIn;
+  }
+
+  /** Members list / role + status changes (last-admin guard). */
+  get members(): MembersService {
+    return (this._members ??= new MembersService({
+      identity: this.identityRepo,
+      audit: this.audit,
+      clock: this.clock,
+    }));
+  }
+
+  /** Personal API tokens (create / list / revoke). */
+  get tokens(): TokensService {
+    return (this._tokens ??= new TokensService({
+      identity: this.identityRepo,
+      audit: this.audit,
+      clock: this.clock,
+    }));
   }
 
   get git(): HostGitClient {
