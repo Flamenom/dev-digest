@@ -4,7 +4,7 @@ import type { PrMeta } from '@devdigest/shared';
 import { startPg, dockerAvailable, type PgFixture } from './helpers/pg.js';
 import { seed } from '../src/db/seed.js';
 import * as t from '../src/db/schema.js';
-import { PullRequestRepository } from '../src/modules/pulls/repository.js';
+import { PullRequestRepository, PullsReadRepository } from '../src/modules/pulls/repository.js';
 
 const hasDocker = await dockerAvailable();
 const d = hasDocker ? describe : describe.skip;
@@ -113,5 +113,34 @@ d('PullRequestRepository', () => {
       }),
     ).rejects.toThrow('abort');
     expect(await prsOf(repoId)).toHaveLength(0);
+  });
+
+  it('listFindingSeverities is tenant-scoped through the owning review', async () => {
+    const repoId = await newRepo('severities');
+    await repo.upsertList({ workspaceId, repoId }, [pr(1)]);
+    const [prRow] = await prsOf(repoId);
+    const [review] = await pg.handle.db
+      .insert(t.reviews)
+      .values({ workspaceId, prId: prRow!.id, kind: 'review' })
+      .returning();
+    await pg.handle.db.insert(t.findings).values({
+      reviewId: review!.id,
+      file: 'a.ts',
+      startLine: 1,
+      endLine: 1,
+      severity: 'major',
+      category: 'bug',
+      title: 't',
+      rationale: 'r',
+      confidence: 0.9,
+    });
+    const [other] = await pg.handle.db.insert(t.workspaces).values({ name: 'Other' }).returning();
+    const reads = new PullsReadRepository(pg.handle.db);
+
+    expect(await reads.listFindingSeverities(workspaceId, [review!.id])).toEqual([
+      { reviewId: review!.id, severity: 'major' },
+    ]);
+    // A review id from another workspace yields nothing, even when passed explicitly.
+    expect(await reads.listFindingSeverities(other!.id, [review!.id])).toEqual([]);
   });
 });

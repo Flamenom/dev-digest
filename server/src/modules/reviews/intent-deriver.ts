@@ -1,5 +1,6 @@
 import type {
   FeatureModelChoice,
+  HostGitClient,
   IntentDetail,
   IntentDetailWrite,
   IntentSource,
@@ -94,7 +95,7 @@ export interface IntentDeriverDeps {
    * both, so GitHub keeps the `github` path above.
    */
   prHost: (provider: RepoProvider) => Promise<Pick<PullRequestHost, 'getIssue' | 'getLinkedIssueNumber'>>;
-  git: { readFile(repo: RepoRef, path: string): Promise<string> };
+  git: Pick<HostGitClient, 'readFile'>;
   llm: (id: Provider) => Promise<LLMProvider>;
   resolveModel: (workspaceId: string) => Promise<FeatureModelChoice>;
 }

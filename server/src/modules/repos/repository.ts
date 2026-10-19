@@ -152,7 +152,7 @@ export class RepoRepository {
       })
       .onConflictDoNothing({
         target: [t.repos.workspaceId, t.repos.provider, t.repos.host, t.repos.fullName],
-        where: sql`provider <> 'gitlab'`,
+        where: t.reposIdentityWhere.nonGitlab(t.repos.provider),
       })
       .returning();
     return row ? toRecord(row) : undefined;
@@ -161,15 +161,21 @@ export class RepoRepository {
   private async insertGitlab(values: InsertRepo): Promise<RepoRecord | undefined> {
     const host = values.host ?? sql`default`;
     const defaultBranch = values.defaultBranch ? values.defaultBranch : sql`default`;
+    // Column names come from the schema objects (a rename breaks the build, not
+    // the query); the arbiter predicate is the schema's own index predicate.
+    const c = t.repos;
+    const col = (column: { name: string }) => sql.identifier(column.name);
     const inserted = await this.db.execute<{ id: string }>(sql`
-      insert into ${t.repos}
-        (workspace_id, owner, name, full_name, created_by, provider, host, default_branch)
+      insert into ${c}
+        (${col(c.workspaceId)}, ${col(c.owner)}, ${col(c.name)}, ${col(c.fullName)},
+         ${col(c.createdBy)}, ${col(c.provider)}, ${col(c.host)}, ${col(c.defaultBranch)})
       values
         (${values.workspaceId}, ${values.owner}, ${values.name}, ${values.fullName},
          ${values.createdBy}, 'gitlab', ${host}, ${defaultBranch})
-      on conflict (workspace_id, provider, host, lower(full_name)) where provider = 'gitlab'
+      on conflict (${col(c.workspaceId)}, ${col(c.provider)}, ${col(c.host)}, lower(${col(c.fullName)}))
+        where ${t.reposIdentityWhere.gitlab(c.provider)}
         do nothing
-      returning id`);
+      returning ${col(c.id)}`);
     const id = inserted[0]?.id;
     return id ? this.getById(values.workspaceId, id) : undefined;
   }

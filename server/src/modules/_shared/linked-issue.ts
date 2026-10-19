@@ -1,4 +1,10 @@
-import type { IssueMeta, PullRequestHost, RepoProvider, RepoRef } from '@devdigest/shared';
+import type {
+  HostRepoRef,
+  IssueMeta,
+  PullRequestHost,
+  RepoProvider,
+  RepoRef,
+} from '@devdigest/shared';
 import { hostRepoRef } from './repo-ref.js';
 
 /**
@@ -40,7 +46,7 @@ export type LinkedIssue =
   | { status: 'fetched'; ref: string; title: string; body: string | null }
   | { status: 'unavailable'; ref: string };
 
-function toHostRef(repo: LinkedIssueRepo) {
+function toHostRef(repo: LinkedIssueRepo): HostRepoRef {
   return hostRepoRef({ ...repo, fullName: repo.fullName ?? `${repo.owner}/${repo.name}` });
 }
 
@@ -96,11 +102,10 @@ export async function fetchLinkedIssue(
 }
 
 /**
- * The ref handed to `git.readFile`: GitHub keeps the plain `{owner, name}` it
- * always got; other hosts carry provider/fullName so the adapter resolves the
- * right clone directory.
+ * The ref handed to `HostGitClient.readFile`: always the full host-aware ref
+ * (provider/host/fullName) so the adapter resolves the right clone directory —
+ * for GitHub that is the same `<cloneDir>/<owner>/<repo>` it always was.
  */
-export function gitRepoRef(repo: LinkedIssueRepo): RepoRef {
-  const ref = toHostRef(repo);
-  return ref.provider === 'github' ? { owner: repo.owner, name: repo.name } : ref;
+export function gitRepoRef(repo: LinkedIssueRepo): HostRepoRef {
+  return toHostRef(repo);
 }

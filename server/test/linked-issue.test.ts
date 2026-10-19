@@ -111,8 +111,13 @@ describe('fetchLinkedIssue — GitLab (AC-23)', () => {
 });
 
 describe('gitRepoRef', () => {
-  it('GitHub keeps plain {owner,name}; GitLab carries provider/fullName', () => {
-    expect(gitRepoRef(GITHUB_REPO)).toEqual({ owner: 'acme', name: 'shop' });
+  it('always returns a full host-aware ref (GitHub and GitLab)', () => {
+    expect(gitRepoRef(GITHUB_REPO)).toMatchObject({
+      owner: 'acme',
+      name: 'shop',
+      provider: 'github',
+      host: 'github.com',
+    });
     expect(gitRepoRef(GITLAB_REPO)).toMatchObject({
       provider: 'gitlab',
       fullName: 'group/sub/project',

@@ -1,7 +1,6 @@
 import type { PrListSync, PrSyncDoneEvent, PrSyncStartResult, PrSyncTrigger } from '@devdigest/shared';
-import { redactSecret } from '../../platform/redact.js';
 import type { RepoSyncStatus, SyncStatusStore } from './repository.js';
-import type { SyncLogger } from './sync-service.js';
+import { describeSyncError, type SyncLogger } from './sync-service.js';
 
 /** The repo fields the coordinator keys on; `run` receives the full value back. */
 export interface CoordinatedRepo {
@@ -26,19 +25,12 @@ export interface PrSyncCoordinatorDeps<R extends CoordinatedRepo> {
   run: (repo: R) => Promise<void>;
   /** Failure → persisted human-readable message. Default: redacted, single-line, ≤ 500 chars. */
   describeError?: (err: unknown) => string;
+  /** Every error this logs goes through `describeError` first — never a raw error object. */
   log?: SyncLogger;
 }
 
 interface Inflight {
   promise: Promise<PrSyncDoneEvent>;
-}
-
-const MAX_ERROR_LENGTH = 500;
-
-function defaultDescribeError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  const oneLine = redactSecret(raw).replace(/\s+/g, ' ').trim() || 'PR sync failed';
-  return oneLine.length > MAX_ERROR_LENGTH ? `${oneLine.slice(0, MAX_ERROR_LENGTH - 1)}…` : oneLine;
 }
 
 function iso(d: Date | null): string | null {
@@ -77,7 +69,7 @@ export class PrSyncCoordinator<R extends CoordinatedRepo = CoordinatedRepo> {
   private readonly describeError: (err: unknown) => string;
 
   constructor(private deps: PrSyncCoordinatorDeps<R>) {
-    this.describeError = deps.describeError ?? defaultDescribeError;
+    this.describeError = deps.describeError ?? describeSyncError;
   }
 
   isRunning(repoId: string): boolean {
@@ -184,7 +176,10 @@ export class PrSyncCoordinator<R extends CoordinatedRepo = CoordinatedRepo> {
       .catch((err: unknown) => {
       // execute() handles its own errors; this is a last-resort guard so a
       // detached promise can never become an unhandled rejection.
-      this.deps.log?.warn({ err, repoId: repo.id }, 'PR sync bookkeeping failed');
+      this.deps.log?.warn(
+        { err: this.describeError(err), repoId: repo.id },
+        'PR sync bookkeeping failed',
+      );
       this.inflight.delete(repo.id);
       const event: PrSyncDoneEvent = { state: 'failed', last_synced_at: null, last_sync_error: 'PR sync failed' };
       this.notify(repo.id, event);
@@ -208,7 +203,10 @@ export class PrSyncCoordinator<R extends CoordinatedRepo = CoordinatedRepo> {
       if (error == null) await this.deps.status.recordSuccess(repo.workspaceId, repo.id, at);
       else await this.deps.status.recordFailure(repo.workspaceId, repo.id, at, error);
     } catch (err) {
-      this.deps.log?.warn({ err, repoId: repo.id }, 'PR sync status not persisted');
+      this.deps.log?.warn(
+        { err: this.describeError(err), repoId: repo.id },
+        'PR sync status not persisted',
+      );
     }
 
     let lastSyncedAt: Date | null;
@@ -237,7 +235,7 @@ export class PrSyncCoordinator<R extends CoordinatedRepo = CoordinatedRepo> {
       try {
         cb(event);
       } catch (err) {
-        this.deps.log?.warn({ err, repoId }, 'PR sync onDone listener threw');
+        this.deps.log?.warn({ err: this.describeError(err), repoId }, 'PR sync onDone listener threw');
       }
     }
   }

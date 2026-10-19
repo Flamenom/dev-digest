@@ -3,7 +3,7 @@ import type {
   SecretsProvider,
   GitHubClient,
   HostGitClient,
-  CodeIndex,
+  HostCodeIndex,
   Embedder,
   LLMProvider,
   GitLabClient,
@@ -100,7 +100,7 @@ export interface ContainerOverrides {
   /** gitlab.com read-side client — tests inject `MockGitLabClient`. */
   gitlab?: GitLabClient;
   git?: HostGitClient;
-  codeIndex?: CodeIndex;
+  codeIndex?: HostCodeIndex;
   embedder?: Embedder;
   /** Pre-built providers by id (skip key lookup). */
   llm?: Partial<Record<'openai' | 'anthropic' | 'openrouter', LLMProvider>>;
@@ -144,7 +144,7 @@ export class Container {
   private _git?: HostGitClient;
   private _github?: GitHubClient;
   private _gitlab?: GitLabClient;
-  private _codeIndex?: CodeIndex;
+  private _codeIndex?: HostCodeIndex;
   private _embedder?: Embedder;
   private llmCache = new Map<string, LLMProvider>();
 
@@ -247,9 +247,13 @@ export class Container {
    */
   get prSync(): PrSyncCoordinator<SyncRepo> {
     if (!this._prSync) {
+      // One module-tagged child for all detached PR-sync logging (no request
+      // logger exists for it); falls back to the bare logger when it has no `child`.
+      const log = this.log?.child?.({ module: 'pr-sync' }) ?? this.log;
       const sync = new PrListSyncService({
         hosts: (provider) => this.prHost(provider),
         store: this.pullRequestRepo,
+        log,
       });
       this._prSync = new PrSyncCoordinator<SyncRepo>({
         ttlMs: this.config.prSyncTtlMs,
@@ -257,8 +261,9 @@ export class Container {
         now: this.overrides.prSyncClock ?? (() => Date.now()),
         status: new SyncStatusRepository(this.db),
         run: (repo) => sync.syncRepo(repo),
-        // Errors reach the logger already redacted (`describeError`).
-        log: this.log,
+        // The coordinator and the sync service both pass every error through
+        // the redacting `describeSyncError` before it reaches this logger.
+        log,
       });
     }
     return this._prSync;
@@ -295,7 +300,7 @@ export class Container {
     }));
   }
 
-  get codeIndex(): CodeIndex {
+  get codeIndex(): HostCodeIndex {
     if (this.overrides.codeIndex) return this.overrides.codeIndex;
     this._codeIndex ??= new RipgrepCodeIndex(this.git);
     return this._codeIndex;

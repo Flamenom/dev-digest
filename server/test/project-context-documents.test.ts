@@ -2,21 +2,27 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import type { GitClient, RepoRef } from '@devdigest/shared';
+import type { HostGitClient, HostRepoRef } from '@devdigest/shared';
 import { readDocument, writeDocument } from '../src/modules/project-context/documents.js';
 import { NotFoundError, ValidationError } from '../src/platform/errors.js';
 
 /**
  * Hermetic tests for the guarded document read/write (AC-30..AC-33) against a
- * real temp "clone" dir + a fake GitClient. The GitClient contract here is
+ * real temp "clone" dir + a fake HostGitClient. The HostGitClient contract here is
  * paths-only: `clonePathFor` is the SOLE method the documents module may call
  * — no git side effects (no readFile/diff/clone/sync) ever happen.
  */
 
-const repoRef: RepoRef = { owner: 'acme', name: 'widgets' };
+const repoRef: HostRepoRef = {
+  owner: 'acme',
+  name: 'widgets',
+  fullName: 'acme/widgets',
+  provider: 'github',
+  host: 'github.com',
+};
 
 let clone: string;
-let git: GitClient;
+let git: HostGitClient;
 let gitSpies: Record<string, ReturnType<typeof vi.fn>>;
 
 beforeEach(async () => {
@@ -24,7 +30,7 @@ beforeEach(async () => {
   await mkdir(path.join(clone, 'docs'), { recursive: true });
   await writeFile(path.join(clone, 'docs', 'spec.md'), '# API spec\ninvariant: no live keys\n', 'utf8');
 
-  // Fake GitClient: every method is a spy; only clonePathFor returns a value.
+  // Fake HostGitClient: every method is a spy; only clonePathFor returns a value.
   gitSpies = {
     clonePathFor: vi.fn(() => clone),
     clone: vi.fn(),
@@ -37,7 +43,7 @@ beforeEach(async () => {
     log: vi.fn(),
     readFile: vi.fn(),
   };
-  git = gitSpies as unknown as GitClient;
+  git = gitSpies as unknown as HostGitClient;
 });
 
 afterEach(async () => {
@@ -96,7 +102,7 @@ describe('writeDocument', () => {
   });
 });
 
-describe('GitClient usage boundary', () => {
+describe('HostGitClient usage boundary', () => {
   it('only clonePathFor is ever called — no git side effects on read or write', async () => {
     await readDocument(git, repoRef, 'docs/spec.md');
     await writeDocument(git, repoRef, 'docs/other.md', 'x');
@@ -106,7 +112,7 @@ describe('GitClient usage boundary', () => {
     expect(gitSpies.clonePathFor).toHaveBeenCalled();
     for (const [name, spy] of Object.entries(gitSpies)) {
       if (name === 'clonePathFor') continue;
-      expect(spy, `GitClient.${name} must never be called by documents.ts`).not.toHaveBeenCalled();
+      expect(spy, `HostGitClient.${name} must never be called by documents.ts`).not.toHaveBeenCalled();
     }
   });
 });

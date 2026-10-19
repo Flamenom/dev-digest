@@ -6,7 +6,7 @@ import { loadConfig } from '../src/platform/config.js';
 import { seed } from '../src/db/seed.js';
 import * as t from '../src/db/schema.js';
 import { MockLLMProvider } from '../src/adapters/mocks.js';
-import type { GitClient, RepoRef, RepoIntel } from '@devdigest/shared';
+import type { HostGitClient, RepoRef, RepoIntel } from '@devdigest/shared';
 
 const hasDocker = await dockerAvailable();
 const d = hasDocker ? describe : describe.skip;
@@ -44,7 +44,7 @@ d('conventions module (integration)', () => {
       if (content === undefined) throw new Error(`ENOENT: ${path}`);
       return content;
     },
-  } as unknown as GitClient;
+  } as unknown as HostGitClient;
 
   const fakeRepoIntel = {
     getConventionSamples: async () => ['src/api/users.ts'],

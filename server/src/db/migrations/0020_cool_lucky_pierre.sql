@@ -1,18 +1,29 @@
 DROP INDEX "repos_ws_provider_host_fullname_uq";--> statement-breakpoint
 -- Data guards (hand-added; run BEFORE the new constraints so 0020 cannot fail on existing rows).
--- 1) Hosts were always written from lower-case constants; normalise any stray casing for repos_host_lower_ck.
-UPDATE "repos" SET "host" = lower("host") WHERE "host" <> lower("host");--> statement-breakpoint
--- 2) GitLab rows were deduped case-insensitively by the app (findByIdentity: lower(full_name)), so
---    case-only duplicates should not exist. If one does (e.g. a pre-dedupe race), ABORT rather than
---    delete user data: the operator removes the duplicates manually (keep the oldest) and re-runs.
+-- 1) Identity duplicates are checked FIRST, against the post-normalisation key (lower(host)), so
+--    neither the host UPDATE below nor the new unique indexes can hit a raw 23505. Duplicates
+--    ABORT the migration rather than delete user data: the operator removes them manually
+--    (keep the oldest) and re-runs.
+--    a) GitLab rows were deduped case-insensitively by the app (findByIdentity: lower(full_name)),
+--       so case-only duplicates should not exist — unless a pre-dedupe race left one.
+--    b) Non-GitLab rows were unique on the exact host; two rows differing only by host casing
+--       would collide once the host is lower-cased.
 DO $$ BEGIN
   IF EXISTS (
     SELECT 1 FROM "repos" WHERE "provider" = 'gitlab'
-    GROUP BY "workspace_id", "host", lower("full_name") HAVING count(*) > 1
+    GROUP BY "workspace_id", lower("host"), lower("full_name") HAVING count(*) > 1
   ) THEN
     RAISE EXCEPTION 'migration 0020: GitLab repos differing only by case in full_name exist; remove the duplicates manually (keep the oldest) and re-run';
   END IF;
+  IF EXISTS (
+    SELECT 1 FROM "repos" WHERE "provider" <> 'gitlab'
+    GROUP BY "workspace_id", "provider", lower("host"), "full_name" HAVING count(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'migration 0020: non-GitLab repos differing only by host casing exist; remove the duplicates manually (keep the oldest) and re-run';
+  END IF;
 END $$;--> statement-breakpoint
+-- 2) Hosts were always written from lower-case constants; normalise any stray casing for repos_host_lower_ck.
+UPDATE "repos" SET "host" = lower("host") WHERE "host" <> lower("host");--> statement-breakpoint
 -- 3) change_type / patch_omitted are informational; readers already drop unknown values
 --    (detail-service safeParse), so NULLing anything outside the allowed set preserves behaviour.
 UPDATE "pr_files" SET "change_type" = NULL

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { GitClient, RunTrace } from '@devdigest/shared';
+import type { HostGitClient, RunTrace } from '@devdigest/shared';
 import { ReviewRunExecutor, NO_REVIEWABLE_DIFF } from '../src/modules/reviews/run-executor.js';
 import type { ReviewRepository, PullRow, ReviewRow, FindingRow } from '../src/modules/reviews/repository.js';
 import type { AgentRow } from '../src/db/rows.js';
@@ -75,7 +75,7 @@ async function run(opts: { provider: 'github' | 'gitlab'; files: PrFile[]; agent
     diff: async () => {
       throw new Error('fatal: no merge base');
     },
-  } as unknown as GitClient;
+  } as unknown as HostGitClient;
 
   const traces: Record<string, RunTrace> = {};
   const completed: Record<string, Record<string, unknown>> = {};

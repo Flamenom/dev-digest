@@ -163,7 +163,7 @@ describe('deriveIntent — sources & confidence', () => {
     // ANY unavailable source forces low confidence, even with fetched ones present.
     expect(detail.confidence).toBe('low');
     expect(readFile).toHaveBeenCalledWith(
-      { owner: 'acme', name: 'payments-api' },
+      expect.objectContaining({ owner: 'acme', name: 'payments-api', provider: 'github' }),
       'docs/missing.md',
     );
   });

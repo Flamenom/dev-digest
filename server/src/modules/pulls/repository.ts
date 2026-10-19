@@ -681,15 +681,23 @@ export class PullsReadRepository {
   }
 
   /**
-   * Finding severities of these reviews (dismissed ones included). Tenancy is
-   * enforced by the caller having resolved `reviewIds` within its workspace
-   * (findings carry no workspace column of their own).
+   * Finding severities of these reviews (dismissed ones included), scoped to
+   * the workspace. Findings carry no workspace column of their own, so the
+   * tenant filter is applied through the owning review — a review id from
+   * another workspace yields no rows even if a caller passes one.
    */
-  async listFindingSeverities(reviewIds: readonly string[]): Promise<FindingSeverity[]> {
+  async listFindingSeverities(
+    workspaceId: string,
+    reviewIds: readonly string[],
+  ): Promise<FindingSeverity[]> {
     if (reviewIds.length === 0) return [];
     return this.db
       .select({ reviewId: t.findings.reviewId, severity: t.findings.severity })
       .from(t.findings)
+      .innerJoin(
+        t.reviews,
+        and(eq(t.findings.reviewId, t.reviews.id), eq(t.reviews.workspaceId, workspaceId)),
+      )
       .where(inArray(t.findings.reviewId, [...reviewIds]));
   }
 

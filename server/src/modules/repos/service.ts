@@ -1,6 +1,6 @@
 import type {
-  GitClient,
   GitLabClient,
+  HostGitClient,
   RepoHost,
   RepoProvider,
   RepoWithHost,
@@ -20,7 +20,7 @@ import {
 /**
  * F1 — repos service. Business logic for the Repositories feature:
  *   - add / list / refresh / remove
- *   - the asynchronous `clone` job (real `git clone` via the GitClient adapter)
+ *   - the asynchronous `clone` job (real `git clone` via the HostGitClient adapter)
  *
  * No HTTP and no raw SQL live here — persistence goes through RepoRepository,
  * pure transforms through helpers.ts, literals through constants.ts.
@@ -57,7 +57,7 @@ export interface RepoJobQueue {
  */
 export interface RepoServiceDeps {
   repo: RepoRepository;
-  git: GitClient;
+  git: HostGitClient;
   jobs: RepoJobQueue;
   /** gitlab.com read-side client, resolved lazily per call (token may change). */
   gitlab: () => Promise<GitLabClient>;
@@ -89,7 +89,7 @@ export class RepoService implements RepoOperations {
   }
 
   /**
-   * Register the `clone` job handler once. Clones via the GitClient adapter —
+   * Register the `clone` job handler once. Clones via the HostGitClient adapter —
    * which supplies per-provider credentials per invocation (Q8) — then persists
    * the resulting path + last_polled_at.
    */

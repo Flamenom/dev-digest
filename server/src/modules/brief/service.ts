@@ -4,6 +4,7 @@ import type {
   BriefStatus,
   ChatMessage,
   FeatureModelChoice,
+  HostGitClient,
   Finding,
   IntentDetail,
   IssueMeta,
@@ -151,7 +152,7 @@ export interface BriefServiceDeps {
    * repos only — the GitHub host answers null for both methods.
    */
   prHost: (provider: RepoProvider) => Promise<Pick<PullRequestHost, 'getIssue' | 'getLinkedIssueNumber'>>;
-  git: { readFile(repo: RepoRef, path: string): Promise<string> };
+  git: Pick<HostGitClient, 'readFile'>;
   llm: (id: Provider) => Promise<LLMProvider>;
   /** Resolves the `risk_brief` feature model for the workspace (Rec-5). */
   resolveModel: (workspaceId: string) => Promise<FeatureModelChoice>;

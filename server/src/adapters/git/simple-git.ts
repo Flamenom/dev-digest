@@ -108,8 +108,16 @@ interface NetworkAuth {
 
 /**
  * Canonicalise a host ref: only `gitlab` is GitLab (anything else ⇒ github),
- * the host is derived from the provider, and a missing `fullName` (legacy
- * callers / fixtures) falls back to `owner/name`.
+ * the host is derived from the provider, and a missing `fullName` falls back to
+ * `owner/name`.
+ *
+ * Defence-in-depth, not a supported input path: `HostGitClient` types every
+ * repo parameter as a full `HostRepoRef` (function-typed properties, so the
+ * compiler rejects a plain `{ owner, name }`), and every production call site
+ * builds its ref with `hostRepoRef(row)`. The fallbacks only guard against an
+ * untyped caller (`as unknown as …` test fakes, or an unsound upcast to the
+ * legacy `GitClient`) so a malformed ref can never pick a wrong clone path,
+ * remote or credential host — keep them.
  */
 function toHostRef(repo: HostRepoRef): HostRepoRef {
   const provider = repo.provider === 'gitlab' ? 'gitlab' : 'github';

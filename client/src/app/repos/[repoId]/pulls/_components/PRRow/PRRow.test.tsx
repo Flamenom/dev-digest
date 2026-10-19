@@ -42,7 +42,7 @@ describe("PRRow", () => {
   it("marks a draft pull request and shows known stats as a size bucket", () => {
     renderRow({ ...BASE, is_draft: true });
     expect(screen.getByText("Add GitLab sync")).toBeInTheDocument();
-    expect(screen.getByTestId("pr-draft-badge")).toHaveTextContent("Draft");
+    expect(screen.getByText("Draft")).toBeInTheDocument();
     expect(screen.getByText("S · 12")).toBeInTheDocument();
     expect(screen.queryByLabelText("Diff stats not available yet")).not.toBeInTheDocument();
   });

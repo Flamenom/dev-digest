@@ -42,6 +42,34 @@ describe('Container → PR sync logger', () => {
       expect.objectContaining({ repoId: repo.id, err: expect.stringContaining('offline') }),
       'PR sync failed; serving persisted PRs',
     );
+    // The stub db makes the status write throw: that error is logged as a
+    // redacted string too, never as a raw error object.
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ repoId: repo.id, err: expect.any(String) }),
+      'PR sync status not persisted',
+    );
+  });
+
+  it('logs through a module-tagged child logger when the logger supports it', async () => {
+    const config = loadConfig({ NODE_ENV: 'test', DEVDIGEST_HOSTS_OFFLINE: 'true' } as NodeJS.ProcessEnv);
+    const childLog = { warn: vi.fn() };
+    const log = { warn: vi.fn(), child: vi.fn(() => childLog) };
+    const container = new Container(
+      config,
+      {} as Db,
+      { secrets: new MockSecretsProvider({}), auth: new MockAuthProvider() },
+      log,
+    );
+
+    container.prSync.manual(repo);
+    await container.prSync.awaitRunning(repo.id);
+
+    expect(log.child).toHaveBeenCalledWith({ module: 'pr-sync' });
+    expect(log.warn).not.toHaveBeenCalled();
+    expect(childLog.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ repoId: repo.id, err: expect.stringContaining('offline') }),
+      'PR sync failed; serving persisted PRs',
+    );
   });
 });
 

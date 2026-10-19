@@ -159,7 +159,8 @@ d('migration 0020 — constraints & repo identity', () => {
 // ---------------------------------------------------------------------------
 // 0020 over pre-existing dirty data (apply 0000–0019, insert rows 0020 would
 // reject, then apply 0020): normalisable data applies; case-only GitLab
-// duplicates abort without deleting anything.
+// duplicates and non-GitLab host-casing duplicates abort without deleting or
+// modifying anything.
 // ---------------------------------------------------------------------------
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../src/db/migrations');
@@ -204,7 +205,7 @@ d('migration 0020 — applies over pre-existing rows', () => {
     if (oldDir) rmSync(oldDir, { recursive: true, force: true });
   });
 
-  it('aborts on GitLab case-only duplicates without deleting anything, then applies cleanly over dirty host/enum data', async () => {
+  it('aborts on GitLab case-only / non-GitLab host-casing duplicates without touching rows, then applies cleanly over dirty host/enum data', async () => {
     const [ws] = await sql`INSERT INTO workspaces (name) VALUES ('Dirty') RETURNING id`;
     const repo = (fullName: string, provider: string, host: string, createdAt: string) => sql`
       INSERT INTO repos (workspace_id, owner, name, full_name, provider, host, created_at)
@@ -240,8 +241,26 @@ d('migration 0020 — applies over pre-existing rows', () => {
     const applied = await sql`SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`;
     expect(applied[0]!.n).toBe(20); // 0000–0019 only
 
-    // 2) Operator removes the duplicate manually → 0020 applies over the remaining dirty data.
+    // 2) Operator removes the GitLab duplicate, but a non-GitLab row now differs
+    //    from another ONLY by host casing → lower-casing the host would collide
+    //    on the non-GitLab unique index. 0020 must abort with a clear message
+    //    (checked BEFORE the host UPDATE), not a raw 23505, and touch nothing.
     await sql`DELETE FROM repos WHERE id = ${dupe!.id}`;
+    const [hostDupe] = await repo('acme/upper', 'github', 'github.com', '2026-02-01T00:00:00Z');
+    await expect(migrate(drizzle(sql), { migrationsFolder: MIGRATIONS_DIR })).rejects.toThrow(
+      /migration 0020: non-GitLab repos differing only by host casing exist/,
+    );
+    const hosts = await sql`
+      SELECT id, host FROM repos WHERE id IN (${upper!.id}, ${hostDupe!.id}) ORDER BY created_at`;
+    expect(hosts.map((r) => [r.id, r.host])).toEqual([
+      [upper!.id, 'GitHub.com'],
+      [hostDupe!.id, 'github.com'],
+    ]);
+    const stillApplied = await sql`SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`;
+    expect(stillApplied[0]!.n).toBe(20);
+
+    // 3) Operator removes that duplicate too → 0020 applies over the remaining dirty data.
+    await sql`DELETE FROM repos WHERE id = ${hostDupe!.id}`;
     await migrate(drizzle(sql), { migrationsFolder: MIGRATIONS_DIR });
 
     const after = (await sql`SELECT id FROM repos`).map((r) => r.id);

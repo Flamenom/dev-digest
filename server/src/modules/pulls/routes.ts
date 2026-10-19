@@ -101,7 +101,7 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
       const reviewIds = latest.map((r) => r.id);
       const findingsByReview = new Map<string, { severity: string }[]>();
       if (reviewIds.length > 0) {
-        const findingRows = await reads.listFindingSeverities(reviewIds);
+        const findingRows = await reads.listFindingSeverities(workspaceId, reviewIds);
         for (const fr of findingRows) {
           const arr = findingsByReview.get(fr.reviewId) ?? [];
           arr.push({ severity: fr.severity });

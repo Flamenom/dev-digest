@@ -1,5 +1,6 @@
 import type { PullRequestHost, RepoProvider } from '@devdigest/shared';
 import { hostRepoRef, type RepoIdentityRow } from '../_shared/repo-ref.js';
+import { redactSecret } from '../../platform/redact.js';
 import type { PullRequestStore } from './repository.js';
 
 /** The repo fields a PR-list sync needs (structural — a `repos` row satisfies it). */
@@ -8,9 +9,27 @@ export interface SyncRepo extends RepoIdentityRow {
   workspaceId: string;
 }
 
-/** Consumer-shaped logger (pino satisfies it incidentally). */
+/**
+ * Consumer-shaped logger (pino satisfies it incidentally). `child` is optional
+ * so a bare `{ warn }` fake still fits; when present the composition root uses
+ * it to tag detached sync logs with their module.
+ */
 export interface SyncLogger {
   warn: (obj: unknown, msg?: string) => void;
+  child?: (bindings: Record<string, unknown>) => SyncLogger;
+}
+
+const MAX_ERROR_LENGTH = 500;
+
+/**
+ * Any sync failure → a redacted, single-line, ≤ 500-char message. Host errors
+ * can echo request URLs/headers, so a raw error object is NEVER handed to a
+ * logger or persisted — always this string.
+ */
+export function describeSyncError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const oneLine = redactSecret(raw).replace(/\s+/g, ' ').trim() || 'PR sync failed';
+  return oneLine.length > MAX_ERROR_LENGTH ? `${oneLine.slice(0, MAX_ERROR_LENGTH - 1)}…` : oneLine;
 }
 
 export interface PrListSyncDeps {
@@ -68,7 +87,10 @@ export class PrListSyncService {
           filesCount: d.files_count,
         });
       } catch (err) {
-        this.deps.log?.warn({ err, number: gap.number }, 'PR diff-stat backfill skipped');
+        this.deps.log?.warn(
+          { err: describeSyncError(err), number: gap.number },
+          'PR diff-stat backfill skipped',
+        );
       }
     }
   }

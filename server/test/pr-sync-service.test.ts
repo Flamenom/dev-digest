@@ -185,6 +185,11 @@ describe('PrListSyncService', () => {
     await expect(svc.syncRepo(githubRepo)).resolves.toBeUndefined();
     expect(store.updateDiffStats).not.toHaveBeenCalled();
     expect(log.warn).toHaveBeenCalledTimes(1);
+    // The host error reaches the logger as a redacted string, never the raw object.
+    expect(log.warn).toHaveBeenCalledWith(
+      { err: 'detail/diff must not be called', number: 1 },
+      'PR diff-stat backfill skipped',
+    );
   });
 
   it('a failing GitHub host does not affect a parallel GitLab repo sync (AC-27)', async () => {
