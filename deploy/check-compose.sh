@@ -4,13 +4,22 @@
 #
 #   bash deploy/check-compose.sh [env-file]     # default: deploy/.env.example
 #
+# Secret-value checks (placeholder `replace-me…` rejected in every secret;
+# APP_DB_PASSWORD >= 32 chars of [A-Za-z0-9_-] and != POSTGRES_PASSWORD) run
+# automatically for any env file OTHER than `.env.example`, e.g. before deploying:
+#   bash deploy/check-compose.sh deploy/.env
+# `.env.example` ships placeholders by design, so for it only the static checks run.
+# Override with CHECK_SECRETS=1 (force, e.g. to prove the rejection on
+# .env.example) or CHECK_SECRETS=0 (skip). Values are never printed — only names.
+#
 # Verifies: compose renders; only `proxy` publishes ports (80/443); postgres and
 # api are never published and postgres is only on the internal network; api runs
 # exactly one replica, depends on `migrate` completing, connects as the
 # least-privilege `devdigest_app` role (never POSTGRES_USER), and trusts forwarded
 # headers only from the proxy's static IP; `migrate` is a one-shot
 # `pnpm db:migrate && pnpm db:bootstrap` + grants step as the owner role with a
-# secret-free env; the init script + grants.sql are mounted read-only; postgres drops
+# secret-free env and is the ONLY creator of the runtime role (postgres has no
+# init scripts and no APP_DB_PASSWORD); grants.sql is mounted read-only; postgres drops
 # all capabilities but the entrypoint minimum; persistent volumes are mounted;
 # the Caddyfile sets HSTS + nosniff/Referrer-Policy/X-Frame-Options/CSP;
 # Dockerfiles use pinned base images, a non-root user and no secret ARG/ENV.
@@ -88,13 +97,12 @@ process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   const pwOf = (u) => { try { return decodeURIComponent(new URL(u).password); } catch { return ""; } };
   check(pwOf(s.api?.environment?.DATABASE_URL ?? "") !== pwOf(menv.DATABASE_URL ?? ""), "api and migrate DB passwords differ");
   check(Boolean(menv.APP_DB_PASSWORD), "migrate has APP_DB_PASSWORD (creates / re-keys the runtime role)");
-  check(Boolean(s.postgres?.environment?.APP_DB_PASSWORD), "postgres has APP_DB_PASSWORD (first-boot init)");
+  check(!("APP_DB_PASSWORD" in (s.postgres?.environment ?? {})), "postgres env has no APP_DB_PASSWORD (role created by migrate only)");
   check(!("POSTGRES_PASSWORD" in (s.api?.environment ?? {})), "api env has no POSTGRES_PASSWORD");
-  check(mounts("postgres").includes(`${process.env.DEPLOY_DIR}/postgres-init:/docker-entrypoint-initdb.d`), "postgres init script dir mounted at /docker-entrypoint-initdb.d");
-  check(mounts("postgres").some((m) => m.endsWith("/db-grants:/opt/devdigest/db-grants")), "postgres mounts db-grants (init applies grants.sql)");
+  check(!mounts("postgres").some((m) => m.endsWith(":/docker-entrypoint-initdb.d")), "postgres has no /docker-entrypoint-initdb.d mount (no init-time role creation)");
+  check(!mounts("postgres").some((m) => /db-grants/.test(m)), "postgres does not mount db-grants");
   check(mounts("migrate").some((m) => m.endsWith("/db-grants:/opt/devdigest/db-grants")), "migrate mounts db-grants");
-  for (const svc of ["postgres", "migrate"])
-    check((s[svc]?.volumes ?? []).filter((v) => /db-grants|postgres-init/.test(v.source ?? "")).every((v) => v.read_only === true), `${svc} grant/init mounts are read-only`);
+  check((s.migrate?.volumes ?? []).filter((v) => /db-grants/.test(v.source ?? "")).every((v) => v.read_only === true), "migrate db-grants mount is read-only");
 
   // Auth mode + trusted proxy.
   const env = s.api?.environment ?? {};
@@ -133,25 +141,68 @@ process.stdin.on("data", (c) => (raw += c)).on("end", () => {
 
 echo "▸ DB role / grants checks"
 GRANTS="$DIR/db-grants/grants.sql"
-INIT="$DIR/postgres-init/10-app-role.sh"
-[ -x "$INIT" ] && echo "  ok  postgres-init/10-app-role.sh is executable" || { echo "  FAIL $INIT missing or not executable" >&2; exit 1; }
-grep -q 'db-grants/grants.sql' "$INIT" && echo "  ok  init applies grants.sql" || { echo "  FAIL init does not apply grants.sql" >&2; exit 1; }
-[ -f "$DIR/db-grants/apply-grants.mjs" ] && echo "  ok  db-grants/apply-grants.mjs present" || { echo "  FAIL apply-grants.mjs missing" >&2; exit 1; }
+APPLY="$DIR/db-grants/apply-grants.mjs"
+[ ! -e "$DIR/postgres-init" ] && echo "  ok  no postgres-init dir (migrate is the only role creator)" || { echo "  FAIL deploy/postgres-init must not exist" >&2; exit 1; }
+[ -f "$APPLY" ] && echo "  ok  db-grants/apply-grants.mjs present" || { echo "  FAIL apply-grants.mjs missing" >&2; exit 1; }
+for f in "$GRANTS" "$APPLY"; do
+  n="$(basename "$f")"
+  grep -Fq 'replace-?me' "$f" && echo "  ok  $n rejects replace-me placeholders" || { echo "  FAIL $n lacks the placeholder rejection" >&2; exit 1; }
+  grep -Fq '^[A-Za-z0-9_-]{32,}$' "$f" && echo "  ok  $n requires >= 32 chars of [A-Za-z0-9_-]" || { echo "  FAIL $n lacks the strength rule" >&2; exit 1; }
+done
+grep -q 'POSTGRES_PASSWORD is still the .env.example placeholder' "$APPLY" && echo "  ok  apply-grants.mjs rejects a placeholder POSTGRES_PASSWORD" || { echo "  FAIL apply-grants.mjs accepts a placeholder POSTGRES_PASSWORD" >&2; exit 1; }
 for p in \
   "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS" \
   "GRANT SELECT, INSERT ON TABLE public.audit_events TO devdigest_app" \
   "REVOKE ALL ON TABLE public.audit_events FROM devdigest_app" \
   "REVOKE ALL ON SCHEMA drizzle FROM devdigest_app" \
-  "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO devdigest_app" \
+  "REVOKE ALL ON TABLES FROM devdigest_app" \
   "REVOKE CREATE ON SCHEMA public FROM PUBLIC"; do
   grep -Fq "$p" "$GRANTS" && echo "  ok  grants.sql: $p" || { echo "  FAIL grants.sql lacks: $p" >&2; exit 1; }
 done
 if grep -Eiq 'GRANT[^;]*(TRUNCATE|REFERENCES|TRIGGER|ALL PRIVILEGES)' "$GRANTS"; then
   echo "  FAIL grants.sql grants TRUNCATE/REFERENCES/TRIGGER/ALL" >&2; exit 1
 else echo "  ok  grants.sql never grants TRUNCATE/REFERENCES/TRIGGER/ALL"; fi
-if grep -Eq "PASSWORD '[^']" "$GRANTS" "$INIT"; then
-  echo "  FAIL hard-coded password literal in grants/init" >&2; exit 1
-else echo "  ok  no hard-coded password in grants/init"; fi
+# Fail-closed default: no table privileges by default (closes the window between
+# db:migrate creating a table and grants.sql narrowing it, e.g. audit_events).
+if grep -Eq "GRANT[^;']*ON TABLES TO" "$GRANTS"; then
+  echo "  FAIL grants.sql sets default TABLE privileges (must be fail-closed)" >&2; exit 1
+else echo "  ok  grants.sql: no default table privileges (new tables fail closed)"; fi
+if grep -Eq "PASSWORD '[^']" "$GRANTS"; then
+  echo "  FAIL hard-coded password literal in grants.sql" >&2; exit 1
+else echo "  ok  no hard-coded password in grants.sql"; fi
+
+# Secret values (see header). Reads the RENDERED compose config, prints names only.
+case "${CHECK_SECRETS:-auto}" in
+  1) do_secrets=1 ;;
+  0) do_secrets=0 ;;
+  *) [ "$(basename "$ENV_FILE")" = ".env.example" ] && do_secrets=0 || do_secrets=1 ;;
+esac
+if [ "$do_secrets" -eq 1 ]; then
+  echo "▸ secret-value checks (env: $(basename "$ENV_FILE"))"
+  printf '%s' "$RENDERED" | node -e '
+let raw = "";
+process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+  const s = JSON.parse(raw).services ?? {};
+  const pwOf = (u) => { try { return decodeURIComponent(new URL(u).password); } catch { return ""; } };
+  const v = {
+    POSTGRES_PASSWORD: s.postgres?.environment?.POSTGRES_PASSWORD ?? "",
+    APP_DB_PASSWORD: s.migrate?.environment?.APP_DB_PASSWORD ?? "",
+    GOOGLE_CLIENT_ID: s.api?.environment?.GOOGLE_CLIENT_ID ?? "",
+    GOOGLE_CLIENT_SECRET: s.api?.environment?.GOOGLE_CLIENT_SECRET ?? "",
+    SECRETS_MASTER_KEY: s.api?.environment?.SECRETS_MASTER_KEY ?? "",
+  };
+  const fails = [];
+  const check = (ok, msg) => { if (!ok) fails.push(msg); else console.log("  ok  " + msg); };
+  for (const [k, val] of Object.entries(v)) check(val !== "" && !/replace-?me/i.test(val), `${k} is set and not a replace-me placeholder`);
+  check(/^[A-Za-z0-9_-]{32,}$/.test(v.APP_DB_PASSWORD), "APP_DB_PASSWORD is >= 32 chars of [A-Za-z0-9_-] (openssl rand -hex 24)");
+  check(v.APP_DB_PASSWORD !== v.POSTGRES_PASSWORD, "APP_DB_PASSWORD differs from POSTGRES_PASSWORD");
+  check(pwOf(s.api?.environment?.DATABASE_URL ?? "") === v.APP_DB_PASSWORD, "api DATABASE_URL carries APP_DB_PASSWORD unmangled (URL-safe)");
+  if (fails.length) { for (const f of fails) console.error("  FAIL " + f); process.exit(1); }
+});
+'
+else
+  echo "▸ secret-value checks skipped for $(basename "$ENV_FILE") (placeholders by design; CHECK_SECRETS=1 forces)"
+fi
 
 echo "▸ Dockerfile checks"
 fail=0

@@ -79,27 +79,48 @@ const MAX_TRACKED_IPS = 10_000;
 
 /**
  * The limiter bucket for a client address: an IPv4 address as is (an
- * IPv4-mapped IPv6 address is folded to its IPv4 form); an IPv6 address by its
- * /64 prefix — one host typically owns a whole /64, so per-address keys would
- * let it rotate through 2^64 buckets. Anything unparseable is used verbatim.
+ * IPv4-mapped IPv6 address — `::ffff:a.b.c.d`, `::ffff:102:304`,
+ * `0:0:0:0:0:ffff:…` in any spelling — is folded to its dotted IPv4 form, so
+ * IPv4 clients behind a dual-stack socket keep per-address buckets); an IPv6
+ * address by its /64 prefix — one host typically owns a whole /64, so
+ * per-address keys would let it rotate through 2^64 buckets. Anything
+ * unparseable is used verbatim.
  */
 export function rejectionKey(ip: string): string {
-  const family = isIP(ip.split('%')[0] ?? ip);
-  if (family !== 6) return ip;
-  let s = ip.split('%')[0]!.toLowerCase();
-  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(s);
-  if (mapped) return mapped[1]!;
-  // A dotted IPv4 tail is always the last 32 bits — irrelevant for a /64.
-  s = s.replace(/\d{1,3}(?:\.\d{1,3}){3}$/, '0:0');
+  const addr = ip.split('%')[0] ?? ip;
+  if (isIP(addr) !== 6) return ip;
+  const groups = expandIPv6(addr);
+  if (!groups) return ip;
+  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+    const hi = groups[6]!;
+    const lo = groups[7]!;
+    return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join('.');
+  }
+  return `${groups
+    .slice(0, 4)
+    .map((g) => g.toString(16))
+    .join(':')}::/64`;
+}
+
+/**
+ * The eight 16-bit groups of an IPv6 address already validated by `isIP`
+ * (handles `::` compression and a dotted IPv4 tail); undefined if malformed.
+ */
+function expandIPv6(addr: string): number[] | undefined {
+  let s = addr.toLowerCase();
+  const dotted = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+  if (dotted) {
+    const [a, b, c, d] = dotted.slice(1).map(Number) as [number, number, number, number];
+    s = `${s.slice(0, dotted.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
   const [head = '', tail] = s.split('::');
   const headParts = head ? head.split(':') : [];
   const tailParts = tail ? tail.split(':') : [];
-  const groups =
-    tail === undefined
-      ? headParts
-      : [...headParts, ...Array<string>(8 - headParts.length - tailParts.length).fill('0'), ...tailParts];
-  const prefix = groups.slice(0, 4).map((g) => parseInt(g || '0', 16).toString(16));
-  return `${prefix.join(':')}::/64`;
+  const fill = 8 - headParts.length - tailParts.length;
+  if (tail === undefined ? headParts.length !== 8 : fill < 0) return undefined;
+  const parts = tail === undefined ? headParts : [...headParts, ...Array<string>(fill).fill('0'), ...tailParts];
+  const groups = parts.map((g) => parseInt(g || '0', 16));
+  return groups.some((g) => Number.isNaN(g) || g < 0 || g > 0xffff) ? undefined : groups;
 }
 
 interface RejectionWindow {

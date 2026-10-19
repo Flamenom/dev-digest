@@ -17,8 +17,8 @@
 #
 # Database roles (least privilege):
 #   devdigest      POSTGRES_USER — bootstrap superuser, owner of every table and
-#                  of the `drizzle` migrations schema. Used ONLY by postgres init
-#                  and the one-shot `migrate` service (POSTGRES_PASSWORD).
+#                  of the `drizzle` migrations schema. Used ONLY by the one-shot
+#                  `migrate` service (POSTGRES_PASSWORD).
 #   devdigest_app  runtime role used by `api` (APP_DB_PASSWORD). LOGIN, not
 #                  superuser, member of no role, owns nothing. DML (SELECT/INSERT/
 #                  UPDATE/DELETE) on public tables, USAGE/SELECT on sequences;
@@ -26,10 +26,19 @@
 #                  TRIGGER, no CREATE, no `drizzle` schema. So SQL run through the
 #                  API cannot drop/disable the audit triggers, set
 #                  session_replication_role, TRUNCATE, or COPY … PROGRAM.
-#   Grants live in deploy/db-grants/grants.sql (idempotent). It is applied by
-#   deploy/postgres-init/10-app-role.sh on a fresh volume, and by `migrate`
-#   after every `db:migrate && db:bootstrap` (fixes pre-existing volumes, covers
-#   tables added by later migrations, and re-applies the audit_events narrowing).
+#   Grants live in deploy/db-grants/grants.sql (idempotent). The ONLY path that
+#   creates / re-keys devdigest_app is `migrate`, after every
+#   `db:migrate && db:bootstrap` (fresh volume, pre-existing volumes, tables added
+#   by later migrations, audit_events narrowing). Postgres init does not touch the
+#   role, so APP_DB_PASSWORD never sits in the long-lived postgres container env.
+#   grants.sql refuses `replace-me` placeholders and anything but >= 32 chars of
+#   [A-Za-z0-9_-] (`openssl rand -hex 24`), and an app password equal to the owner's.
+#
+# Privilege window: tables get NO default privileges for devdigest_app (fail
+# closed). A table created by `db:migrate` is unreachable for the app until
+# grants.sql grants the exact set (audit_events: SELECT + INSERT) in one
+# transaction; a fresh `api` starts only after `migrate` exits 0 (depends_on
+# migrate: service_completed_successfully below), so it never sees the gap.
 #
 # Rotating APP_DB_PASSWORD: put the new value in deploy/.env, then
 #   docker compose -f deploy/compose.yml up -d
@@ -128,6 +137,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # migrate (db:migrate → db:bootstrap → grants) must exit 0 first: that is
+      # what creates devdigest_app and closes the new-table privilege window.
       migrate:
         condition: service_completed_successfully
     healthcheck:
@@ -179,13 +190,10 @@ services:
       POSTGRES_USER: devdigest
       POSTGRES_DB: devdigest
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
-      # Read only by postgres-init/10-app-role.sh on a fresh volume.
-      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in deploy/.env}
+      # No APP_DB_PASSWORD and no init scripts: the runtime role is created by
+      # `migrate` only (see "Database roles" above).
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # First-boot init (empty volume only): creates devdigest_app + default privileges.
-      - ./postgres-init:/docker-entrypoint-initdb.d:ro
-      - ./db-grants:/opt/devdigest/db-grants:ro
     networks:
       - db
     healthcheck:

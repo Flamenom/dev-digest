@@ -203,7 +203,7 @@ d('settings + secrets (google mode, Testcontainers pg)', () => {
     expect(['dark', 'light']).toContain(get.json().theme);
   });
 
-  it('concurrent saves of the same two keys in opposite order both succeed (advisory locks taken in key order)', async () => {
+  it('concurrent saves of the same two keys in opposite order both succeed (one sorted ON CONFLICT upsert)', async () => {
     // Over HTTP: two Admins PUT the same pair of keys, written in opposite order.
     for (let round = 0; round < 5; round++) {
       const [a, b] = await Promise.all([
@@ -227,8 +227,8 @@ d('settings + secrets (google mode, Testcontainers pg)', () => {
     }
 
     // At the repository: route validation normalizes key order, so drive the
-    // opposite caller order directly — without sorted locking this deadlocks
-    // (Postgres aborts one transaction with 40P01).
+    // opposite caller order directly — a multi-row ON CONFLICT upsert locks rows
+    // in VALUES order, so without the key sort this can deadlock (40P01).
     const repo = t1.container.settingsRepo;
     for (let round = 0; round < 10; round++) {
       await expect(
@@ -246,5 +246,30 @@ d('settings + secrets (google mode, Testcontainers pg)', () => {
         .where(and(eq(t.settings.workspaceId, t1.workspaceId), eq(t.settings.key, key)));
       expect(rows).toHaveLength(1);
     }
+
+    // Racing FIRST saves of brand-new keys: both succeed, one row per key, and
+    // the value is one of the two writers' (never a unique violation).
+    for (let round = 0; round < 10; round++) {
+      const k1 = `race_a_${round}`;
+      const k2 = `race_b_${round}`;
+      await expect(
+        Promise.all([
+          repo.upsert(t1.workspaceId, adminA.userId, { [k1]: 'A', [k2]: 'A' }),
+          repo.upsert(t1.workspaceId, adminB.userId, { [k2]: 'B', [k1]: 'B' }),
+        ]),
+      ).resolves.toBeDefined();
+      for (const key of [k1, k2]) {
+        const rows = await t1.db
+          .select({ value: t.settings.value })
+          .from(t.settings)
+          .where(and(eq(t.settings.workspaceId, t1.workspaceId), eq(t.settings.key, key)));
+        expect(rows).toHaveLength(1);
+        expect(['A', 'B']).toContain(rows[0]!.value);
+      }
+    }
+    // Reads are deterministic: one row per key, same order every time.
+    const listed = (await repo.listRows(t1.workspaceId)).map((r) => r.key);
+    expect(new Set(listed).size).toBe(listed.length);
+    expect((await repo.listRows(t1.workspaceId)).map((r) => r.key)).toEqual(listed);
   });
 });

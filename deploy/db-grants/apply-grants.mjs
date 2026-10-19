@@ -25,20 +25,30 @@ if (!url) {
   console.error('✗ grants: DATABASE_URL is required');
   process.exit(1);
 }
-if (!appPassword || appPassword.length < 16) {
-  console.error('✗ grants: APP_DB_PASSWORD is missing or shorter than 16 characters');
+// Never echo a value: every message names the setting only.
+// `openssl rand -hex 24` = 48 hex chars; URL-safe (embedded in DATABASE_URL).
+const PLACEHOLDER = /replace-?me/i;
+const STRONG = /^[A-Za-z0-9_-]{32,}$/;
+const fail = (msg) => {
+  console.error(`✗ grants: ${msg}`);
   process.exit(1);
-}
+};
+if (!appPassword) fail('APP_DB_PASSWORD is missing');
+if (PLACEHOLDER.test(appPassword))
+  fail('APP_DB_PASSWORD is still the .env.example placeholder; generate one with: openssl rand -hex 24');
+if (!STRONG.test(appPassword))
+  fail('APP_DB_PASSWORD must be >= 32 chars of [A-Za-z0-9_-]; generate one with: openssl rand -hex 24');
 let ownerPassword = '';
 try {
   ownerPassword = decodeURIComponent(new URL(url).password);
 } catch {
   /* unparsable URL: the driver reports it below */
 }
-if (ownerPassword && ownerPassword === appPassword) {
-  console.error('✗ grants: APP_DB_PASSWORD must differ from the owner password');
-  process.exit(1);
-}
+// The owner password comes from POSTGRES_PASSWORD (migrate's DATABASE_URL).
+if (PLACEHOLDER.test(ownerPassword))
+  fail('POSTGRES_PASSWORD is still the .env.example placeholder; generate one with: openssl rand -hex 24');
+if (ownerPassword && ownerPassword === appPassword)
+  fail('APP_DB_PASSWORD must differ from POSTGRES_PASSWORD');
 
 const grantsSql = readFileSync(join(here, 'grants.sql'), 'utf8');
 // One connection for the whole run: the GUC is session-scoped.

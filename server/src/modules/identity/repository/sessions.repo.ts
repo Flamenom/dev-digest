@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, lt, or } from 'drizzle-orm';
+import { and, eq, gt, inArray, lt, type SQL } from 'drizzle-orm';
 import type { Role } from '@devdigest/shared';
 import type { Db } from '../../../db/client.js';
 import * as t from '../../../db/schema.js';
@@ -144,6 +144,12 @@ export class SessionsRepo {
    * past the absolute expiry and — with `idle` (default) — not seen within the
    * idle timeout (AC-25). Expired sessions are already rejected by
    * {@link findActiveByHash}; this only reclaims the rows. Returns the count.
+   *
+   * Two bounded deletes, each walking its own index (`sessions_expires_at_idx`,
+   * then `sessions_last_seen_at_idx`) instead of one OR that defeats both. The
+   * id subselect takes `FOR UPDATE SKIP LOCKED`, so concurrent sweeps (the
+   * periodic timer vs. sign-in's inline sweep, or several instances) split the
+   * work instead of queueing on the same rows.
    */
   async sweepExpired(
     now: Date,
@@ -151,15 +157,26 @@ export class SessionsRepo {
     tx?: IdentityExecutor,
   ): Promise<number> {
     const { limit = EXPIRED_SWEEP_BATCH, idle = true } = opts;
+    let deleted = await this.deleteBatch(lt(t.sessions.expiresAt, now), limit, tx);
+    if (idle && deleted < limit) {
+      const idleCutoff = new Date(now.getTime() - SESSION_IDLE_MS);
+      deleted += await this.deleteBatch(lt(t.sessions.lastSeenAt, idleCutoff), limit - deleted, tx);
+    }
+    return deleted;
+  }
+
+  /** Delete up to `limit` sessions matching `where`, skipping rows another transaction holds. */
+  private async deleteBatch(where: SQL, limit: number, tx?: IdentityExecutor): Promise<number> {
     const exec = execOf(this.db, tx);
-    const absolute = lt(t.sessions.expiresAt, now);
-    const dead = idle
-      ? or(absolute, lt(t.sessions.lastSeenAt, new Date(now.getTime() - SESSION_IDLE_MS)))
-      : absolute;
-    const expired = exec.select({ id: t.sessions.id }).from(t.sessions).where(dead).limit(limit);
+    const batch = exec
+      .select({ id: t.sessions.id })
+      .from(t.sessions)
+      .where(where)
+      .limit(limit)
+      .for('update', { skipLocked: true });
     const rows = await exec
       .delete(t.sessions)
-      .where(inArray(t.sessions.id, expired))
+      .where(inArray(t.sessions.id, batch))
       .returning({ id: t.sessions.id });
     return rows.length;
   }

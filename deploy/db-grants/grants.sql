@@ -1,10 +1,11 @@
 -- DevDigest runtime-role grants — idempotent, safe to re-run any number of times.
 --
--- Applied by:
---   1. postgres init (fresh volume only): deploy/postgres-init/10-app-role.sh
---   2. the one-shot `migrate` service AFTER `db:migrate && db:bootstrap`
---      (deploy/db-grants/apply-grants.mjs) — covers volumes created before this
---      file existed and tables added by every later migration.
+-- Applied ONLY by the one-shot `migrate` service AFTER `db:migrate && db:bootstrap`
+-- (deploy/db-grants/apply-grants.mjs), on every `docker compose up`. That single
+-- path creates the role on a fresh volume, re-keys it on rotation, fixes volumes
+-- created before this file existed and covers tables added by every later
+-- migration. Postgres init does NOT create the role (no runtime secret in the
+-- long-lived postgres container env).
 --
 -- Must run as the owner/superuser role (POSTGRES_USER = `devdigest`). The app
 -- password is NOT in this file: the caller sets the session GUC
@@ -32,8 +33,16 @@ BEGIN
   IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
     RAISE EXCEPTION 'grants.sql must run as the owner/superuser role, not %', current_user;
   END IF;
-  IF pw IS NULL OR length(pw) < 16 THEN
-    RAISE EXCEPTION 'APP_DB_PASSWORD is missing or shorter than 16 characters';
+  -- Never echo the value: messages name the setting only.
+  IF pw IS NULL OR pw = '' THEN
+    RAISE EXCEPTION 'APP_DB_PASSWORD is missing';
+  END IF;
+  IF pw ~* 'replace-?me' THEN
+    RAISE EXCEPTION 'APP_DB_PASSWORD is still the .env.example placeholder; generate one with: openssl rand -hex 24';
+  END IF;
+  -- `openssl rand -hex 24` = 48 hex chars. URL-safe charset (it is embedded in DATABASE_URL).
+  IF pw !~ '^[A-Za-z0-9_-]{32,}$' THEN
+    RAISE EXCEPTION 'APP_DB_PASSWORD must be >= 32 chars of [A-Za-z0-9_-]; generate one with: openssl rand -hex 24';
   END IF;
   IF current_user = 'devdigest_app' THEN
     RAISE EXCEPTION 'owner role and runtime role must differ';
@@ -94,7 +103,8 @@ REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM devdigest_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO devdigest_app;
 
 -- 4. audit_events is append-only for the app (the 0021/0023 triggers are the second
---    line; privileges are the first). Absent on a fresh volume at init time.
+--    line; privileges are the first). Same transaction as step 3, so no committed
+--    state ever has audit_events with UPDATE/DELETE for the app.
 DO $$
 BEGIN
   IF to_regclass('public.audit_events') IS NOT NULL THEN
@@ -105,14 +115,21 @@ BEGIN
 END
 $$;
 
--- 5. Future objects created by the owner (every later migration). audit_events'
---    narrowing is re-applied by step 4 on each migrate run.
+-- 5. Future objects created by the owner (every later migration).
+--    TABLES: NO default privileges — fail closed. `db:migrate` runs in its own
+--    transaction before this file; with a DML default, a table it creates (e.g. a
+--    re-created audit_events or a new append-only table) would be committed with
+--    UPDATE/DELETE for the app until step 3/4 narrowed it, and an already-running
+--    api (re-run `up -d` while the old api keeps serving) could use that window.
+--    Without a default, a new table is inaccessible to the app until steps 3 + 4
+--    grant exactly the allowed set in ONE transaction. The freshly started api
+--    never sees the gap: it starts only after `migrate` exits 0
+--    (compose: api depends_on migrate: service_completed_successfully).
+--    SEQUENCES: USAGE/SELECT by default (no write/DDL power, no window concern).
 DO $$
 BEGIN
   EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
                  'REVOKE ALL ON TABLES FROM devdigest_app', current_user);
-  EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
-                 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO devdigest_app', current_user);
   EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
                  'REVOKE ALL ON SEQUENCES FROM devdigest_app', current_user);
   EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '

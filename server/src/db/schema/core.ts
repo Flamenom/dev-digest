@@ -99,6 +99,11 @@ export const settings = pgTable(
     value: jsonb('value'),
   },
   (t) => ({
-    uq: uniqueIndex('settings_ws_user_key_uq').on(t.workspaceId, t.userId, t.key),
+    /**
+     * Settings are workspace-wide: one row per (workspace, key), the upsert
+     * arbiter. `user_id` only records who first wrote the key (0024 replaced the
+     * per-user `settings_ws_user_key_uq`, which allowed shadow rows per Admin).
+     */
+    wsKeyUq: uniqueIndex('settings_ws_key_uq').on(t.workspaceId, t.key),
   }),
 );

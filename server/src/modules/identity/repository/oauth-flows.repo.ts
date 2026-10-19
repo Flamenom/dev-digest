@@ -79,7 +79,9 @@ export class OAuthFlowsRepo {
   /**
    * Delete up to `limit` flows that expired before `now` (abandoned sign-ins).
    * The `id IN (SELECT … LIMIT n)` form bounds the work and walks
-   * `oauth_flows_expires_at_idx`. Returns the number of rows deleted.
+   * `oauth_flows_expires_at_idx`; `FOR UPDATE SKIP LOCKED` lets concurrent
+   * sweeps split the work instead of queueing on the same rows. Returns the
+   * number of rows deleted.
    */
   async sweepExpired(now: Date, limit: number = EXPIRED_SWEEP_BATCH, tx?: IdentityExecutor): Promise<number> {
     const exec = execOf(this.db, tx);
@@ -87,7 +89,8 @@ export class OAuthFlowsRepo {
       .select({ id: t.oauthFlows.id })
       .from(t.oauthFlows)
       .where(lt(t.oauthFlows.expiresAt, now))
-      .limit(limit);
+      .limit(limit)
+      .for('update', { skipLocked: true });
     const rows = await exec
       .delete(t.oauthFlows)
       .where(inArray(t.oauthFlows.id, expired))

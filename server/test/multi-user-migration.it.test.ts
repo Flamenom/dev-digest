@@ -376,3 +376,95 @@ d('migration 0023 — inet ip, metadata CHECK, TRUNCATE guard, api_tokens user i
     expect(byName.get('api_tokens_user_active_idx')).toMatch(/WHERE \(revoked_at IS NULL\)/);
   });
 });
+
+/**
+ * Migration 0024: settings become unique per (workspace_id, key). Legacy
+ * per-user duplicates (which may disagree) are collapsed to the most recently
+ * WRITTEN row — `settings` has no timestamp, so recency is the row version
+ * (age(xmin)); each statement below autocommits in its own transaction. Also
+ * adds the sessions idle-sweep and encrypted_secrets key_id indexes.
+ */
+d('migration 0024 — settings (workspace, key) uniqueness, sweep + rotation indexes', () => {
+  let container: StartedPostgreSqlContainer;
+  let sql: postgres.Sql;
+  let oldDir: string;
+  let ws1: string;
+  let ws2: string;
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer('pgvector/pgvector:pg16')
+      .withDatabase('devdigest')
+      .withUsername('devdigest')
+      .withPassword('devdigest')
+      .start();
+    sql = postgres(container.getConnectionUri(), { max: 1, onnotice: () => {} });
+    await sql`CREATE EXTENSION IF NOT EXISTS vector`;
+    oldDir = migrationsBefore('0024_');
+    await migrate(drizzle(sql), { migrationsFolder: oldDir });
+
+    const [w1] = await sql`INSERT INTO workspaces (name) VALUES ('mig-0024-a') RETURNING id`;
+    const [w2] = await sql`INSERT INTO workspaces (name) VALUES ('mig-0024-b') RETURNING id`;
+    ws1 = w1!.id as string;
+    ws2 = w2!.id as string;
+    const [a] = await sql`INSERT INTO users (email, name) VALUES ('a@0024', 'A') RETURNING id`;
+    const [b] = await sql`INSERT INTO users (email, name) VALUES ('b@0024', 'B') RETURNING id`;
+    const ua = a!.id as string;
+    const ub = b!.id as string;
+    const put = (ws: string, user: string | null, key: string, value: unknown) =>
+      sql`INSERT INTO settings (workspace_id, user_id, key, value) VALUES (${ws}, ${user}, ${key}, ${JSON.stringify(value)}::jsonb)`;
+
+    // theme: A wrote first, B later → B's value is the newest.
+    await put(ws1, ua, 'theme', 'dark');
+    await put(ws1, ub, 'theme', 'light');
+    // polling: A first, B later, then A UPDATED last → A's updated value is the newest.
+    await put(ws1, ua, 'polling_interval_min', 1);
+    await put(ws1, ub, 'polling_interval_min', 2);
+    await sql`UPDATE settings SET value = '3'::jsonb
+              WHERE workspace_id = ${ws1} AND user_id = ${ua} AND key = 'polling_interval_min'`;
+    // A null-author row and a per-user row for the same key (null ≠ null under the old index).
+    await put(ws1, null, 'model', 'old');
+    await put(ws1, ua, 'model', 'new');
+    // Single rows and another workspace's same key are untouched.
+    await put(ws1, ub, 'solo', true);
+    await put(ws2, ua, 'theme', 'ws2-dark');
+
+    await migrate(drizzle(sql), { migrationsFolder: MIGRATIONS_DIR });
+  }, 180_000);
+
+  afterAll(async () => {
+    await sql?.end({ timeout: 5 });
+    await container?.stop();
+    if (oldDir) rmSync(oldDir, { recursive: true, force: true });
+  });
+
+  it('keeps exactly one row per (workspace, key) — the most recently written', async () => {
+    const rows = await sql`SELECT workspace_id, key, value FROM settings ORDER BY workspace_id, key`;
+    const got = rows.map((r) => [r.workspace_id === ws1 ? 'ws1' : 'ws2', r.key, r.value]);
+    expect(got.filter((r) => r[0] === 'ws1')).toEqual([
+      ['ws1', 'model', 'new'],
+      ['ws1', 'polling_interval_min', 3],
+      ['ws1', 'solo', true],
+      ['ws1', 'theme', 'light'],
+    ]);
+    expect(got.filter((r) => r[0] === 'ws2')).toEqual([['ws2', 'theme', 'ws2-dark']]);
+  });
+
+  it('replaces the per-user unique index with settings_ws_key_uq and enforces it', async () => {
+    const idx = await sql`SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'settings'`;
+    const byName = new Map(idx.map((r) => [r.indexname as string, r.indexdef as string]));
+    expect(byName.has('settings_ws_user_key_uq')).toBe(false);
+    expect(byName.get('settings_ws_key_uq')).toMatch(/UNIQUE INDEX .* btree \(workspace_id, key\)$/);
+    await expect(
+      sql`INSERT INTO settings (workspace_id, user_id, key, value) VALUES (${ws1}, NULL, 'theme', '"x"'::jsonb)`,
+    ).rejects.toMatchObject({ code: '23505', constraint_name: 'settings_ws_key_uq' });
+  });
+
+  it('adds sessions_last_seen_at_idx and encrypted_secrets_key_id_idx', async () => {
+    const idx = await sql`
+      SELECT indexname, indexdef FROM pg_indexes
+      WHERE indexname IN ('sessions_last_seen_at_idx', 'encrypted_secrets_key_id_idx')`;
+    const byName = new Map(idx.map((r) => [r.indexname as string, r.indexdef as string]));
+    expect(byName.get('sessions_last_seen_at_idx')).toMatch(/ON public\.sessions USING btree \(last_seen_at\)$/);
+    expect(byName.get('encrypted_secrets_key_id_idx')).toMatch(/ON public\.encrypted_secrets USING btree \(key_id\)$/);
+  });
+});

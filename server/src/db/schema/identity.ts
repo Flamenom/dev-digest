@@ -58,6 +58,8 @@ export const sessions = pgTable(
     workspaceIdx: index('sessions_workspace_idx').on(t.workspaceId),
     /** Future expiry sweep (`delete … where expires_at < now()`). */
     expiresIdx: index('sessions_expires_at_idx').on(t.expiresAt),
+    /** Idle-timeout sweep (`delete … where last_seen_at < cutoff`). */
+    lastSeenIdx: index('sessions_last_seen_at_idx').on(t.lastSeenAt),
   }),
 );
 
@@ -139,6 +141,8 @@ export const encryptedSecrets = pgTable(
     wsKeyUq: uniqueIndex('encrypted_secrets_ws_key_uq').on(t.workspaceId, t.keyName),
     /** FK index: ON DELETE SET NULL from users. */
     updatedByIdx: index('encrypted_secrets_updated_by_idx').on(t.updatedBy),
+    /** Master-key rotation scan (`listByKeyId`: rows sealed by a given key). */
+    keyIdIdx: index('encrypted_secrets_key_id_idx').on(t.keyId),
     nonceLenCk: check('encrypted_secrets_nonce_len_ck', sql`octet_length(${t.nonce}) = 12`),
   }),
 );

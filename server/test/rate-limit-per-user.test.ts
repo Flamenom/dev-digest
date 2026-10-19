@@ -234,6 +234,28 @@ describe('rejectionKey', () => {
     expect(rejectionKey('fe80::1%eth0')).toBe('fe80:0:0:0::/64');
     expect(rejectionKey('not-an-ip')).toBe('not-an-ip');
   });
+
+  it('folds every spelling of an IPv4-mapped address to its dotted IPv4 key', () => {
+    for (const spelling of [
+      '::ffff:1.2.3.4',
+      '::FFFF:1.2.3.4',
+      '::ffff:102:304',
+      '::ffff:0102:0304',
+      '0:0:0:0:0:ffff:102:304',
+      '0000:0000:0000:0000:0000:ffff:0102:0304',
+      '0:0:0:0:0:ffff:1.2.3.4',
+      '0::ffff:102:304',
+    ]) {
+      expect(rejectionKey(spelling), spelling).toBe('1.2.3.4');
+    }
+    // Two distinct IPv4 clients never share a bucket via the mapped form…
+    expect(rejectionKey('::ffff:a00:7')).toBe('10.0.0.7');
+    expect(rejectionKey('::ffff:a00:8')).toBe('10.0.0.8');
+    expect(rejectionKey('::ffff:ffff:ffff')).toBe('255.255.255.255');
+    // …and near-misses that are NOT IPv4-mapped stay IPv6 /64 buckets.
+    expect(rejectionKey('::fffe:102:304')).toBe('0:0:0:0::/64');
+    expect(rejectionKey('1::ffff:102:304')).toBe('1:0:0:0::/64');
+  });
 });
 
 describe('RejectionLimiter', () => {

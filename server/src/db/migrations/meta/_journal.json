@@ -169,6 +169,13 @@
       "when": 1792422981159,
       "tag": "0023_demonic_joseph",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792426982785,
+      "tag": "0024_fixed_famine",
+      "breakpoints": true
     }
   ]
 }
