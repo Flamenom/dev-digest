@@ -48,6 +48,7 @@ is shared via **tsconfig path aliases**, not npm.
 ## Read when
 - **`README.md`** — first, for the end-to-end flow and quick start.
 - **`docs/architecture.md`** — when changing the review pipeline / repo-intel / cross-package wiring.
+- **`server/README.md`** — before adding or changing an API endpoint: the API map + route conventions.
 - **`specs/02-skills-lab.md`** — when touching skills (server module, /skills UI, agent Skills tab, prompt injection).
 - **`specs/03-conventions-extractor.md`** — when touching the Conventions Extractor (server module, /conventions UI, extraction/grounding pipeline).
 - **`specs/04-intent-layer.md`** — when touching the Intent Layer (intent server module, classifier, scope filter in reviewer-core, Overview IntentCard).
@@ -55,11 +56,14 @@ is shared via **tsconfig path aliases**, not npm.
 - **`specs/2026-08-27-pr-brief.md`** — when touching PR Brief (POST /pulls/:id/brief, brief cache, PrBriefCard on Overview, Risk Areas in IntentCard, Review Focus block).
 - **`specs/2026-10-16-gitlab-merge-requests.md`** — when touching GitLab support (gitlab.com repos + nested groups, per-repo provider client, MR import, PR sync-on-open for all providers (stale-while-revalidate, single-flight, 60 s TTL), read-only comments, provider-aware deep links).
 - **`server/CLAUDE.md` · `client/CLAUDE.md` · `reviewer-core/CLAUDE.md` · `e2e/CLAUDE.md`** — auto-load per folder; read before editing that package.
-- **`INSIGHTS.md`** — before debugging a cross-cutting issue.
+- **`INSIGHTS.md`** (root, or the package's own `<package>/INSIGHTS.md`) — on unexpected behavior,
+  before debugging: known gotchas are recorded there.
 
 ## Insights loop
 - **Session start:** before working a request, read the in-scope `INSIGHTS.md` (root or the
   touched package) and confirm the top ~3 relevant points before touching code.
+- **Mid-session:** when the user reports a discovery or root cause and wants it recorded, invoke
+  the `engineering-insights` skill — don't just answer in chat.
 - **Session end:** run `/engineering-insights` — record only something substantial and not
   already present; if nothing substantial came up, write nothing. Always re-read the target
   file first; insert-only, never overwrite existing entries.
