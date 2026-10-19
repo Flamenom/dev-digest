@@ -1,0 +1,31 @@
+# DevDigest reverse proxy — the ONLY publicly published service (80/443).
+#
+# A bare hostname site address gives automatic HTTPS: Caddy obtains and renews
+# the certificate (state in the caddy_data volume) and answers plain HTTP with a
+# 308 redirect to HTTPS. PUBLIC_HOSTNAME must be a bare DNS name here (no port).
+#
+# One origin: /api/* → API (prefix STRIPPED, so the API keeps its own paths and
+# config.publicApiBase = https://<host>/api lines up), everything else → web.
+# reverse_proxy sets X-Forwarded-For / X-Forwarded-Proto / X-Forwarded-Host from
+# the real connection and ignores client-supplied values (no trusted_proxies),
+# and the API trusts them only from this container's static IP (TRUST_PROXY).
+
+{$PUBLIC_HOSTNAME} {
+	header {
+		# Deferred so the value is set once even if the upstream also sends it.
+		>Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	handle_path /api/* {
+		# No `encode` here: SSE (text/event-stream) must stream unbuffered.
+		reverse_proxy api:3001 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		encode zstd gzip
+		reverse_proxy web:3000
+	}
+}
