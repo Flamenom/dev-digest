@@ -1,4 +1,4 @@
-# Spec: Multi-user server mode (Google sign-in, Admin/Member roles, encrypted secrets)   |   Spec ID: SPEC-2026-10-19-multi-user-server   |   Status: draft
+# Spec: Multi-user server mode (Google sign-in, Admin/Member roles, encrypted secrets)   |   Spec ID: SPEC-2026-10-19-multi-user-server   |   Status: approved
 Supersedes: none. Builds on `2026-10-16-gitlab-merge-requests.md`, which made PR-list sync
 safe for many viewers and listed "multi-user server mode" as its own future spec. No rule of
 that spec changes. Its single-flight, TTL and service-account rules carry over unchanged.
