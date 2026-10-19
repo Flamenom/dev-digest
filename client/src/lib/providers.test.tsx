@@ -9,7 +9,7 @@ import { api } from "./api";
 import {
   navigation,
   resetSignInRedirect,
-} from "../components/auth-gate/sign-in-redirect";
+} from "./sign-in-redirect";
 
 /* The global error policy (AC-34, AC-35): 401 → exactly one sign-in redirect
    (never from /sign-in itself); 403 authz → toast + session re-read. */

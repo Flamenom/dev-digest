@@ -142,7 +142,7 @@ d('migration 0021 — multi-user server mode', () => {
 
     for (const table of Object.keys(SNAPSHOT_TABLES)) before[table] = await rows(table);
 
-    // Apply the real folder: only 0021 is pending.
+    // Apply the real folder: 0021 (+ follow-up 0022 indexes) are pending.
     await migrate(drizzle(sql), { migrationsFolder: MIGRATIONS_DIR });
   }, 180_000);
 
@@ -247,5 +247,26 @@ d('migration 0021 — multi-user server mode', () => {
     // Users without a Google identity (e.g. the local system user) are not constrained.
     await sql`INSERT INTO users (email, name) VALUES ('ANN@onlytraf.com', 'Legacy')`;
     await sql`INSERT INTO users (email, name) VALUES ('ann@onlytraf.com', 'Legacy 2')`;
+  });
+
+  it('indexes the FK and expiry columns introduced by 0021 (migration 0022)', async () => {
+    const expected: [string, string, string][] = [
+      ['sessions', 'sessions_workspace_idx', 'workspace_id'],
+      ['sessions', 'sessions_expires_at_idx', 'expires_at'],
+      ['oauth_flows', 'oauth_flows_expires_at_idx', 'expires_at'],
+      ['api_tokens', 'api_tokens_workspace_idx', 'workspace_id'],
+      ['encrypted_secrets', 'encrypted_secrets_updated_by_idx', 'updated_by'],
+      ['workspace_members', 'workspace_members_status_changed_by_idx', 'status_changed_by'],
+    ];
+    const found = await sql`
+      SELECT tablename, indexname, indexdef FROM pg_indexes
+      WHERE schemaname = 'public' AND indexname IN ${sql(expected.map(([, name]) => name))}`;
+    const byName = new Map(found.map((r) => [r.indexname as string, r]));
+    for (const [table, name, column] of expected) {
+      const idx = byName.get(name);
+      expect(idx, name).toBeDefined();
+      expect(idx!.tablename, name).toBe(table);
+      expect(idx!.indexdef, name).toContain(`btree (${column})`);
+    }
   });
 });

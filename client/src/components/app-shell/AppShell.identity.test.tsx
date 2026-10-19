@@ -7,7 +7,7 @@ import type { CurrentSession, Role } from "@devdigest/shared";
 import authMessages from "../../../messages/en/auth.json";
 import shellMessages from "../../../messages/en/shell.json";
 import { RepoProvider } from "../../lib/repo-context";
-import { navigation, resetSignInRedirect } from "../auth-gate/sign-in-redirect";
+import { navigation, resetSignInRedirect } from "@/lib/sign-in-redirect";
 import { AppShell } from "./AppShell";
 
 /* AC-32: google mode shows avatar, name, role and "Sign out" (which signs out

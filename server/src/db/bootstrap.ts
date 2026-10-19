@@ -17,6 +17,12 @@ import { DEFAULT_WORKSPACE_NAME, SYSTEM_USER_EMAIL } from './seed.js';
  * an Admin is not overridden). Serialized by a transaction-scoped advisory lock
  * so two concurrent runs cannot create two default workspaces (the name has no
  * unique constraint).
+ *
+ * Env contract (least privilege, deploy `migrate` service): the CLI reads ONLY
+ * `DATABASE_URL`. It must never call `loadConfig()` — in google mode that would
+ * demand the Google client secret and the secrets master key, which the
+ * migrate container deliberately does not receive. Pinned by
+ * test/db-bootstrap.it.test.ts (CLI run with a DATABASE_URL-only env).
  */
 export interface BootstrapResult {
   workspaceId: string;

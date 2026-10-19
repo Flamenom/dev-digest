@@ -88,6 +88,9 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
     },
     async (req): Promise<ConnTestResultHost> => {
       const { provider, key } = req.body;
+      // Resolved OUTSIDE the try: an auth/context failure must surface as its
+      // own error envelope, not as a `{ ok: false }` connection result.
+      const actorUserId = key ? (await getContext(container, req)).userId : null;
       try {
         // If the UI supplied a key, persist it (BYO key) before testing so the
         // test reflects — and the rest of the app can use — the new value.
@@ -96,8 +99,7 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
           if (!container.secrets.set) {
             return { provider, ok: false, message: 'Secrets backend is read-only' };
           }
-          const { userId } = await getContext(container, req);
-          await container.secretsWriter.set(SECRET_KEY_BY_PROVIDER[provider], key, userId);
+          await container.secretsWriter.set(SECRET_KEY_BY_PROVIDER[provider], key, actorUserId);
           container.invalidateSecretCaches();
         }
         if (provider === GITLAB_PROVIDER) {

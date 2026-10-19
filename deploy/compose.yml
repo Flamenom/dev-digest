@@ -25,7 +25,7 @@ x-hardening: &hardening
   cap_drop:
     - ALL
 
-# Shared by `api` and `migrate` (bootstrap loads the same validated config).
+# `api` only. `migrate` gets its own minimal env below (least privilege).
 x-api-env: &api-env
   NODE_ENV: production
   AUTH_MODE: google
@@ -118,7 +118,12 @@ services:
     image: devdigest-api:local
     restart: "no"
     command: ["sh", "-c", "pnpm db:migrate && pnpm db:bootstrap"]
-    environment: *api-env
+    # Least privilege: db:migrate and db:bootstrap read only DATABASE_URL (they
+    # never load the app config), so no Google client secret, master key or
+    # other API setting is handed to this container.
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://devdigest:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/devdigest
     networks:
       - db
     depends_on:
@@ -130,6 +135,17 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    # Drop everything, re-add only what the official entrypoint needs as root:
+    # chown/chmod the data dir (CHOWN, FOWNER, DAC_OVERRIDE) and step down to
+    # the postgres user via gosu (SETUID, SETGID).
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
     environment:
       POSTGRES_USER: devdigest
       POSTGRES_DB: devdigest

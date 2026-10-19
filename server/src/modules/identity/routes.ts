@@ -1,7 +1,16 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { ApiTokenCreateInput, MemberUpdate } from '@devdigest/shared';
+import {
+  ApiTokenCreated,
+  ApiTokenCreateInput,
+  ApiTokenListItem,
+  CurrentSession,
+  Member,
+  MemberList,
+  MemberUpdate,
+  SignOutResult,
+} from '@devdigest/shared';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
 import { AppError } from '../../platform/errors.js';
@@ -44,7 +53,12 @@ import {
  *
  * Secrets discipline: `code`, `state`, cookie values and token values are never
  * logged or echoed. The callback route logs at `warn` so the default request
- * log line (which carries the URL query) is not written for it.
+ * log line is not written for it, the logger's `req` serializer redacts
+ * `code` / `state` query values (app.ts), and an unexpected callback error is
+ * answered with a redirect instead of being rethrown.
+ *
+ * Every 2xx body is serialized through its shared contract (`schema.response`),
+ * so an extra field can never leak out of a service result.
  */
 
 const StartQuery = z.object({
@@ -100,11 +114,11 @@ export default async function identityRoutes(app: FastifyInstance) {
     async (req, reply) => {
       requireGoogle();
       if (refuseInsecure(req, reply)) return reply;
-      const signIn = await container.signIn();
       reply.header('cache-control', NO_STORE);
       // The flow is single-use: the binding cookie is spent either way.
       reply.setCookie(oauthBindingCookie.name, '', oauthBindingCookie.clear());
       try {
+        const signIn = await container.signIn();
         const result = await signIn.callback({
           code: queryString(req.query.code),
           state: queryString(req.query.state),
@@ -115,15 +129,25 @@ export default async function identityRoutes(app: FastifyInstance) {
         reply.setCookie(sessionCookie.name, result.sessionValue, sessionCookie.set());
         return reply.redirect(postSignInLocation(publicOrigin, result.returnTo));
       } catch (err) {
-        if (!(err instanceof AuthFlowError)) throw err;
-        return reply.redirect(signInErrorLocation(publicOrigin, err.flowCode));
+        if (err instanceof AuthFlowError) {
+          return reply.redirect(signInErrorLocation(publicOrigin, err.flowCode));
+        }
+        // Unexpected (DB down, IdP client bug, …): never rethrow — the error
+        // path would log the request URL, which carries `code` / `state`. Log
+        // the error class only and send the user back to the sign-in screen.
+        req.log.error(
+          { errName: (err as Error)?.name ?? typeof err },
+          'sign-in callback failed unexpectedly',
+        );
+        return reply.redirect(signInErrorLocation(publicOrigin, 'auth_idp_unavailable'));
       }
     },
   );
 
   // ── Session ─────────────────────────────────────────────────────────────────
 
-  r.get('/auth/session', async (req, reply) => {
+  // 200 only: the signed-out 401 is the error envelope (`details.allowed_domain`).
+  r.get('/auth/session', { schema: { response: { 200: CurrentSession } } }, async (req, reply) => {
     reply.header('cache-control', NO_STORE);
     if (!google) {
       const [user, workspace] = await Promise.all([
@@ -158,7 +182,7 @@ export default async function identityRoutes(app: FastifyInstance) {
     });
   });
 
-  r.post('/auth/sign-out', async (req, reply) => {
+  r.post('/auth/sign-out', { schema: { response: { 200: SignOutResult } } }, async (req, reply) => {
     requireGoogle();
     const ctx = await getContext(container, req);
     const signIn = await container.signIn();
@@ -173,14 +197,14 @@ export default async function identityRoutes(app: FastifyInstance) {
 
   // ── Members ─────────────────────────────────────────────────────────────────
 
-  r.get('/members', async (req) => {
+  r.get('/members', { schema: { response: { 200: MemberList } } }, async (req) => {
     const { workspaceId } = await getContext(container, req);
     return memberListToDto(await container.members.list(workspaceId));
   });
 
   r.patch(
     '/members/:userId',
-    { schema: { params: MemberParams, body: MemberUpdate } },
+    { schema: { params: MemberParams, body: MemberUpdate, response: { 200: Member } } },
     async (req) => {
       const ctx = await getContext(container, req);
       const member = await container.members.update({ ...ctx, ip: req.ip }, req.params.userId, req.body);
@@ -190,18 +214,22 @@ export default async function identityRoutes(app: FastifyInstance) {
 
   // ── Personal API tokens (google mode) ─────────────────────────────────────────
 
-  r.get('/tokens', async (req) => {
+  r.get('/tokens', { schema: { response: { 200: z.array(ApiTokenListItem) } } }, async (req) => {
     requireGoogle();
     const ctx = await getContext(container, req);
     return container.tokens.list(ctx);
   });
 
-  r.post('/tokens', { schema: { body: ApiTokenCreateInput } }, async (req, reply) => {
-    requireGoogle();
-    const ctx = await getContext(container, req);
-    const created = await container.tokens.create({ ...ctx, ip: req.ip }, req.body);
-    return reply.status(201).header('cache-control', NO_STORE).send(created);
-  });
+  r.post(
+    '/tokens',
+    { schema: { body: ApiTokenCreateInput, response: { 201: ApiTokenCreated } } },
+    async (req, reply) => {
+      requireGoogle();
+      const ctx = await getContext(container, req);
+      const created = await container.tokens.create({ ...ctx, ip: req.ip }, req.body);
+      return reply.status(201).header('cache-control', NO_STORE).send(created);
+    },
+  );
 
   r.delete('/tokens/:id', { schema: { params: IdParams } }, async (req, reply) => {
     requireGoogle();

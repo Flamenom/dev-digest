@@ -31,7 +31,7 @@ Config (env, set in the `env` block of the server entry in your MCP client confi
 | Variable | Default | Purpose |
 |---|---|---|
 | `DEVDIGEST_API_BASE` | `http://localhost:3001` | DevDigest API base URL (for a shared server: `https://<host>/api`). |
-| `DEVDIGEST_API_TOKEN` | unset | Personal API token (Settings → API tokens) for a server-mode DevDigest. When set, every request carries `Authorization: Bearer <token>`; when unset, requests are exactly as in local mode. A 401 tells you to create/renew the token; a 403 passes the server's reason through. Treat it as a secret — keep it out of committed config. |
+| `DEVDIGEST_API_TOKEN` | unset | Personal API token (Settings → API tokens) for a server-mode DevDigest. When set, every request carries `Authorization: Bearer <token>`; when unset, requests are exactly as in local mode. A 401 tells you to create/renew the token; a 403 passes the server's reason through. Treat it as a secret — keep it out of committed config. With a token set, `DEVDIGEST_API_BASE` must be `https://`, or `http://` to a loopback host (`localhost`, `127.0.0.1`, `[::1]`); any other base makes the server refuse to start with a config error naming the setting (the token is never sent in cleartext over the network). |
 
 ## MCP Inspector
 

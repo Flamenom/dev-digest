@@ -45,6 +45,10 @@ export const sessions = pgTable(
     idHashUq: uniqueIndex('sessions_id_hash_uq').on(t.idHash),
     /** Deactivation / sign-out-everywhere: `delete … where user_id = ?`. */
     userIdx: index('sessions_user_idx').on(t.userId),
+    /** FK index: workspace-cascade deletes + per-workspace session sweeps. */
+    workspaceIdx: index('sessions_workspace_idx').on(t.workspaceId),
+    /** Future expiry sweep (`delete … where expires_at < now()`). */
+    expiresIdx: index('sessions_expires_at_idx').on(t.expiresAt),
   }),
 );
 
@@ -64,6 +68,8 @@ export const oauthFlows = pgTable(
   },
   (t) => ({
     stateHashUq: uniqueIndex('oauth_flows_state_hash_uq').on(t.stateHash),
+    /** Future expiry sweep of abandoned flows. */
+    expiresIdx: index('oauth_flows_expires_at_idx').on(t.expiresAt),
   }),
 );
 
@@ -92,6 +98,8 @@ export const apiTokens = pgTable(
     userActiveIdx: index('api_tokens_user_active_idx')
       .on(t.userId)
       .where(sql`${t.revokedAt} is null`),
+    /** FK index: workspace-cascade deletes. */
+    workspaceIdx: index('api_tokens_workspace_idx').on(t.workspaceId),
     nameLenCk: check('api_tokens_name_len_ck', sql`char_length(${t.name}) between 1 and 64`),
   }),
 );
@@ -118,6 +126,8 @@ export const encryptedSecrets = pgTable(
   (t) => ({
     /** Upsert arbiter (`ON CONFLICT (workspace_id, key_name)`). */
     wsKeyUq: uniqueIndex('encrypted_secrets_ws_key_uq').on(t.workspaceId, t.keyName),
+    /** FK index: ON DELETE SET NULL from users. */
+    updatedByIdx: index('encrypted_secrets_updated_by_idx').on(t.updatedBy),
     nonceLenCk: check('encrypted_secrets_nonce_len_ck', sql`octet_length(${t.nonce}) = 12`),
   }),
 );

@@ -17,6 +17,19 @@
 		-Server
 	}
 
+	# Baseline browser hardening for EVERY response. `?` = set only when the
+	# upstream did not, so the API's own (stricter) helmet headers win on /api/*
+	# and the web app gets these. One directive per header on purpose: `?` lines
+	# grouped in one block become ONE handler whose condition is "ALL absent".
+	# The CSP deliberately has no script-src/style-src (Next.js inline bootstrap
+	# scripts + React inline styles would need nonces); it locks framing, <base>,
+	# plugins and form targets. form-action 'self' suffices: Google sign-in is a
+	# link navigation to /api/auth/google/start (302 to Google), never a form post.
+	header ?X-Content-Type-Options "nosniff"
+	header ?Referrer-Policy "strict-origin-when-cross-origin"
+	header ?X-Frame-Options "DENY"
+	header ?Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self'"
+
 	handle_path /api/* {
 		# No `encode` here: SSE (text/event-stream) must stream unbuffered.
 		reverse_proxy api:3001 {

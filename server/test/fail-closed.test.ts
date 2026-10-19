@@ -68,4 +68,28 @@ describe('fail closed (google mode)', () => {
     const res = await t.app.inject(anonymous({ method: 'GET', url: '/health' }));
     expect(res.statusCode).toBe(200);
   });
+
+  it('an unexpected sign-in callback error → redirect to /sign-in, and no log line carries code / state', async () => {
+    const code = 'oauth-code-must-not-be-logged-4f1c';
+    const state = 'oauth-state-must-not-be-logged-9b2e';
+    logs.length = 0;
+    // The recording DB throws on use → `container.signIn()` fails unexpectedly
+    // (not an AuthFlowError).
+    const res = await t.app.inject(
+      anonymous({ method: 'GET', url: `/auth/google/callback?code=${code}&state=${state}` }),
+    );
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe(`${t.config.publicOrigin}/sign-in?error=auth_idp_unavailable`);
+    expect(res.body).not.toContain(code);
+
+    // Any other route: the request log line's URL has the values redacted.
+    await t.app.inject(anonymous({ method: 'GET', url: `/health?code=${code}&state=${state}&keep=1` }));
+
+    const joined = logs.join('\n');
+    expect(joined).toContain('sign-in callback failed unexpectedly');
+    expect(joined).toContain('keep=1');
+    expect(joined).toContain('code=%5BREDACTED%5D');
+    expect(joined).not.toContain(code);
+    expect(joined).not.toContain(state);
+  });
 });

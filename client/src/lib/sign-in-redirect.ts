@@ -1,4 +1,4 @@
-/* sign-in-redirect — the ONE way the client leaves the app for the sign-in
+/* lib/sign-in-redirect — the ONE way the client leaves the app for the sign-in
    screen (AC-35). Used by the global 401 handler (providers.tsx), <AuthGate>
    and sign-out. A module-level flag makes it fire at most once per page load,
    and it never fires while already on /sign-in — so a burst of parallel 401s

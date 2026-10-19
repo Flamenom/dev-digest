@@ -19,6 +19,7 @@ import {
 import { MockEmbedder, MockGitClient, MockLLMProvider } from '../src/adapters/mocks.js';
 import { OAUTH_BINDING_COOKIE, SESSION_COOKIE } from '../src/modules/identity/constants.js';
 import * as t from '../src/db/schema.js';
+import { auditWritesSettled } from '../src/platform/auth/audit-hook.js';
 
 /**
  * T28 — google-mode security scan, end to end over `app.inject` (real Postgres,
@@ -565,6 +566,8 @@ d('google-mode security scan (T28, Postgres)', () => {
 
   it('AC-52: every audited action of the scenario → exactly one row with actor / action / target / time', async () => {
     const db = pg.handle.db;
+    // Route-driven audit rows are written after the response (onResponse).
+    await auditWritesSettled(app1.app);
     const rows = await db.select().from(t.auditEvents).where(eq(t.auditEvents.workspaceId, workspaceId));
     const one = (action: string, actor: string | null, targetId?: string | null) => {
       const hits = rows.filter(
@@ -763,6 +766,7 @@ d('google-mode security scan (T28, Postgres)', () => {
       expect(r1.statusCode).toBe(200);
       const r2 = await put('127.0.0.1', '192.0.2.200', 'light');
       expect(r2.statusCode).toBe(200);
+      await auditWritesSettled(app3.app);
       const audits = await pg.handle.db
         .select({ ip: t.auditEvents.ip, at: t.auditEvents.createdAt })
         .from(t.auditEvents)

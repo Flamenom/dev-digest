@@ -8,6 +8,7 @@ import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/platform/config.js';
 import { MockLLMProvider, MockEmbedder, MockGitClient } from '../src/adapters/mocks.js';
 import * as t from '../src/db/schema.js';
+import { auditWritesSettled } from '../src/platform/auth/audit-hook.js';
 
 /**
  * T24 — reviews attribution + cancel ownership (Postgres):
@@ -197,6 +198,8 @@ d('T24 reviews attribution (google mode)', () => {
     expect(after.findings[0].accepted_at).toBeNull();
 
     // The audit hook (T21) writes one row per action — not duplicated by the module.
+    // Written after the response (onResponse) → wait for in-flight writes.
+    await auditWritesSettled(g.app);
     const audit = await g.db
       .select()
       .from(t.auditEvents)

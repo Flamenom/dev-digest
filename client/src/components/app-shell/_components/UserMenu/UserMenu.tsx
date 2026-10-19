@@ -8,7 +8,7 @@ import { useTranslations } from "next-intl";
 import { Button } from "@devdigest/ui";
 import type { CurrentSessionUser } from "@devdigest/shared";
 import { ActorAvatar } from "../../../actor-label";
-import { useSignOut } from "../../../../lib/hooks/session";
+import { useSignOut } from "@/lib/hooks";
 import { USER_AVATAR_SIZE } from "../../constants";
 import { s } from "./styles";
 

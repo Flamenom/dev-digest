@@ -28,7 +28,7 @@ import { ToastProvider, notify } from "./toast";
 import { ApiError } from "./api";
 import { SESSION_QUERY_KEY } from "./hooks/session";
 import { AuthGate } from "../components/auth-gate";
-import { redirectToSignIn } from "../components/auth-gate/sign-in-redirect";
+import { redirectToSignIn } from "./sign-in-redirect";
 
 const AUTHZ_CODES: ReadonlySet<string> = new Set(AuthzErrorCode.options);
 

@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { MockGitHubClient, MockLLMProvider } from '../src/adapters/mocks.js';
 import { registeredRouteKeys } from '../src/platform/auth/guard.js';
-import { ROUTE_POLICY, lookupPolicy, unclassifiedRoutes } from '../src/platform/auth/route-policy.js';
+import { auditWritesSettled } from '../src/platform/auth/audit-hook.js';
+import {
+  ROUTE_POLICY,
+  lookupPolicy,
+  savedSecretKeyName,
+  unclassifiedRoutes,
+} from '../src/platform/auth/route-policy.js';
 import {
   anonymous,
   asSession,
@@ -267,6 +273,7 @@ describe('route-driven audit descriptors (AC-52, google mode)', () => {
         }),
       );
 
+      await auditWritesSettled(t.app); // written in onResponse, after the reply
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({
         workspaceId: admin.principal.workspaceId,
@@ -291,4 +298,18 @@ describe('route-driven audit descriptors (AC-52, google mode)', () => {
     expect(create.targetId!({ params: {}, body: {}, response: () => ({ id: TEST_UUID }) })).toBe(TEST_UUID);
     expect(ROUTE_POLICY['POST /findings/:id/dismiss']!.audit!.action).toBe('finding.dismiss');
   });
+
+  it.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty'])(
+    'secret-save descriptor: prototype key provider %s → no key name, no event, no metadata leak',
+    (provider) => {
+      const body = { provider, key: 'some-value' };
+      expect(savedSecretKeyName(body)).toBeNull();
+      const policy = ROUTE_POLICY['POST /settings/test-connection']!;
+      const ctx = { params: {}, body, response: () => ({}) };
+      expect(policy.audit!.when!(ctx)).toBe(false);
+      expect(policy.audit!.targetId!(ctx)).toBeNull();
+      expect(policy.audit!.metadata!(ctx)).toEqual({ key_name: null });
+      expect(typeof policy.sessionOnly === 'function' && policy.sessionOnly({ body })).toBe(false);
+    },
+  );
 });

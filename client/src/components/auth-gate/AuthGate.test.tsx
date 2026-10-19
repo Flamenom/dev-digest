@@ -5,7 +5,7 @@ import { NextIntlClientProvider } from "next-intl";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import authMessages from "../../../messages/en/auth.json";
 import { AuthGate } from "./AuthGate";
-import { navigation, resetSignInRedirect, safeReturnTo } from "./sign-in-redirect";
+import { navigation, resetSignInRedirect, safeReturnTo } from "@/lib/sign-in-redirect";
 
 /* AC-32 (local half) + AC-35: local mode renders the app untouched; google
    mode with no session redirects once to /sign-in with the return target. */

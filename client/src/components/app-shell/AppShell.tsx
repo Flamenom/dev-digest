@@ -7,7 +7,7 @@
 
 import React from "react";
 import { AppFrame, CommandPalette, ShortcutsHelp, type Crumb } from "@devdigest/ui";
-import { useSession } from "../../lib/hooks/session";
+import { useSession } from "@/lib/hooks";
 import { useGlobalShortcuts, useShellCommands, useShellContext } from "./hooks";
 import { UserMenu } from "./_components/UserMenu";
 

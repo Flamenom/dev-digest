@@ -93,6 +93,9 @@ export function savedSecretKeyName(body: unknown): SecretKey | null {
   if (!body || typeof body !== 'object') return null;
   const { provider, key } = body as { provider?: unknown; key?: unknown };
   if (typeof key !== 'string' || key.length === 0 || typeof provider !== 'string') return null;
+  // Own keys only: `provider` is untrusted, and `__proto__` / `constructor` /
+  // `toString` would otherwise resolve to Object.prototype members.
+  if (!Object.hasOwn(SECRET_KEY_BY_PROVIDER, provider)) return null;
   return (SECRET_KEY_BY_PROVIDER as Record<string, SecretKey>)[provider] ?? null;
 }
 

@@ -18,7 +18,7 @@
 
 import React from "react";
 import { useTranslations } from "next-intl";
-import { useCan } from "../../lib/permissions";
+import { useCan } from "@/lib/permissions";
 import { s } from "./styles";
 
 export interface AdminGateControlProps {

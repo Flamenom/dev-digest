@@ -20,6 +20,7 @@ import { AppError } from './platform/errors.js';
 import { modules } from './modules/index.js';
 import { claimInstance, type InstanceClaim } from './db/instance-claim.js';
 import {
+  DEFAULT_REJECTION_LIMIT,
   installAuthGuard,
   installRoutePolicyHooks,
   rateLimitKey,
@@ -64,6 +65,48 @@ const REDACTED_LOG_PATHS = [
   'req.headers.cookie',
   'res.headers["set-cookie"]',
 ];
+
+/** Query parameters whose VALUES never reach a log line (OAuth callback `code` / `state`). */
+const REDACTED_QUERY_PARAMS = new Set(['code', 'state']);
+
+/**
+ * The request URL as logged: `code` / `state` query values replaced with
+ * `[REDACTED]` on every route (the OAuth callback carries them; an error log
+ * line for any request includes the URL). Exported for tests.
+ */
+export function redactLogUrl(url: string): string {
+  const q = url.indexOf('?');
+  if (q === -1) return url;
+  const params = new URLSearchParams(url.slice(q + 1));
+  let changed = false;
+  for (const key of new Set(params.keys())) {
+    if (REDACTED_QUERY_PARAMS.has(key.toLowerCase())) {
+      params.set(key, '[REDACTED]');
+      changed = true;
+    }
+  }
+  return changed ? `${url.slice(0, q)}?${params.toString()}` : url;
+}
+
+/** Fastify's default `req` serializer, with the URL passed through {@link redactLogUrl}. */
+const LOG_SERIALIZERS = {
+  req: (req: {
+    method?: string;
+    url?: string;
+    version?: string;
+    host?: string;
+    hostname?: string;
+    ip?: string;
+    socket?: { remotePort?: number };
+  }) => ({
+    method: req.method,
+    url: typeof req.url === 'string' ? redactLogUrl(req.url) : req.url,
+    version: req.version,
+    host: req.host ?? req.hostname,
+    remoteAddress: req.ip,
+    remotePort: req.socket?.remotePort,
+  }),
+};
 
 /** Strict-Transport-Security in google mode (AC-62): one year, subdomains. */
 const HSTS = { maxAge: 31_536_000, includeSubDomains: true } as const;
@@ -140,6 +183,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       ? {
           level: config.logLevel === 'silent' ? 'info' : config.logLevel,
           redact: REDACTED_LOG_PATHS,
+          serializers: LOG_SERIALIZERS,
           stream: opts.logStream,
         }
       : config.logLevel === 'silent'
@@ -147,6 +191,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
         : {
             level: config.logLevel,
             redact: REDACTED_LOG_PATHS,
+            serializers: LOG_SERIALIZERS,
             transport:
               config.nodeEnv === 'development'
                 ? { target: 'pino-pretty', options: { colorize: true } }
@@ -169,8 +214,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   try {
     await configureApp(app, container, db, config, opts);
   } catch (err) {
-    await claim?.release().catch(() => undefined);
-    await handle?.close().catch(() => undefined);
+    // The onClose hooks above release the claim + handle exactly once.
+    await app.close().catch(() => undefined);
     throw err;
   }
   return app;
@@ -227,10 +272,14 @@ async function configureApp(
 
   // google mode: deny by default (AC-28). Root hooks added BEFORE rate-limit
   // and the modules, so they run first for every route.
+  const rateLimitOn = opts.rateLimit ?? config.nodeEnv !== 'test';
   if (google) {
     installAuthGuard(app, {
       principals: () => container.principals,
       publicOrigin: config.publicOrigin ?? config.webOrigin,
+      // Rejected requests never reach the route-level limiter below — the
+      // guard charges them per IP itself.
+      rejectionLimit: rateLimitOn ? DEFAULT_REJECTION_LIMIT : null,
     });
     installAuditHook(app, { audit: () => container.audit });
   }
@@ -243,7 +292,7 @@ async function configureApp(
   // Global rate limit. Disabled under test so integration suites can hammer
   // endpoints via inject(); per-route overrides live on the routes themselves.
   // Keyed per user when authenticated, per IP otherwise (AC-53).
-  if (opts.rateLimit ?? config.nodeEnv !== 'test') {
+  if (rateLimitOn) {
     await app.register(rateLimit, { max: 120, timeWindow: '1 minute', keyGenerator: rateLimitKey });
   }
 

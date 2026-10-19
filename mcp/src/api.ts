@@ -3,7 +3,7 @@
    normalized into ApiError so errors.ts can map them to forward-leading
    tool errors. Everything above receives the DevDigestApi interface. */
 
-import { API_BASE, API_TOKEN, FETCH_TIMEOUT_MS } from './config.js';
+import { API_BASE, API_TOKEN, FETCH_TIMEOUT_MS, assertTokenTransport } from './config.js';
 
 /** Normalized API failure. `status: 0` = network error (API down); `code: 'timeout'` = HTTP timeout. */
 export class ApiError extends Error {
@@ -72,8 +72,11 @@ async function apiFetch<T>(
   return (await res.json()) as T;
 }
 
-/** Build the real HTTP-backed DevDigestApi (composition root only; tests inject a fake). */
+/** Build the real HTTP-backed DevDigestApi (composition root only; tests inject a fake).
+    Throws ConfigError (naming the setting, never the token) when a token would
+    be sent over cleartext http to a non-loopback host. */
 export function createApi(base: string = API_BASE, token: string | undefined = API_TOKEN): DevDigestApi {
+  assertTokenTransport(base, token);
   return {
     get: <T>(path: string) => apiFetch<T>(base, path, token),
     post: <T>(path: string, body?: unknown) =>

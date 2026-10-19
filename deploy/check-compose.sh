@@ -8,7 +8,9 @@
 # api are never published and postgres is only on the internal network; api runs
 # exactly one replica, depends on `migrate` completing, and trusts forwarded
 # headers only from the proxy's static IP; `migrate` is a one-shot
-# `pnpm db:migrate && pnpm db:bootstrap`; persistent volumes are mounted;
+# `pnpm db:migrate && pnpm db:bootstrap` with a secret-free env; postgres drops
+# all capabilities but the entrypoint minimum; persistent volumes are mounted;
+# the Caddyfile sets HSTS + nosniff/Referrer-Policy/X-Frame-Options/CSP;
 # Dockerfiles use pinned base images, a non-root user and no secret ARG/ENV.
 # Exit 0 = all checks pass.
 
@@ -62,6 +64,12 @@ process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   check(String(s.migrate?.restart ?? "no") === "no", "migrate is one-shot (restart: no)");
   check(s.api?.depends_on?.migrate?.condition === "service_completed_successfully", "api depends_on migrate: service_completed_successfully");
   check(s.migrate?.image && s.migrate.image === s.api?.image, "migrate uses the api image");
+  // Least privilege: migrate sees only what db:migrate + db:bootstrap read.
+  const menv = s.migrate?.environment ?? {};
+  check(Boolean(menv.DATABASE_URL), "migrate has DATABASE_URL");
+  for (const k of ["GOOGLE_CLIENT_SECRET", "GOOGLE_CLIENT_ID", "SECRETS_MASTER_KEY", "SECRETS_MASTER_KEY_PREVIOUS", "AUTH_ADMIN_EMAILS"])
+    check(!(k in menv), `migrate env has no ${k}`);
+  check(Object.keys(menv).every((k) => !/SECRET|MASTER_KEY|TOKEN|API_KEY/.test(k)), `migrate env has no secret-like keys (got: ${Object.keys(menv).join(",")})`);
   const apiCmd = [].concat(s.api?.command ?? []).join(" ");
   check(!/db:migrate|migrate\.ts/.test(apiCmd), "api command does not migrate");
 
@@ -87,6 +95,12 @@ process.stdin.on("data", (c) => (raw += c)).on("end", () => {
     check(s[name]?.restart === "unless-stopped", `${name} restart: unless-stopped`);
     check((s[name]?.security_opt ?? []).includes("no-new-privileges:true"), `${name} no-new-privileges`);
   }
+
+  // postgres: all capabilities dropped, only the entrypoint minimum re-added.
+  const pgDrop = s.postgres?.cap_drop ?? [];
+  const pgAdd = [...(s.postgres?.cap_add ?? [])].sort();
+  check(pgDrop.includes("ALL"), "postgres cap_drop: ALL");
+  check(JSON.stringify(pgAdd) === JSON.stringify(["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]), `postgres cap_add is the entrypoint minimum (got: ${pgAdd.join(",")})`);
 
   if (fails.length) {
     for (const f of fails) console.error("  FAIL " + f);
@@ -121,6 +135,20 @@ grep -q '^{\$PUBLIC_HOSTNAME} {' "$CADDY" && echo "  ok  site address is {\$PUBL
 grep -q 'handle_path /api/\*' "$CADDY" && grep -q 'reverse_proxy api:3001' "$CADDY" && echo "  ok  /api/* → api:3001 (prefix stripped)" || { echo "  FAIL api route" >&2; exit 1; }
 grep -q 'reverse_proxy web:3000' "$CADDY" && echo "  ok  default → web:3000" || { echo "  FAIL web route" >&2; exit 1; }
 grep -q 'Strict-Transport-Security' "$CADDY" && echo "  ok  HSTS header" || { echo "  FAIL HSTS" >&2; exit 1; }
+grep -Eq '^[[:space:]]*-Server$' "$CADDY" && echo "  ok  Server header stripped" || { echo "  FAIL -Server" >&2; exit 1; }
+for h in \
+  'X-Content-Type-Options "nosniff"' \
+  'Referrer-Policy "strict-origin-when-cross-origin"' \
+  'X-Frame-Options "DENY"'; do
+  grep -Fq "header ?$h" "$CADDY" && echo "  ok  $h" || { echo "  FAIL missing header $h" >&2; exit 1; }
+done
+CSP_LINE="$(grep -F 'header ?Content-Security-Policy' "$CADDY" || true)"
+[ -n "$CSP_LINE" ] || { echo "  FAIL missing Content-Security-Policy" >&2; exit 1; }
+for d in "frame-ancestors 'none'" "base-uri 'self'" "object-src 'none'" "form-action 'self'"; do
+  case "$CSP_LINE" in *"$d"*) ;; *) echo "  FAIL CSP lacks $d" >&2; exit 1 ;; esac
+done
+case "$CSP_LINE" in *script-src*|*style-src*|*default-src*) echo "  FAIL CSP must not restrict scripts/styles (Next.js inline)" >&2; exit 1 ;; esac
+echo "  ok  CSP (frame-ancestors/base-uri/object-src/form-action, no script/style restriction)"
 if grep -Eq '^[[:space:]]*(auto_https[[:space:]]+off|http://)' "$CADDY"; then
   echo "  FAIL automatic HTTPS disabled" >&2; exit 1
 else echo "  ok  automatic HTTPS + HTTP→HTTPS redirect left on"; fi

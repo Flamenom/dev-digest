@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { MockGitHubClient } from '../src/adapters/mocks.js';
+import { DEFAULT_REJECTION_LIMIT, RejectionLimiter } from '../src/platform/auth/guard.js';
 import {
   anonymous,
   asSession,
@@ -84,5 +85,49 @@ describe('per-user rate limits (google mode)', () => {
       expect(rb.statusCode).toBe(200);
     }
     expect((await call(a)).statusCode).toBe(429);
+  });
+
+  it('rejected requests (bad bearer / cookie) count per IP: over budget → 429 before any principal lookup', async () => {
+    const ip = '198.51.100.23';
+    const bad = (i: number) =>
+      t.app.inject(
+        i % 2 === 0
+          ? { method: 'GET', url: '/repos', headers: { authorization: `Bearer ddg_pat_guess${i}`, 'x-forwarded-for': ip } }
+          : { method: 'GET', url: '/repos', headers: { cookie: `__Host-ddg_session=guess${i}`, 'x-forwarded-for': ip } },
+      );
+    for (let i = 0; i < DEFAULT_REJECTION_LIMIT.max; i++) {
+      expect((await bad(i)).statusCode).toBe(401);
+    }
+    const lookupsBefore = t.principals.calls;
+    const blocked = await bad(DEFAULT_REJECTION_LIMIT.max);
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.json().error.code).toBe('rate_limited');
+    expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0);
+    expect(t.principals.calls).toBe(lookupsBefore); // no lookup once blocked
+
+    // Another address is unaffected; so is a valid credential from yet another IP.
+    const other = await t.app.inject({
+      method: 'GET',
+      url: '/repos',
+      headers: { authorization: 'Bearer ddg_pat_nope', 'x-forwarded-for': '198.51.100.24' },
+    });
+    expect(other.statusCode).toBe(401);
+  });
+});
+
+describe('RejectionLimiter', () => {
+  it('blocks an address after `max` rejections until the window resets', () => {
+    let now = 1_000_000;
+    const limiter = new RejectionLimiter({ max: 3, windowMs: 60_000 }, () => now);
+    for (let i = 0; i < 3; i++) {
+      expect(limiter.blockedFor('a')).toBeNull();
+      limiter.hit('a');
+    }
+    expect(limiter.blockedFor('a')).toBe(60);
+    expect(limiter.blockedFor('b')).toBeNull();
+    now += 60_000;
+    expect(limiter.blockedFor('a')).toBeNull();
+    limiter.hit('a');
+    expect(limiter.blockedFor('a')).toBeNull();
   });
 });

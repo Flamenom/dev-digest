@@ -6,4 +6,4 @@ export {
   isSignInPath,
   redirectToSignIn,
   safeReturnTo,
-} from "./sign-in-redirect";
+} from "@/lib/sign-in-redirect";

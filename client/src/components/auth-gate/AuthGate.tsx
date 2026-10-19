@@ -12,8 +12,8 @@
 import React from "react";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { isUnauthenticated, useSession } from "../../lib/hooks/session";
-import { isSignInPath, redirectToSignIn } from "./sign-in-redirect";
+import { isUnauthenticated, useSession } from "@/lib/hooks";
+import { isSignInPath, redirectToSignIn } from "@/lib/sign-in-redirect";
 import { s } from "./styles";
 
 export function AuthGate({ children }: { children: React.ReactNode }) {

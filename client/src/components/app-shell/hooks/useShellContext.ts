@@ -8,7 +8,7 @@ import { type ShellContext } from "@devdigest/ui";
 import { useTheme } from "../../../lib/theme";
 import { useActiveRepo } from "../../../lib/repo-context";
 import { usePulls, useDeleteRepo } from "../../../lib/hooks";
-import { useCan } from "../../../lib/permissions";
+import { useCan } from "@/lib/permissions";
 import { activeKeyFor, toShellRepo } from "../helpers";
 
 interface ShellContextOptions {

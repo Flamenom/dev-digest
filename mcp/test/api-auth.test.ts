@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, createApi } from '../src/api.js';
 import { UNAUTHENTICATED_TEXT, toToolError } from '../src/errors.js';
+import { ConfigError } from '../src/config.js';
 
-const BASE = 'http://api.test';
+const BASE = 'https://api.test';
 const TOKEN = 'ddg_pat_test-token-value-0123456789abcdefghijklmnop';
 
 type Captured = { url: string; headers: Record<string, string> };
@@ -85,5 +86,46 @@ describe('createApi bearer token', () => {
     expect(res.isError).toBe(true);
     expect(text(res)).toContain('Only an Admin can change settings');
     expect(text(res)).not.toContain(TOKEN);
+  });
+});
+
+describe('createApi refuses a bearer token over cleartext', () => {
+  it.each([
+    'http://devdigest.example.com/api',
+    'http://10.0.0.5:3001',
+    'http://127.0.0.1.evil.test',
+    'ftp://devdigest.example.com',
+    'not a url',
+  ])('throws a ConfigError naming the setting for %s, without the token', (base) => {
+    const calls = stubFetch(() => json({ ok: true }));
+    let err: unknown;
+    try {
+      createApi(base, TOKEN);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as Error).message).toContain('DEVDIGEST_API_BASE');
+    expect((err as Error).message).toContain('DEVDIGEST_API_TOKEN');
+    expect((err as Error).message).not.toContain(TOKEN);
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    'http://localhost:3001',
+    'http://127.0.0.1:3001',
+    'http://[::1]:3001',
+    'http://LOCALHOST:3001',
+    'https://devdigest.example.com/api',
+  ])('allows %s with a token and sends the bearer', async (base) => {
+    const calls = stubFetch(() => json({ ok: true }));
+    await createApi(base, TOKEN).get('/agents');
+    expect(calls[0]!.headers.authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it('allows plain http to a remote host without a token (no secret to leak)', async () => {
+    const calls = stubFetch(() => json({ ok: true }));
+    await createApi('http://devdigest.example.com/api', undefined).get('/agents');
+    expect(calls).toHaveLength(1);
   });
 });

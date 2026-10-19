@@ -1,4 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { startPg, dockerAvailable, type PgFixture } from './helpers/pg.js';
 import * as t from '../src/db/schema.js';
@@ -9,6 +13,9 @@ import { DEFAULT_WORKSPACE_NAME, SYSTEM_USER_EMAIL } from '../src/db/seed.js';
  * `pnpm db:bootstrap` (Q5): tenancy-only, idempotent production bootstrap —
  * default workspace + system user + its Admin membership, and nothing else.
  */
+
+const execFileP = promisify(execFile);
+const SERVER_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const hasDocker = await dockerAvailable();
 const d = hasDocker ? describe : describe.skip;
@@ -82,4 +89,28 @@ d('db bootstrap', () => {
       .where(eq(t.workspaceMembers.workspaceId, workspaceId));
     expect(m!.role).toBe('member');
   });
+
+  it('CLI runs with a DATABASE_URL-only env (no Google / master-key settings)', async () => {
+    // Mirrors the deploy `migrate` service env: NODE_ENV + DATABASE_URL only.
+    // DOTENV_CONFIG_PATH points nowhere so a developer's server/.env cannot
+    // mask a regression that starts reading the full app config.
+    const { stdout } = await execFileP(
+      process.execPath,
+      ['--import', 'tsx', 'src/db/bootstrap.ts'],
+      {
+        cwd: SERVER_DIR,
+        env: {
+          PATH: process.env.PATH ?? '',
+          NODE_ENV: 'production',
+          AUTH_MODE: 'google',
+          DATABASE_URL: pg.url,
+          DOTENV_CONFIG_PATH: join(SERVER_DIR, '.env.does-not-exist'),
+        },
+        timeout: 60_000,
+      },
+    );
+    expect(stdout).toContain('bootstrapped');
+    const workspaces = await pg.handle.db.select().from(t.workspaces);
+    expect(workspaces).toHaveLength(1);
+  }, 90_000);
 });

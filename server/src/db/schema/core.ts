@@ -6,6 +6,7 @@ import {
   jsonb,
   timestamp,
   uniqueIndex,
+  index,
   check,
   primaryKey,
   type AnyPgColumn,
@@ -75,6 +76,8 @@ export const workspaceMembers = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.workspaceId, t.userId] }),
+    /** FK index: ON DELETE SET NULL from users. */
+    statusChangedByIdx: index('workspace_members_status_changed_by_idx').on(t.statusChangedBy),
     roleCk: check('workspace_members_role_ck', sql`${t.role} in ('admin', 'member')`),
     statusCk: check(
       'workspace_members_status_ck',

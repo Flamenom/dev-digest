@@ -155,6 +155,13 @@
       "when": 1792412976923,
       "tag": "0021_next_loki",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792419755756,
+      "tag": "0022_nice_the_executioner",
+      "breakpoints": true
     }
   ]
 }

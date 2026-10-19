@@ -11,7 +11,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CurrentSession, SignOutResult } from "@devdigest/shared";
 import { api, ApiError } from "../api";
-import { goToSignIn } from "../../components/auth-gate/sign-in-redirect";
+import { goToSignIn } from "../sign-in-redirect";
 
 export const SESSION_QUERY_KEY = ["session"] as const;
 
