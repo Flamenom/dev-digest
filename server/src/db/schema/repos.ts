@@ -31,14 +31,24 @@ export const repos = pgTable(
     createdAt: now(),
   },
   (t) => ({
-    /** One row per (workspace, provider, host, full_name): the same path may exist on two hosts. */
-    uq: uniqueIndex('repos_ws_provider_host_fullname_uq').on(
-      t.workspaceId,
-      t.provider,
-      t.host,
-      t.fullName,
-    ),
+    /**
+     * Repo identity is provider-specific, so it is split into two DISJOINT partial
+     * unique indexes (migration 0020) — every insert has exactly one arbiter index,
+     * which keeps `ON CONFLICT … DO NOTHING` race-safe (see RepoRepository.insert):
+     *   - non-GitLab (GitHub): exact (workspace, provider, host, full_name);
+     *   - GitLab: case-insensitive on full_name — agrees with the app's
+     *     `lower(full_name)` dedupe lookup (gitlab.com paths are case-insensitive).
+     * The same path may exist on two hosts.
+     */
+    uq: uniqueIndex('repos_ws_provider_host_fullname_uq')
+      .on(t.workspaceId, t.provider, t.host, t.fullName)
+      .where(sql`${t.provider} <> 'gitlab'`),
+    gitlabUq: uniqueIndex('repos_gitlab_ws_host_lower_fullname_uq')
+      .on(t.workspaceId, t.provider, t.host, sql`lower(${t.fullName})`)
+      .where(sql`${t.provider} = 'gitlab'`),
     providerCk: check('repos_provider_ck', sql`${t.provider} in ('github', 'gitlab')`),
+    /** Hosts are stored canonical (lower-case) so identity comparisons stay exact. */
+    hostLowerCk: check('repos_host_lower_ck', sql`${t.host} = lower(${t.host})`),
     wsIdx: index('repos_ws_idx').on(t.workspaceId),
   }),
 );

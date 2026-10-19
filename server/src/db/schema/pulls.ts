@@ -1,4 +1,15 @@
-import { pgTable, uuid, text, integer, boolean, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import {
+  pgTable,
+  uuid,
+  text,
+  integer,
+  boolean,
+  timestamp,
+  uniqueIndex,
+  index,
+  check,
+} from 'drizzle-orm/pg-core';
 import { workspaces } from './core';
 import { repos } from './repos';
 
@@ -40,23 +51,36 @@ export const pullRequests = pgTable(
   }),
 );
 
-export const prFiles = pgTable('pr_files', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  prId: uuid('pr_id')
-    .notNull()
-    .references(() => pullRequests.id, { onDelete: 'cascade' }),
-  path: text('path').notNull(),
-  additions: integer('additions').notNull().default(0),
-  deletions: integer('deletions').notNull().default(0),
-  patch: text('patch'),
-  // Migration 0019 (GitLab support) — nullable, so GitHub rows are unaffected.
-  /** Old path for renamed files. */
-  previousPath: text('previous_path'),
-  /** 'added' | 'modified' | 'deleted' | 'renamed' — text, not a pg enum. */
-  changeType: text('change_type'),
-  /** Why `patch` is null: 'too_large' | 'collapsed' (host omitted the diff). */
-  patchOmitted: text('patch_omitted'),
-});
+export const prFiles = pgTable(
+  'pr_files',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    prId: uuid('pr_id')
+      .notNull()
+      .references(() => pullRequests.id, { onDelete: 'cascade' }),
+    path: text('path').notNull(),
+    additions: integer('additions').notNull().default(0),
+    deletions: integer('deletions').notNull().default(0),
+    patch: text('patch'),
+    // Migration 0019 (GitLab support) — nullable, so GitHub rows are unaffected.
+    /** Old path for renamed files. */
+    previousPath: text('previous_path'),
+    /** Text + CHECK (migration 0020), not a pg enum. NULL = unknown. */
+    changeType: text('change_type', { enum: ['added', 'modified', 'deleted', 'renamed'] }),
+    /** Why `patch` is null (host omitted the diff). Text + CHECK (migration 0020). */
+    patchOmitted: text('patch_omitted', { enum: ['too_large', 'collapsed'] }),
+  },
+  (t) => ({
+    changeTypeCk: check(
+      'pr_files_change_type_ck',
+      sql`${t.changeType} in ('added', 'modified', 'deleted', 'renamed')`,
+    ),
+    patchOmittedCk: check(
+      'pr_files_patch_omitted_ck',
+      sql`${t.patchOmitted} in ('too_large', 'collapsed')`,
+    ),
+  }),
+);
 
 export const prCommits = pgTable('pr_commits', {
   id: uuid('id').primaryKey().defaultRandom(),

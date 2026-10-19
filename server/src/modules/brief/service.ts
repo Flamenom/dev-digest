@@ -17,7 +17,7 @@ import type {
 } from '@devdigest/shared';
 import { PrBriefContent, PrBriefGeneration, riskLevelFromScore } from '@devdigest/shared';
 import { NotFoundError } from '../../platform/errors.js';
-import { hostRepoRef } from '../_shared/repo-ref.js';
+import { fetchLinkedIssue, gitRepoRef } from '../_shared/linked-issue.js';
 import {
   latestReviewPerAgent,
   rollupReviews,
@@ -162,19 +162,7 @@ export interface BriefServiceDeps {
 /** Repo-doc / spec excerpts read per generation, matching the intent classifier's cap. */
 const MAX_REPO_DOCS = 4;
 
-/**
- * Explicit issue link and repo-doc mentions in the PR body.
- *
- * Deliberately duplicated from `reviews/intent-helpers.ts` rather than imported:
- * `no-cross-module` forbids importing a sibling module's folder, and Q4 requires
- * the brief to resolve the linked issue "exactly as `deriveIntent` does". Keep
- * the two regexes in step if either ever changes.
- */
-function extractIssueRef(body: string | null | undefined): number | undefined {
-  const m = (body ?? '').match(/(?:closes|fixes|resolves)\s+#(\d+)/i);
-  return m?.[1] ? Number(m[1]) : undefined;
-}
-
+/** Repo-doc mentions in the PR body (kept in step with `reviews/intent-helpers.ts` — `no-cross-module`). */
 function extractRepoDocPaths(body: string | null | undefined): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -187,65 +175,6 @@ function extractRepoDocPaths(body: string | null | undefined): string[] {
     if (out.length >= MAX_REPO_DOCS) break;
   }
   return out;
-}
-
-type LinkedIssue =
-  | { status: 'fetched'; ref: string; title: string; body: string | null }
-  | { status: 'unavailable'; ref: string };
-
-/**
- * Resolve + fetch the PR's linked issue exactly as `deriveIntent` does (kept in
- * step by hand — `no-cross-module`). `undefined` ⇒ no linked issue;
- * `unavailable` ⇒ linked but not fetchable (any failure, incl. a
- * confidential/404 GitLab issue — AC-23).
- *
- * GitHub: body regex + `GitHubClient.getIssue`, unchanged. GitLab: body regex,
- * else the MR's same-project `closes_issues` relation. Text is returned RAW —
- * the prompt builder wraps it as untrusted; never wrap or strip it here.
- */
-async function fetchLinkedIssue(
-  deps: BriefServiceDeps,
-  repo: BriefRepo,
-  prNumber: number,
-  body: string | null,
-): Promise<LinkedIssue | undefined> {
-  const ref = hostRepoRef({ ...repo, fullName: repo.fullName ?? `${repo.owner}/${repo.name}` });
-  if (ref.provider === 'github') {
-    const issueNumber = extractIssueRef(body);
-    if (issueNumber == null) return undefined;
-    try {
-      const gh = await deps.github();
-      const meta = await gh.getIssue({ owner: repo.owner, name: repo.name }, issueNumber);
-      return { status: 'fetched', ref: `#${issueNumber}`, title: meta.title, body: meta.body ?? null };
-    } catch {
-      return { status: 'unavailable', ref: `#${issueNumber}` };
-    }
-  }
-
-  let issueNumber = extractIssueRef(body);
-  let host: Pick<PullRequestHost, 'getIssue' | 'getLinkedIssueNumber'>;
-  try {
-    host = await deps.prHost(ref.provider);
-    issueNumber ??= (await host.getLinkedIssueNumber(ref, prNumber)) ?? undefined;
-  } catch {
-    return issueNumber == null ? undefined : { status: 'unavailable', ref: `#${issueNumber}` };
-  }
-  if (issueNumber == null) return undefined;
-  const issueRef = `#${issueNumber}`;
-  try {
-    const meta = await host.getIssue(ref, issueNumber);
-    return meta
-      ? { status: 'fetched', ref: issueRef, title: meta.title, body: meta.body ?? null }
-      : { status: 'unavailable', ref: issueRef };
-  } catch {
-    return { status: 'unavailable', ref: issueRef };
-  }
-}
-
-/** `git.readFile` ref: GitHub keeps plain `{owner, name}`; other hosts carry provider/fullName. */
-function gitRepoRef(repo: BriefRepo): RepoRef {
-  const ref = hostRepoRef({ ...repo, fullName: repo.fullName ?? `${repo.owner}/${repo.name}` });
-  return ref.provider === 'github' ? { owner: repo.owner, name: repo.name } : ref;
 }
 
 // ------------------------------------------------------------- internal shapes

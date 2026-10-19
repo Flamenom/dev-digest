@@ -1,5 +1,5 @@
 import type { Container } from '../../platform/container.js';
-import type { RepoRef, UnifiedDiff } from '@devdigest/shared';
+import type { UnifiedDiff } from '@devdigest/shared';
 import { parseUnifiedDiff } from '../../adapters/git/diff-parser.js';
 import { hostRepoRef, type RepoIdentityRow } from '../_shared/repo-ref.js';
 import type { ReviewRepository, PullRow } from './repository.js';
@@ -17,14 +17,6 @@ export interface LoadedDiff {
    */
   excludedFiles: number;
 }
-
-/**
- * The adapter's `fetchPullHead` accepts an optional `{ base }` (GitLab also
- * fetches the target branch so a merge-base is reachable in the shallow clone).
- * The vendored port only declares `(repo, n)`; a 2-arg implementation is
- * assignable to this wider shape, and an extra arg is ignored by it.
- */
-type PullHeadFetcher = (repo: RepoRef, n: number, opts?: { base?: string }) => Promise<void>;
 
 /**
  * Load the unified diff for a PR/MR. Prefers a real `git diff base...head`
@@ -48,10 +40,11 @@ export async function loadDiff(
   try {
     let base = pull.base;
     if (ref.provider === 'gitlab') {
-      const fetchPullHead: PullHeadFetcher = container.git.fetchPullHead.bind(container.git);
       // Best-effort: a failed fetch (offline, ref gone) leaves the diff below
       // to fail → pr_files fallback.
-      await fetchPullHead(ref, pull.number, { base: pull.base }).catch(() => undefined);
+      await container.git
+        .fetchPullHead(ref, pull.number, { base: pull.base })
+        .catch(() => undefined);
       base = `origin/${pull.base}`;
     }
     const diff = await container.git.diff(ref, base, pull.headSha);

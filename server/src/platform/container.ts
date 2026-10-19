@@ -2,7 +2,7 @@ import type {
   AuthProvider,
   SecretsProvider,
   GitHubClient,
-  GitClient,
+  HostGitClient,
   CodeIndex,
   Embedder,
   LLMProvider,
@@ -39,14 +39,18 @@ import { SkillsRepository } from '../modules/skills/repository.js';
 import { ReviewRepository } from '../modules/reviews/repository.js';
 import {
   PullRequestRepository,
+  PullsReadRepository,
   SyncStatusRepository,
   type PullRequestStore,
 } from '../modules/pulls/repository.js';
-import { PrListSyncService, type SyncRepo } from '../modules/pulls/sync-service.js';
+import { PrListSyncService, type SyncLogger, type SyncRepo } from '../modules/pulls/sync-service.js';
 import { PrSyncCoordinator } from '../modules/pulls/sync-coordinator.js';
 import { PullDetailService, type PullDetail } from '../modules/pulls/detail-service.js';
 import type { RepoIntel } from '../modules/repo-intel/types.js';
 import { RepoIntelService } from '../modules/repo-intel/service.js';
+import { INDEX_JOB_KIND, REFRESH_JOB_KIND } from '../modules/repo-intel/constants.js';
+import { RepoRepository } from '../modules/repos/repository.js';
+import { RepoService, type RepoOperations } from '../modules/repos/service.js';
 import { createIntentDeriver, type IntentDeriver } from '../modules/reviews/intent-deriver.js';
 import { SmartDiffService } from '../modules/smart-diff/service.js';
 import { BlastService } from '../modules/blast/service.js';
@@ -95,7 +99,7 @@ export interface ContainerOverrides {
   github?: GitHubClient;
   /** gitlab.com read-side client — tests inject `MockGitLabClient`. */
   gitlab?: GitLabClient;
-  git?: GitClient;
+  git?: HostGitClient;
   codeIndex?: CodeIndex;
   embedder?: Embedder;
   /** Pre-built providers by id (skip key lookup). */
@@ -106,6 +110,8 @@ export interface ContainerOverrides {
   prSyncClock?: () => number;
   /** PR/MR detail service (`GET /pulls/:id`, comment gating) — tests inject one over fakes. */
   pullDetail?: PullDetail;
+  /** Repositories use cases (add/list/refresh/remove + clone job) — tests inject a fake. */
+  repoService?: RepoOperations;
   /** repo-intel facade (T1.1+) — tests inject mock RepoIntel implementations. */
   repoIntel?: RepoIntel;
   /** L04 blast service — tests inject a service over mocked deps. */
@@ -135,7 +141,7 @@ export class Container {
   readonly jobs: JobRunner;
   readonly runBus: RunBus;
 
-  private _git?: GitClient;
+  private _git?: HostGitClient;
   private _github?: GitHubClient;
   private _gitlab?: GitLabClient;
   private _codeIndex?: CodeIndex;
@@ -149,8 +155,10 @@ export class Container {
   private _skillsRepo?: SkillsRepository;
   private _reviewRepo?: ReviewRepository;
   private _pullRequestRepo?: PullRequestRepository;
+  private _pullsReadRepo?: PullsReadRepository;
   private _prSync?: PrSyncCoordinator<SyncRepo>;
   private _pullDetail?: PullDetail;
+  private _repoService?: RepoOperations;
   private _repoIntel?: RepoIntel;
   private _intent?: IntentDeriver;
   private _smartDiffService?: SmartDiffService;
@@ -161,7 +169,17 @@ export class Container {
   private _tokenizer?: Tokenizer;
   private _priceBook?: PriceBook;
 
-  constructor(config: AppConfig, db: Db, private overrides: ContainerOverrides = {}) {
+  /**
+   * @param log process-level logger for DETACHED work that has no request to log
+   *   against (the PR-list sync). Structural — bootstrap passes Fastify's root
+   *   logger (pino satisfies it); omitted ⇒ such failures are only persisted.
+   */
+  constructor(
+    config: AppConfig,
+    db: Db,
+    private overrides: ContainerOverrides = {},
+    private readonly log?: SyncLogger,
+  ) {
     this.config = config;
     this.db = db;
     this.secrets = overrides.secrets ?? new LocalSecretsProvider(config.secretsPath);
@@ -170,7 +188,7 @@ export class Container {
     this.jobs = new JobRunner(db);
   }
 
-  get git(): GitClient {
+  get git(): HostGitClient {
     if (this.overrides.git) return this.overrides.git;
     const credentials: GitCredentialResolver = (ref) => this.gitCredential(ref);
     this._git ??= new SimpleGitClient(this.config.cloneDir, { credentials });
@@ -214,6 +232,11 @@ export class Container {
     return (this._pullRequestRepo ??= new PullRequestRepository(this.db));
   }
 
+  /** Read side of the pulls + polling routes (repo lookup, list rows, rollup inputs). */
+  get pullsReadRepo(): PullsReadRepository {
+    return (this._pullsReadRepo ??= new PullsReadRepository(this.db));
+  }
+
   /**
    * PR-list sync-on-open coordinator — ONE per container (= one per API
    * process): its in-memory in-flight map IS the single-flight guarantee, so a
@@ -234,6 +257,8 @@ export class Container {
         now: this.overrides.prSyncClock ?? (() => Date.now()),
         status: new SyncStatusRepository(this.db),
         run: (repo) => sync.syncRepo(repo),
+        // Errors reach the logger already redacted (`describeError`).
+        log: this.log,
       });
     }
     return this._prSync;
@@ -249,6 +274,24 @@ export class Container {
     return (this._pullDetail ??= new PullDetailService({
       hosts: (provider) => this.prHost(provider),
       store: this.pullRequestRepo,
+    }));
+  }
+
+  /**
+   * F1 — Repositories service over an EXPLICIT deps object (never the
+   * Container). Adapters that depend on secrets resolve lazily per call; the
+   * repo-intel follow-up job kinds are bound here so the repos slice never
+   * imports a sibling module's folder.
+   */
+  get repoService(): RepoOperations {
+    if (this.overrides.repoService) return this.overrides.repoService;
+    return (this._repoService ??= new RepoService({
+      repo: new RepoRepository(this.db),
+      git: this.git,
+      jobs: this.jobs,
+      gitlab: () => this.gitlab(),
+      syncStatus: { isRunning: (repoId) => this.prSync.isRunning(repoId) },
+      followUpJobs: { index: INDEX_JOB_KIND, refresh: REFRESH_JOB_KIND },
     }));
   }
 

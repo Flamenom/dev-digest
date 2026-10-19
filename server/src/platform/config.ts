@@ -32,7 +32,13 @@ const EnvSchema = z.object({
   // Offline mode for repository hosts (GitHub + GitLab): when 'true', every
   // host-resolving container getter rejects with ConfigError BEFORE any
   // network client is built, so persisted PRs/MRs keep being served.
-  DEVDIGEST_HOSTS_OFFLINE: z.string().optional(),
+  // Strict enum: a typo (e.g. 'ture', '1') fails loudly at startup instead of
+  // silently leaving hosts online. Empty (`DEVDIGEST_HOSTS_OFFLINE=`) → unset,
+  // like the other optional knobs.
+  DEVDIGEST_HOSTS_OFFLINE: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.enum(['true', 'false']).optional(),
+  ),
   // PR-list sync-on-open freshness window (seconds). A list open triggers a
   // host sync only when the last SUCCESS is older than this; the same window
   // is the back-off after a FAILED attempt (AC-56/61/62). Empty → default.

@@ -3,12 +3,11 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
-import { RepoService } from './service.js';
 import { MAX_REPO_URL_LENGTH } from './constants.js';
 
 /**
  * F1 — repos module. Transport layer only: parses requests, maps status
- * codes, and delegates all business logic to RepoService.
+ * codes, and delegates all business logic to the container-wired RepoService.
  *   POST   /repos              → add repo (github.com | gitlab.com URL; parse, dedupe, persist, enqueue clone)
  *   GET    /repos              → list repos (workspace-scoped)
  *   POST   /repos/:id/refresh  → re-fetch clone + bump last_polled_at
@@ -30,7 +29,7 @@ const AddRepoBody = z.object({
 
 export default async function reposRoutes(appBase: FastifyInstance) {
   const app = appBase.withTypeProvider<ZodTypeProvider>();
-  const service = new RepoService(app.container);
+  const service = app.container.repoService;
 
   // Register the clone job handler once.
   service.registerCloneJobHandler();

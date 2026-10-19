@@ -13,7 +13,7 @@ import {
   MockGitLabClient,
   type MockGitLabOptions,
 } from '../src/adapters/mocks.js';
-import { RepoService, type CloneJobPayload } from '../src/modules/repos/service.js';
+import type { CloneJobPayload } from '../src/modules/repos/service.js';
 
 /**
  * T5 — repo identity for github.com + gitlab.com through `POST /repos`,
@@ -243,7 +243,7 @@ d('repos: github.com + gitlab.com identity', () => {
 
   it('clone job: tokenless remote, no secret reads, GitLab auth failure → Settings hint, redacted (Q8/AC-12/13)', async () => {
     const { app, secrets } = await makeApp();
-    const service = new RepoService(app.container);
+    const service = app.container.repoService;
 
     secrets.reads = [];
     const [row] = await pg.handle.db
@@ -279,7 +279,7 @@ d('repos: github.com + gitlab.com identity', () => {
         secrets: new RecordingSecrets({ GITLAB_TOKEN }),
       },
     });
-    const err = await new RepoService(failing.container)
+    const err = await failing.container.repoService
       .runCloneJob({ repoId: row!.id, owner: 'acme-t5', name: 'web', provider: 'gitlab', host: 'gitlab.com', url: '' })
       .catch((e: unknown) => e as AppError);
     expect(err).toBeInstanceOf(AppError);

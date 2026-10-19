@@ -16,6 +16,11 @@ import * as t from './schema.js';
  *     files: one renamed, one with the diff omitted as too large, one normal; 2 commits.
  *   - !6 — list-only row whose host payload carried no diff stats (`stats_known=false`).
  *
+ * All fixture writes run in ONE transaction: a failure part-way (e.g. after the
+ * repo + MR !5 but before its files) rolls everything back, so re-running the
+ * seed repairs it instead of leaving an MR that the guard-by-SELECT would skip
+ * forever with no files/commits.
+ *
  * Insert-only per row (same guard-by-SELECT idempotency as `seed()`); the one
  * exception is `last_synced_at`, refreshed to now() on every run so the fixture
  * list reads as fresh and no sync is attempted against gitlab.com offline.
@@ -63,6 +68,16 @@ export async function seedGitlabFixture(
   db: Db,
   { workspaceId, userId }: { workspaceId: string; userId: string },
 ): Promise<{ repoId: string }> {
+  return db.transaction(async (tx) => writeFixture(tx, { workspaceId, userId }));
+}
+
+/** Transaction handle (same query API as `Db`). */
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
+
+async function writeFixture(
+  db: Tx,
+  { workspaceId, userId }: { workspaceId: string; userId: string },
+): Promise<{ repoId: string }> {
   // ---- repo (identity = workspace + provider + host + full_name) ----
   let [repo] = await db
     .select()
@@ -104,7 +119,7 @@ export async function seedGitlabFixture(
     .from(t.pullRequests)
     .where(and(eq(t.pullRequests.repoId, repoId), eq(t.pullRequests.number, 5)));
   if (!mr5) {
-    const files = [
+    const files: (Omit<typeof t.prFiles.$inferInsert, 'prId'> & { additions: number; deletions: number })[] = [
       {
         path: 'src/api/leads.ts',
         additions: 7,
@@ -153,7 +168,7 @@ export async function seedGitlabFixture(
       })
       .returning({ id: t.pullRequests.id });
     const prId = row!.id;
-    await db.insert(t.prFiles).values(files.map((f) => ({ prId, ...f })));
+    await db.insert(t.prFiles).values(files.map((f) => ({ ...f, prId })));
     await db.insert(t.prCommits).values([
       {
         prId,

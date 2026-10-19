@@ -8,7 +8,52 @@ import * as t from '../../db/schema.js';
  * table. Every query is scoped by `workspaceId` (tenancy guard).
  */
 
-export type RepoRow = typeof t.repos.$inferSelect;
+/** Physical row shape — private to this file; never crosses the repository boundary. */
+type RepoRow = typeof t.repos.$inferSelect;
+
+/**
+ * A persisted repo as the rest of the module sees it. Mapped from the row at
+ * this boundary (`toRecord`) so a column change is a repository-local edit, not
+ * a change to the service/helpers/DTO signatures.
+ */
+export interface RepoRecord {
+  id: string;
+  workspaceId: string;
+  owner: string;
+  name: string;
+  fullName: string;
+  provider: RepoProvider;
+  /** Stored host; normalised to a supported `RepoHost` by the DTO mapper. */
+  host: string;
+  defaultBranch: string;
+  clonePath: string | null;
+  lastPolledAt: Date | null;
+  lastSyncedAt: Date | null;
+  lastAttemptAt: Date | null;
+  lastSyncError: string | null;
+  createdBy: string | null;
+  createdAt: Date;
+}
+
+function toRecord(row: RepoRow): RepoRecord {
+  return {
+    id: row.id,
+    workspaceId: row.workspaceId,
+    owner: row.owner,
+    name: row.name,
+    fullName: row.fullName,
+    provider: row.provider,
+    host: row.host,
+    defaultBranch: row.defaultBranch,
+    clonePath: row.clonePath,
+    lastPolledAt: row.lastPolledAt,
+    lastSyncedAt: row.lastSyncedAt,
+    lastAttemptAt: row.lastAttemptAt,
+    lastSyncError: row.lastSyncError,
+    createdBy: row.createdBy,
+    createdAt: row.createdAt,
+  };
+}
 
 export interface InsertRepo {
   workspaceId: string;
@@ -38,7 +83,7 @@ export class RepoRepository {
    * GitLab paths compare case-insensitively (gitlab.com paths are); GitHub keeps
    * its existing exact match.
    */
-  async findByIdentity(workspaceId: string, id: RepoIdentity): Promise<RepoRow | undefined> {
+  async findByIdentity(workspaceId: string, id: RepoIdentity): Promise<RepoRecord | undefined> {
     const fullNameMatch =
       id.provider === 'gitlab'
         ? sql`lower(${t.repos.fullName}) = lower(${id.fullName})`
@@ -56,31 +101,43 @@ export class RepoRepository {
       )
       .orderBy(asc(t.repos.createdAt))
       .limit(1);
-    return row;
+    return row ? toRecord(row) : undefined;
   }
 
-  async list(workspaceId: string): Promise<RepoRow[]> {
-    return this.db
+  async list(workspaceId: string): Promise<RepoRecord[]> {
+    const rows = await this.db
       .select()
       .from(t.repos)
       .where(eq(t.repos.workspaceId, workspaceId))
       .orderBy(asc(t.repos.createdAt), asc(t.repos.id));
+    return rows.map(toRecord);
   }
 
-  async getById(workspaceId: string, id: string): Promise<RepoRow | undefined> {
+  async getById(workspaceId: string, id: string): Promise<RepoRecord | undefined> {
     const [row] = await this.db
       .select()
       .from(t.repos)
       .where(and(eq(t.repos.workspaceId, workspaceId), eq(t.repos.id, id)));
-    return row;
+    return row ? toRecord(row) : undefined;
   }
 
   /**
-   * Insert a repo. Returns `undefined` when the (workspace, provider, host,
-   * full_name) unique index already holds the row (a concurrent add won) —
-   * the caller re-reads it instead of surfacing a raw constraint error.
+   * Insert a repo. Returns `undefined` when the provider's identity unique index
+   * already holds the row (a concurrent add won) — the caller re-reads it via
+   * `findByIdentity` instead of surfacing a raw constraint error.
+   *
+   * The conflict target is scoped to exactly that identity index (migration 0020
+   * made the two indexes disjoint by provider, so it is the ONLY unique index the
+   * row can hit besides the random-uuid PK):
+   *   - non-GitLab → `repos_ws_provider_host_fullname_uq` (exact full_name, partial
+   *     `WHERE provider <> 'gitlab'`) — expressible with Drizzle's column target.
+   *   - GitLab → `repos_gitlab_ws_host_lower_fullname_uq` on `lower(full_name)`.
+   *     Drizzle 0.38's `onConflictDoNothing({ target })` only takes plain columns
+   *     (it quotes each as an identifier), so the expression-index target is a raw
+   *     `sql` INSERT; the row is then read back through the typed builder.
    */
-  async insert(values: InsertRepo): Promise<RepoRow | undefined> {
+  async insert(values: InsertRepo): Promise<RepoRecord | undefined> {
+    if (values.provider === 'gitlab') return this.insertGitlab(values);
     const [row] = await this.db
       .insert(t.repos)
       .values({
@@ -93,9 +150,28 @@ export class RepoRepository {
         ...(values.host ? { host: values.host } : {}),
         ...(values.defaultBranch ? { defaultBranch: values.defaultBranch } : {}),
       })
-      .onConflictDoNothing()
+      .onConflictDoNothing({
+        target: [t.repos.workspaceId, t.repos.provider, t.repos.host, t.repos.fullName],
+        where: sql`provider <> 'gitlab'`,
+      })
       .returning();
-    return row;
+    return row ? toRecord(row) : undefined;
+  }
+
+  private async insertGitlab(values: InsertRepo): Promise<RepoRecord | undefined> {
+    const host = values.host ?? sql`default`;
+    const defaultBranch = values.defaultBranch ? values.defaultBranch : sql`default`;
+    const inserted = await this.db.execute<{ id: string }>(sql`
+      insert into ${t.repos}
+        (workspace_id, owner, name, full_name, created_by, provider, host, default_branch)
+      values
+        (${values.workspaceId}, ${values.owner}, ${values.name}, ${values.fullName},
+         ${values.createdBy}, 'gitlab', ${host}, ${defaultBranch})
+      on conflict (workspace_id, provider, host, lower(full_name)) where provider = 'gitlab'
+        do nothing
+      returning id`);
+    const id = inserted[0]?.id;
+    return id ? this.getById(values.workspaceId, id) : undefined;
   }
 
   /**

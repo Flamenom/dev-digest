@@ -1,9 +1,14 @@
-import type { Container } from '../../platform/container.js';
-import type { RepoHost, RepoProvider, RepoWithHost } from '@devdigest/shared';
+import type {
+  GitClient,
+  GitLabClient,
+  RepoHost,
+  RepoProvider,
+  RepoWithHost,
+} from '@devdigest/shared';
 import { AppError, NotFoundError } from '../../platform/errors.js';
 import { redactSecret } from '../../platform/redact.js';
 import { cloneRemoteUrl, hostRepoRef } from '../_shared/repo-ref.js';
-import { RepoRepository, type RepoRow } from './repository.js';
+import type { RepoRecord, RepoRepository } from './repository.js';
 import { parseGitLabPath, parseRepoUrlHost, toRepoDto } from './helpers.js';
 import {
   CLONE_JOB_KIND,
@@ -11,10 +16,6 @@ import {
   GIT_AUTH_FAILURE_REGEX,
   GITLAB_CLONE_AUTH_MESSAGE,
 } from './constants.js';
-import {
-  INDEX_JOB_KIND,
-  REFRESH_JOB_KIND,
-} from '../repo-intel/constants.js';
 
 /**
  * F1 — repos service. Business logic for the Repositories feature:
@@ -40,11 +41,51 @@ export interface CloneJobPayload {
   url: string;
 }
 
-export class RepoService {
-  private repo: RepoRepository;
+/**
+ * The job queue as this service uses it — structural, so `JobRunner` satisfies
+ * it without the application ring importing the platform implementation.
+ */
+export interface RepoJobQueue {
+  register(kind: string, handler: (payload: unknown) => Promise<void>): void;
+  enqueue(workspaceId: string, kind: string, payload: unknown): Promise<unknown>;
+}
 
-  constructor(private container: Container) {
-    this.repo = new RepoRepository(container.db);
+/**
+ * Explicit dependencies, built once in the composition root (never the
+ * `Container` itself). `followUpJobs` are repo-intel's job kinds, bound there so
+ * this slice does not import a sibling module's folder.
+ */
+export interface RepoServiceDeps {
+  repo: RepoRepository;
+  git: GitClient;
+  jobs: RepoJobQueue;
+  /** gitlab.com read-side client, resolved lazily per call (token may change). */
+  gitlab: () => Promise<GitLabClient>;
+  /** In-memory PR-list sync coordinator — only `isRunning` is read. */
+  syncStatus: { isRunning(repoId: string): boolean };
+  /** Background follow-ups enqueued after a clone / on refresh. */
+  followUpJobs: { index: string; refresh: string };
+}
+
+/** The repos use cases as routes (and test overrides) see them. */
+export interface RepoOperations {
+  registerCloneJobHandler(): void;
+  runCloneJob(payload: CloneJobPayload): Promise<void>;
+  add(
+    workspaceId: string,
+    userId: string,
+    url: string,
+  ): Promise<{ repo: RepoWithHost; created: boolean }>;
+  list(workspaceId: string): Promise<RepoWithHost[]>;
+  refresh(workspaceId: string, id: string): Promise<{ status: 'refreshing' }>;
+  remove(workspaceId: string, id: string): Promise<void>;
+}
+
+export class RepoService implements RepoOperations {
+  private readonly repo: RepoRepository;
+
+  constructor(private readonly deps: RepoServiceDeps) {
+    this.repo = deps.repo;
   }
 
   /**
@@ -53,7 +94,7 @@ export class RepoService {
    * the resulting path + last_polled_at.
    */
   registerCloneJobHandler(): void {
-    this.container.jobs.register(CLONE_JOB_KIND, async (payload) => {
+    this.deps.jobs.register(CLONE_JOB_KIND, async (payload) => {
       await this.runCloneJob(payload as CloneJobPayload);
     });
   }
@@ -72,7 +113,7 @@ export class RepoService {
     const cloneUrl = cloneRemoteUrl(ref.provider, ref.fullName);
     let path: string;
     try {
-      ({ path } = await this.container.git.clone(ref, cloneUrl, { depth: CLONE_DEPTH }));
+      ({ path } = await this.deps.git.clone(ref, cloneUrl, { depth: CLONE_DEPTH }));
     } catch (err) {
       throw cloneError(ref.provider, err);
     }
@@ -86,7 +127,7 @@ export class RepoService {
     const workspaceId = await this.repo.workspaceIdFor(repoId);
     if (workspaceId) {
       try {
-        await this.container.jobs.enqueue(workspaceId, INDEX_JOB_KIND, {
+        await this.deps.jobs.enqueue(workspaceId, this.deps.followUpJobs.index, {
           repoId,
           owner,
           name,
@@ -121,7 +162,7 @@ export class RepoService {
       // Canonical identity = gitlab.com's `path_with_namespace` (AC-52). The
       // adapter maps private/no-token → gitlab_token_missing (AC-13) and
       // token-without-access → gitlab_project_inaccessible (AC-14).
-      const project = await (await this.container.gitlab()).getProject(parsed.fullName);
+      const project = await (await this.deps.gitlab()).getProject(parsed.fullName);
       parsed = parseGitLabPath(project.fullPath);
       defaultBranch = project.defaultBranch || undefined;
       const canonical = await this.repo.findByIdentity(workspaceId, parsed);
@@ -151,14 +192,14 @@ export class RepoService {
   async list(workspaceId: string): Promise<RepoWithHost[]> {
     const rows = await this.repo.list(workspaceId);
     // `running` lives only in the in-memory sync coordinator (never persisted).
-    const prSync = this.container.prSync;
-    return rows.map((row) => toRepoDto(row, { syncRunning: prSync.isRunning(row.id) }));
+    const { syncStatus } = this.deps;
+    return rows.map((row) => toRepoDto(row, { syncRunning: syncStatus.isRunning(row.id) }));
   }
 
   /** Enqueue the clone job; the remote is rebuilt from the stored identity (AC-17). */
-  private async enqueueClone(workspaceId: string, row: RepoRow): Promise<void> {
+  private async enqueueClone(workspaceId: string, row: RepoRecord): Promise<void> {
     const ref = hostRepoRef(row);
-    await this.container.jobs.enqueue(workspaceId, CLONE_JOB_KIND, {
+    await this.deps.jobs.enqueue(workspaceId, CLONE_JOB_KIND, {
       repoId: row.id,
       owner: ref.owner,
       name: ref.name,
@@ -179,7 +220,7 @@ export class RepoService {
     // refresh fires before the new clone settles, it cheaply exits; if after,
     // it picks up the new HEAD.
     try {
-      await this.container.jobs.enqueue(workspaceId, REFRESH_JOB_KIND, {
+      await this.deps.jobs.enqueue(workspaceId, this.deps.followUpJobs.refresh, {
         repoId: repo.id,
         owner: repo.owner,
         name: repo.name,

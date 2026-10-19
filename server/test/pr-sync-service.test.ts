@@ -95,6 +95,10 @@ function fakeStore(open: number[] = [], missing: { id: string; number: number }[
     updateStatuses: vi.fn<PullRequestStore['updateStatuses']>(async (_s, st) => st.length),
     listMissingStats: vi.fn<PullRequestStore['listMissingStats']>(async (_s, limit) => missing.slice(0, limit)),
     replaceDetail: vi.fn<PullRequestStore['replaceDetail']>(async () => true),
+    getPersistedDetail: vi.fn<PullRequestStore['getPersistedDetail']>(async () => ({
+      files: [],
+      commits: [],
+    })),
   };
   return calls satisfies PullRequestStore;
 }
