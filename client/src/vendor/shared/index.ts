@@ -39,3 +39,7 @@ export * from './adapters.js';
 export * from './host-adapters.js';
 export * from './host-git.js';
 export * from './repo-identity.js';
+export * from './contracts/auth.js';
+export * from './contracts/actors.js';
+export * from './contracts/secrets-status.js';
+export * from './auth-ports.js';

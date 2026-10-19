@@ -8,7 +8,7 @@ import {
   doublePrecision,
   index,
 } from 'drizzle-orm/pg-core';
-import { workspaces } from './core';
+import { workspaces, users } from './core';
 import { agents } from './agents';
 import { pullRequests } from './pulls';
 
@@ -41,6 +41,8 @@ export const agentRuns = pgTable(
     score: integer('score'),
     /** Findings that tripped the agent's gate (severity ≥ ciFailOn). */
     blockers: integer('blockers'),
+    /** Who started the run (migration 0021); null for runs created before it. */
+    initiatedBy: uuid('initiated_by').references(() => users.id, { onDelete: 'set null' }),
   },
   (t) => ({
     /** The PR run history + active-runs poll: `where workspace_id = ? and pr_id = ?`. */
@@ -50,6 +52,7 @@ export const agentRuns = pgTable(
      * whole table, and the active-runs poll filters on it per PR.
      */
     statusIdx: index('agent_runs_status_idx').on(t.status),
+    initiatedByIdx: index('agent_runs_initiated_by_idx').on(t.initiatedBy),
   }),
 );
 

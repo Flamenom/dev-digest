@@ -4,6 +4,11 @@
 /** Base URL of the DevDigest Fastify API (local by default). */
 export const API_BASE = process.env.DEVDIGEST_API_BASE ?? 'http://localhost:3001';
 
+/** Personal API token for a server-mode DevDigest (Settings → API tokens).
+    Optional: unset/blank = local mode, no Authorization header is sent.
+    Never log this value or put it in an error message. */
+export const API_TOKEN: string | undefined = process.env.DEVDIGEST_API_TOKEN?.trim() || undefined;
+
 /** Run-status poll cadence — matches the web client (client/src/lib/hooks/reviews.ts). */
 export const POLL_INTERVAL_MS = 4000;
 

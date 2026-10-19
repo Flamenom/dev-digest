@@ -26,7 +26,12 @@ Claude Code can start it. The DevDigest API must be running
 - Via MCP Inspector (separate web UI, no Claude Code involved) — see below.
 - `pnpm typecheck` · `pnpm test` (hermetic vitest — fake API, fake timers).
 
-Config: `DEVDIGEST_API_BASE` env (default `http://localhost:3001`).
+Config (env, set in the `env` block of the server entry in your MCP client config):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DEVDIGEST_API_BASE` | `http://localhost:3001` | DevDigest API base URL (for a shared server: `https://<host>/api`). |
+| `DEVDIGEST_API_TOKEN` | unset | Personal API token (Settings → API tokens) for a server-mode DevDigest. When set, every request carries `Authorization: Bearer <token>`; when unset, requests are exactly as in local mode. A 401 tells you to create/renew the token; a 403 passes the server's reason through. Treat it as a secret — keep it out of committed config. |
 
 ## MCP Inspector
 
