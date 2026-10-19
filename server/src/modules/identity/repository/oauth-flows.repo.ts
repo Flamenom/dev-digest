@@ -1,7 +1,7 @@
-import { eq } from 'drizzle-orm';
+import { eq, inArray, lt } from 'drizzle-orm';
 import type { Db } from '../../../db/client.js';
 import * as t from '../../../db/schema.js';
-import { OAUTH_FLOW_TTL_MS } from '../constants.js';
+import { EXPIRED_SWEEP_BATCH, OAUTH_FLOW_TTL_MS } from '../constants.js';
 import { execOf, type IdentityExecutor } from './users.repo.js';
 
 // ---- Domain types -----------------------------------------------------------
@@ -35,7 +35,13 @@ export interface OAuthFlow {
 export class OAuthFlowsRepo {
   constructor(private db: Db) {}
 
+  /**
+   * Persist a new flow. Every anonymous `/auth/google/start` inserts one and
+   * only a callback consumes it, so abandoned flows are swept here first — a
+   * bounded batch of already-expired rows (see {@link sweepExpired}).
+   */
   async create(input: NewOAuthFlow, tx?: IdentityExecutor): Promise<void> {
+    await this.sweepExpired(input.now, EXPIRED_SWEEP_BATCH, tx);
     await execOf(this.db, tx)
       .insert(t.oauthFlows)
       .values({
@@ -68,5 +74,24 @@ export class OAuthFlowsRepo {
       });
     if (!row || row.expiresAt.getTime() <= now.getTime()) return undefined;
     return row;
+  }
+
+  /**
+   * Delete up to `limit` flows that expired before `now` (abandoned sign-ins).
+   * The `id IN (SELECT … LIMIT n)` form bounds the work and walks
+   * `oauth_flows_expires_at_idx`. Returns the number of rows deleted.
+   */
+  async sweepExpired(now: Date, limit: number = EXPIRED_SWEEP_BATCH, tx?: IdentityExecutor): Promise<number> {
+    const exec = execOf(this.db, tx);
+    const expired = exec
+      .select({ id: t.oauthFlows.id })
+      .from(t.oauthFlows)
+      .where(lt(t.oauthFlows.expiresAt, now))
+      .limit(limit);
+    const rows = await exec
+      .delete(t.oauthFlows)
+      .where(inArray(t.oauthFlows.id, expired))
+      .returning({ id: t.oauthFlows.id });
+    return rows.length;
   }
 }

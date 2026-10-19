@@ -5,6 +5,7 @@ import { MembershipsRepo } from './repository/memberships.repo.js';
 import { SessionsRepo } from './repository/sessions.repo.js';
 import { OAuthFlowsRepo } from './repository/oauth-flows.repo.js';
 import { ApiTokensRepo } from './repository/api-tokens.repo.js';
+import { EXPIRED_SWEEP_BATCH } from './constants.js';
 
 /**
  * Identity data access (multi-user server mode): users, memberships,
@@ -38,6 +39,16 @@ export class IdentityRepository implements ActorDirectory {
   /** `ActorDirectory` — an arrow property so it can be passed around unbound. */
   readonly lookup = (ids: readonly string[]): Promise<Map<string, ActorRefValue>> =>
     this.users.lookupActors(ids);
+
+  /**
+   * Periodic maintenance (google mode): delete one bounded batch each of
+   * expired OIDC flows and expired (absolute or idle) sessions.
+   */
+  async sweepExpired(now: Date, limit = EXPIRED_SWEEP_BATCH): Promise<{ oauthFlows: number; sessions: number }> {
+    const oauthFlows = await this.oauthFlows.sweepExpired(now, limit);
+    const sessions = await this.sessions.sweepExpired(now, { limit });
+    return { oauthFlows, sessions };
+  }
 
   /** Run `fn` in one transaction (e.g. deactivate + revoke sessions/tokens + audit). */
   transaction<T>(fn: (tx: IdentityTx) => Promise<T>): Promise<T> {

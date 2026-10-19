@@ -14,6 +14,29 @@
 #
 # This file is separate from the root docker-compose.yml (local dev Postgres) and
 # uses its own project name so volumes never collide with the dev database.
+#
+# Database roles (least privilege):
+#   devdigest      POSTGRES_USER — bootstrap superuser, owner of every table and
+#                  of the `drizzle` migrations schema. Used ONLY by postgres init
+#                  and the one-shot `migrate` service (POSTGRES_PASSWORD).
+#   devdigest_app  runtime role used by `api` (APP_DB_PASSWORD). LOGIN, not
+#                  superuser, member of no role, owns nothing. DML (SELECT/INSERT/
+#                  UPDATE/DELETE) on public tables, USAGE/SELECT on sequences;
+#                  `audit_events` SELECT + INSERT only; no TRUNCATE/REFERENCES/
+#                  TRIGGER, no CREATE, no `drizzle` schema. So SQL run through the
+#                  API cannot drop/disable the audit triggers, set
+#                  session_replication_role, TRUNCATE, or COPY … PROGRAM.
+#   Grants live in deploy/db-grants/grants.sql (idempotent). It is applied by
+#   deploy/postgres-init/10-app-role.sh on a fresh volume, and by `migrate`
+#   after every `db:migrate && db:bootstrap` (fixes pre-existing volumes, covers
+#   tables added by later migrations, and re-applies the audit_events narrowing).
+#
+# Rotating APP_DB_PASSWORD: put the new value in deploy/.env, then
+#   docker compose -f deploy/compose.yml up -d
+# `migrate` re-runs and ALTERs the role's password (grants.sql always re-keys the
+# role from APP_DB_PASSWORD), then `api` is recreated with the new DATABASE_URL.
+# Rotating POSTGRES_PASSWORD (owner) is manual: ALTER ROLE devdigest PASSWORD …
+# via `docker compose exec postgres psql -U devdigest`, then update deploy/.env.
 
 name: devdigest-server
 
@@ -31,7 +54,8 @@ x-api-env: &api-env
   AUTH_MODE: google
   API_PORT: "3001"
   LOG_LEVEL: ${LOG_LEVEL:-info}
-  DATABASE_URL: postgres://devdigest:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/devdigest
+  # Runtime role — never the owner/superuser (see "Database roles" above).
+  DATABASE_URL: postgres://devdigest_app:${APP_DB_PASSWORD:?set APP_DB_PASSWORD in deploy/.env}@postgres:5432/devdigest
   DEVDIGEST_CLONE_DIR: /data/clones
   PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:?set PUBLIC_HOSTNAME in deploy/.env}
   GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?set GOOGLE_CLIENT_ID in deploy/.env}
@@ -117,13 +141,18 @@ services:
     <<: *hardening
     image: devdigest-api:local
     restart: "no"
-    command: ["sh", "-c", "pnpm db:migrate && pnpm db:bootstrap"]
+    command: ["sh", "-c", "pnpm db:migrate && pnpm db:bootstrap && node /opt/devdigest/db-grants/apply-grants.mjs"]
     # Least privilege: db:migrate and db:bootstrap read only DATABASE_URL (they
     # never load the app config), so no Google client secret, master key or
-    # other API setting is handed to this container.
+    # other API setting is handed to this container. The grants step also reads
+    # APP_DB_PASSWORD (to create / re-key the runtime role).
+    # The ONLY service besides postgres that uses the owner role.
     environment:
       NODE_ENV: production
       DATABASE_URL: postgres://devdigest:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/devdigest
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in deploy/.env}
+    volumes:
+      - ./db-grants:/opt/devdigest/db-grants:ro
     networks:
       - db
     depends_on:
@@ -150,8 +179,13 @@ services:
       POSTGRES_USER: devdigest
       POSTGRES_DB: devdigest
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      # Read only by postgres-init/10-app-role.sh on a fresh volume.
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in deploy/.env}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # First-boot init (empty volume only): creates devdigest_app + default privileges.
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+      - ./db-grants:/opt/devdigest/db-grants:ro
     networks:
       - db
     healthcheck:

@@ -17,6 +17,14 @@ export const OAUTH_FLOW_TTL_MS = 10 * MINUTE_MS;
 /** `last_seen_at` / `last_used_at` are written at most once per this window. */
 export const TOUCH_THROTTLE_MS = 60 * SECOND_MS;
 
+/**
+ * Max expired rows (per table) one sweep deletes — bounds the DELETE that
+ * piggybacks on `oauthFlows.create` / `sessions.create` and the periodic sweep.
+ */
+export const EXPIRED_SWEEP_BATCH = 500;
+/** google mode: period of the background expired-flow / expired-session sweep. */
+export const IDENTITY_SWEEP_INTERVAL_MS = 10 * MINUTE_MS;
+
 /** Max active (unrevoked, unexpired) personal API tokens per user (AC-58). */
 export const TOKEN_LIMIT = 10;
 /** Default personal-token lifetime in days (mirrors the contract default). */

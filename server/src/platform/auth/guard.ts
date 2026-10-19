@@ -301,7 +301,9 @@ export function installRoutePolicyHooks(app: FastifyInstance): void {
       if (perIpRateLimit) {
         const rateLimit = {
           ...perIpRateLimit,
-          keyGenerator: (req: FastifyRequest) => `ip:${req.ip}`,
+          // Bucketed like the rejection limiter: an IPv6 client rotating
+          // through its own /64 must not get a fresh budget per address.
+          keyGenerator: (req: FastifyRequest) => `ip:${rejectionKey(req.ip)}`,
         } satisfies RateLimitOptions;
         // `rateLimit` is typed on FastifyContextConfig by @fastify/rate-limit's
         // module augmentation, so a shape mismatch fails typecheck here.
@@ -311,7 +313,10 @@ export function installRoutePolicyHooks(app: FastifyInstance): void {
   });
 }
 
-/** Global rate-limit key (AC-53): per user when authenticated, else per IP. */
+/**
+ * Global rate-limit key (AC-53): per user when authenticated, else per client
+ * address bucket ({@link rejectionKey}: IPv6 by /64, IPv4-mapped folded).
+ */
 export function rateLimitKey(req: FastifyRequest): string {
-  return req.principal ? `u:${req.principal.userId}` : `ip:${req.ip}`;
+  return req.principal ? `u:${req.principal.userId}` : `ip:${rejectionKey(req.ip)}`;
 }

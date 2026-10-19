@@ -453,7 +453,16 @@ describe('SignInService.callback — users, memberships, sessions', () => {
 
   it('maps an email already owned by another Google account to an auth error, not a 500', async () => {
     repo.upsertError = Object.assign(new Error('duplicate key value'), { code: '23505' });
-    await expectFlowError(signIn({ subject: 'sub-new', email: 'taken@onlytraf.com' }), 'auth_token_invalid');
+    const err = await signIn({ subject: 'sub-new', email: 'taken@onlytraf.com' }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(AuthFlowError);
+    expect((err as AuthFlowError).flowCode).toBe('auth_token_invalid');
+    // The browser gets only the generic auth_token_invalid text — no hint that
+    // a member with this email exists; the reason lives in the audit row only.
+    expect((err as AuthFlowError).message).toBe(new AuthFlowError('auth_token_invalid').message);
+    expect((err as AuthFlowError).message).not.toMatch(/conflict|existing member/i);
     expect(repo.state.users).toHaveLength(0);
     expect(repo.state.sessions).toHaveLength(0);
     expect(rejections()[0]!.metadata).toEqual({ reason: 'email_conflict', email: 'taken@onlytraf.com' });

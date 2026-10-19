@@ -73,6 +73,39 @@ describe('per-user rate limits (google mode)', () => {
     expect(other.statusCode).not.toBe(429);
   });
 
+  it.each(SIGN_IN_ROUTES)(
+    '%s: IPv6 rotation inside one /64 shares the per-IP budget; another /64 is unaffected',
+    async (url) => {
+      // 20 starts, each from a different address in 2001:db8:5:<n>::/64.
+      const p = url.endsWith('start') ? '2001:db8:5:1' : '2001:db8:5:3';
+      for (let i = 0; i < 20; i++) {
+        const res = await t.app.inject(
+          anonymous({ method: 'GET', url, headers: { 'x-forwarded-for': `${p}:${(i + 1).toString(16)}::${i + 7}` } }),
+        );
+        expect(res.statusCode).not.toBe(429);
+      }
+      const blocked = await t.app.inject(
+        anonymous({ method: 'GET', url, headers: { 'x-forwarded-for': `${p}:dead:beef:0:21` } }),
+      );
+      expect(blocked.statusCode).toBe(429);
+      // A different /64 is a separate bucket.
+      const otherNet = url.endsWith('start') ? '2001:db8:5:2::1' : '2001:db8:5:4::1';
+      const other = await t.app.inject(anonymous({ method: 'GET', url, headers: { 'x-forwarded-for': otherNet } }));
+      expect(other.statusCode).not.toBe(429);
+    },
+  );
+
+  it('anonymous global limit: requests rotating within one /64 share a bucket; another /64 does not', async () => {
+    // `/auth/session` is public, so anonymous requests reach the global 120/min limiter.
+    const call = (ip: string) =>
+      t.app.inject(anonymous({ method: 'GET', url: '/auth/session', headers: { 'x-forwarded-for': ip } }));
+    for (let i = 0; i < 120; i++) {
+      expect((await call(`2001:db8:77:1:${(i + 1).toString(16)}::1`)).statusCode).not.toBe(429);
+    }
+    expect((await call('2001:db8:77:1:ffff:ffff:ffff:ffff')).statusCode).toBe(429);
+    expect((await call('2001:db8:77:2::1')).statusCode).not.toBe(429);
+  });
+
   it('an existing per-route limit (test-connection 20/min) applies per user', async () => {
     const a = t.principals.session('admin');
     const b = t.principals.session('admin');

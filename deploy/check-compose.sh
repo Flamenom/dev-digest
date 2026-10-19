@@ -6,9 +6,11 @@
 #
 # Verifies: compose renders; only `proxy` publishes ports (80/443); postgres and
 # api are never published and postgres is only on the internal network; api runs
-# exactly one replica, depends on `migrate` completing, and trusts forwarded
+# exactly one replica, depends on `migrate` completing, connects as the
+# least-privilege `devdigest_app` role (never POSTGRES_USER), and trusts forwarded
 # headers only from the proxy's static IP; `migrate` is a one-shot
-# `pnpm db:migrate && pnpm db:bootstrap` with a secret-free env; postgres drops
+# `pnpm db:migrate && pnpm db:bootstrap` + grants step as the owner role with a
+# secret-free env; the init script + grants.sql are mounted read-only; postgres drops
 # all capabilities but the entrypoint minimum; persistent volumes are mounted;
 # the Caddyfile sets HSTS + nosniff/Referrer-Policy/X-Frame-Options/CSP;
 # Dockerfiles use pinned base images, a non-root user and no secret ARG/ENV.
@@ -28,7 +30,7 @@ docker compose -f "$COMPOSE" --env-file "$ENV_FILE" config -q
 RENDERED="$(docker compose -f "$COMPOSE" --env-file "$ENV_FILE" config --format json)"
 
 echo "▸ compose topology checks"
-printf '%s' "$RENDERED" | node -e '
+printf '%s' "$RENDERED" | DEPLOY_DIR="$DIR" node -e '
 let raw = "";
 process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   const cfg = JSON.parse(raw);
@@ -61,6 +63,7 @@ process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   // Migration step before the API.
   const cmd = [].concat(s.migrate?.command ?? []).join(" ");
   check(cmd.includes("pnpm db:migrate && pnpm db:bootstrap"), `migrate runs "pnpm db:migrate && pnpm db:bootstrap" (got: ${cmd})`);
+  check(cmd.includes("pnpm db:migrate && pnpm db:bootstrap && node /opt/devdigest/db-grants/apply-grants.mjs"), "migrate applies runtime-role grants after migrate + bootstrap");
   check(String(s.migrate?.restart ?? "no") === "no", "migrate is one-shot (restart: no)");
   check(s.api?.depends_on?.migrate?.condition === "service_completed_successfully", "api depends_on migrate: service_completed_successfully");
   check(s.migrate?.image && s.migrate.image === s.api?.image, "migrate uses the api image");
@@ -73,6 +76,26 @@ process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   const apiCmd = [].concat(s.api?.command ?? []).join(" ");
   check(!/db:migrate|migrate\.ts/.test(apiCmd), "api command does not migrate");
 
+  const mounts = (svc) => (s[svc]?.volumes ?? []).map((v) => `${v.source}:${v.target}`);
+  // DB roles: api uses the least-privilege runtime role, migrate the owner.
+  const dbUser = (u) => { try { return decodeURIComponent(new URL(u).username); } catch { return ""; } };
+  const pgUser = s.postgres?.environment?.POSTGRES_USER;
+  const apiUser = dbUser(s.api?.environment?.DATABASE_URL ?? "");
+  const migUser = dbUser(menv.DATABASE_URL ?? "");
+  check(Boolean(pgUser), "postgres POSTGRES_USER is set");
+  check(apiUser === "devdigest_app" && apiUser !== pgUser, `api DATABASE_URL user is the runtime role, not POSTGRES_USER (got: ${apiUser} vs ${pgUser})`);
+  check(migUser === pgUser, `migrate DATABASE_URL user is the owner POSTGRES_USER (got: ${migUser})`);
+  const pwOf = (u) => { try { return decodeURIComponent(new URL(u).password); } catch { return ""; } };
+  check(pwOf(s.api?.environment?.DATABASE_URL ?? "") !== pwOf(menv.DATABASE_URL ?? ""), "api and migrate DB passwords differ");
+  check(Boolean(menv.APP_DB_PASSWORD), "migrate has APP_DB_PASSWORD (creates / re-keys the runtime role)");
+  check(Boolean(s.postgres?.environment?.APP_DB_PASSWORD), "postgres has APP_DB_PASSWORD (first-boot init)");
+  check(!("POSTGRES_PASSWORD" in (s.api?.environment ?? {})), "api env has no POSTGRES_PASSWORD");
+  check(mounts("postgres").includes(`${process.env.DEPLOY_DIR}/postgres-init:/docker-entrypoint-initdb.d`), "postgres init script dir mounted at /docker-entrypoint-initdb.d");
+  check(mounts("postgres").some((m) => m.endsWith("/db-grants:/opt/devdigest/db-grants")), "postgres mounts db-grants (init applies grants.sql)");
+  check(mounts("migrate").some((m) => m.endsWith("/db-grants:/opt/devdigest/db-grants")), "migrate mounts db-grants");
+  for (const svc of ["postgres", "migrate"])
+    check((s[svc]?.volumes ?? []).filter((v) => /db-grants|postgres-init/.test(v.source ?? "")).every((v) => v.read_only === true), `${svc} grant/init mounts are read-only`);
+
   // Auth mode + trusted proxy.
   const env = s.api?.environment ?? {};
   check(env.AUTH_MODE === "google", "api AUTH_MODE=google");
@@ -84,7 +107,6 @@ process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   check(s.web?.build?.args?.NEXT_PUBLIC_API_BASE === "/api", "web built with NEXT_PUBLIC_API_BASE=/api");
 
   // Persistence.
-  const mounts = (svc) => (s[svc]?.volumes ?? []).map((v) => `${v.source}:${v.target}`);
   check(mounts("postgres").includes("pgdata:/var/lib/postgresql/data"), "postgres data on volume pgdata");
   check(mounts("api").includes("clones:/data/clones"), "api clones on volume clones");
   check(mounts("proxy").includes("caddy_data:/data"), "caddy certificates on volume caddy_data");
@@ -108,6 +130,28 @@ process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   }
 });
 '
+
+echo "▸ DB role / grants checks"
+GRANTS="$DIR/db-grants/grants.sql"
+INIT="$DIR/postgres-init/10-app-role.sh"
+[ -x "$INIT" ] && echo "  ok  postgres-init/10-app-role.sh is executable" || { echo "  FAIL $INIT missing or not executable" >&2; exit 1; }
+grep -q 'db-grants/grants.sql' "$INIT" && echo "  ok  init applies grants.sql" || { echo "  FAIL init does not apply grants.sql" >&2; exit 1; }
+[ -f "$DIR/db-grants/apply-grants.mjs" ] && echo "  ok  db-grants/apply-grants.mjs present" || { echo "  FAIL apply-grants.mjs missing" >&2; exit 1; }
+for p in \
+  "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS" \
+  "GRANT SELECT, INSERT ON TABLE public.audit_events TO devdigest_app" \
+  "REVOKE ALL ON TABLE public.audit_events FROM devdigest_app" \
+  "REVOKE ALL ON SCHEMA drizzle FROM devdigest_app" \
+  "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO devdigest_app" \
+  "REVOKE CREATE ON SCHEMA public FROM PUBLIC"; do
+  grep -Fq "$p" "$GRANTS" && echo "  ok  grants.sql: $p" || { echo "  FAIL grants.sql lacks: $p" >&2; exit 1; }
+done
+if grep -Eiq 'GRANT[^;]*(TRUNCATE|REFERENCES|TRIGGER|ALL PRIVILEGES)' "$GRANTS"; then
+  echo "  FAIL grants.sql grants TRUNCATE/REFERENCES/TRIGGER/ALL" >&2; exit 1
+else echo "  ok  grants.sql never grants TRUNCATE/REFERENCES/TRIGGER/ALL"; fi
+if grep -Eq "PASSWORD '[^']" "$GRANTS" "$INIT"; then
+  echo "  FAIL hard-coded password literal in grants/init" >&2; exit 1
+else echo "  ok  no hard-coded password in grants/init"; fi
 
 echo "▸ Dockerfile checks"
 fail=0

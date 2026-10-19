@@ -136,7 +136,6 @@ class Rejection extends Error {
     readonly email: string | null,
     /** Finer-grained audit reason when it differs from the flow code. */
     readonly detail?: string,
-    readonly userMessage?: string,
   ) {
     super(flowCode);
   }
@@ -194,7 +193,10 @@ export class SignInService {
         },
         ip: input.ip ?? null,
       });
-      throw new AuthFlowError(err.flowCode, err.userMessage);
+      // The browser only ever sees the generic flow-code text; the finer
+      // `detail` (e.g. email_conflict) stays in the audit row — it would tell
+      // an outsider that a member with this email exists.
+      throw new AuthFlowError(err.flowCode);
     }
   }
 
@@ -293,12 +295,7 @@ export class SignInService {
         // Another Google account already owns this email (a re-created account
         // with a new `sub`). Never merge identities by email — reject (T7 gap).
         if (!isUniqueViolation(err)) throw err;
-        throw new Rejection(
-          'auth_token_invalid',
-          email,
-          'email_conflict',
-          'This Google account conflicts with an existing member — contact an admin',
-        );
+        throw new Rejection('auth_token_invalid', email, 'email_conflict');
       }
       const user = upserted.user;
 

@@ -29,7 +29,7 @@ import { installAuditHook } from './platform/auth/audit-hook.js';
 import { decorateRequestPrincipal } from './platform/auth/request-principal.js';
 import { ReviewService } from './modules/reviews/service.js';
 import { ZIP_MAX_BYTES } from './modules/skills/constants.js';
-import { SESSION_COOKIE } from './modules/identity/constants.js';
+import { IDENTITY_SWEEP_INTERVAL_MS, SESSION_COOKIE } from './modules/identity/constants.js';
 
 // Attach the DI container to every request/instance.
 declare module 'fastify' {
@@ -145,6 +145,35 @@ async function googleBootChecks(container: Container, log: BootLogger): Promise<
 }
 
 /**
+ * google mode: sweep expired OIDC flows and sessions every
+ * {@link IDENTITY_SWEEP_INTERVAL_MS} (one bounded batch per table per tick —
+ * the create-time sweeps only run when someone signs in). The timer is
+ * `unref()`ed so it never keeps the process alive, cleared in `onClose`, and a
+ * tick is skipped while the previous one is still running. Failures are
+ * logged, never thrown (maintenance must not take the API down).
+ */
+function scheduleIdentitySweep(app: FastifyInstance, container: Container): void {
+  let running = false;
+  const timer = setInterval(() => {
+    if (running) return;
+    running = true;
+    container.identityRepo
+      .sweepExpired(container.clock.now())
+      .then((swept) => {
+        if (swept.oauthFlows > 0 || swept.sessions > 0) app.log.info(swept, 'swept expired oauth flows / sessions');
+      })
+      .catch((err: unknown) => {
+        app.log.warn({ err: err instanceof Error ? err.message : String(err) }, 'identity expiry sweep failed');
+      })
+      .finally(() => {
+        running = false;
+      });
+  }, IDENTITY_SWEEP_INTERVAL_MS);
+  timer.unref();
+  app.addHook('onClose', async () => clearInterval(timer));
+}
+
+/**
  * buildApp() — exported so tests can use `app.inject()` without a real port.
  * Wires the zod type provider (request validation + response serialization),
  * the security/transport plugins (helmet, cors, rate-limit, SSE) ahead of the
@@ -236,6 +265,7 @@ async function configureApp(
   const google = config.authMode === 'google';
 
   if (google && (opts.bootChecks ?? true)) await googleBootChecks(container, app.log);
+  if (google) scheduleIdentitySweep(app, container);
   if (!google && config.nodeEnv === 'production' && config.allowUnauthenticatedLocal) {
     // AC-4: acknowledged, but loud.
     app.log.warn(

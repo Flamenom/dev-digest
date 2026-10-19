@@ -314,4 +314,49 @@ d('identity repository', () => {
     expect(map.get(person.id)).toEqual({ user_id: person.id, name: person.name });
     expect((await repo.lookup([])).size).toBe(0);
   });
+
+  // Last in the file: it clears both tables first so the counts are exact.
+  it('expiry sweeps: expired flows / sessions removed, fresh kept, batch bound respected', async () => {
+    await pg.handle.db.delete(t.oauthFlows);
+    await pg.handle.db.delete(t.sessions);
+    const T1 = at(400 * 24 * HOUR);
+    const before = (ms: number) => new Date(T1.getTime() - ms);
+    const flow = (n: string, now: Date) => ({
+      stateHash: sha256Hex(`sweep-state-${n}`),
+      bindingHash: sha256Hex(`sweep-binding-${n}`),
+      nonce: `n-${n}`,
+      codeVerifier: `v-${n}`,
+      returnTo: '/',
+      now,
+    });
+
+    // OAuth flows: three abandoned an hour ago (expired at T1-50min).
+    for (const n of ['a', 'b', 'c']) await repo.oauthFlows.create(flow(n, before(HOUR)));
+    expect(await repo.oauthFlows.sweepExpired(T1, 2)).toBe(2); // batch bound
+    // A new start at T1 sweeps the remaining expired one and keeps itself.
+    await repo.oauthFlows.create(flow('fresh', T1));
+    const flows = await pg.handle.db.select({ stateHash: t.oauthFlows.stateHash }).from(t.oauthFlows);
+    expect(flows.map((f) => f.stateHash)).toEqual([sha256Hex('sweep-state-fresh')]);
+    // Not expired yet at its own expiry instant minus 1 ms.
+    expect(await repo.oauthFlows.sweepExpired(new Date(T1.getTime() + OAUTH_FLOW_TTL_MS - 1))).toBe(0);
+
+    // Sessions.
+    const user = await member();
+    const sess = (n: string, now: Date) =>
+      repo.sessions.create({ idHash: sha256Hex(`sweep-${n}-${user.id}`), userId: user.id, workspaceId: ws, now });
+    await sess('abs1', before(SESSION_ABSOLUTE_MS + 2 * HOUR)); // absolute expiry T1-2h
+    await sess('abs2', before(SESSION_ABSOLUTE_MS + HOUR)); // absolute expiry T1-1h
+    const idle = await sess('idle', before(SESSION_IDLE_MS + HOUR)); // idle-expired, absolute live
+    expect(await repo.sessions.sweepExpired(T1, { limit: 1, idle: false })).toBe(1); // batch bound
+    // sessions.create sweeps ABSOLUTE expiry only — the idle-expired one stays.
+    const fresh = await sess('fresh', T1);
+    let ids = (await pg.handle.db.select({ id: t.sessions.id }).from(t.sessions)).map((r) => r.id).sort();
+    expect(ids).toEqual([idle.id, fresh.id].sort());
+
+    // The periodic sweep also reclaims idle-expired sessions; the fresh one survives.
+    expect(await repo.sweepExpired(T1)).toEqual({ oauthFlows: 0, sessions: 1 });
+    ids = (await pg.handle.db.select({ id: t.sessions.id }).from(t.sessions)).map((r) => r.id);
+    expect(ids).toEqual([fresh.id]);
+    expect(await repo.sessions.findActiveByHash(sha256Hex(`sweep-fresh-${user.id}`), T1)).toBeDefined();
+  });
 });

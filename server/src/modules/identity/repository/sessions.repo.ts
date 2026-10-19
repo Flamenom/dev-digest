@@ -1,8 +1,8 @@
-import { and, eq, gt } from 'drizzle-orm';
+import { and, eq, gt, inArray, lt, or } from 'drizzle-orm';
 import type { Role } from '@devdigest/shared';
 import type { Db } from '../../../db/client.js';
 import * as t from '../../../db/schema.js';
-import { SESSION_ABSOLUTE_MS, SESSION_IDLE_MS } from '../constants.js';
+import { EXPIRED_SWEEP_BATCH, SESSION_ABSOLUTE_MS, SESSION_IDLE_MS } from '../constants.js';
 import { execOf, type IdentityExecutor } from './users.repo.js';
 
 // ---- Domain types -----------------------------------------------------------
@@ -44,7 +44,13 @@ export interface ActiveSession {
 export class SessionsRepo {
   constructor(private db: Db) {}
 
+  /**
+   * Issue a session. Sessions past their ABSOLUTE expiry are swept first, in a
+   * bounded batch over the `expires_at` index (cheap on the sign-in path); the
+   * periodic sweep also removes idle-expired ones (see {@link sweepExpired}).
+   */
   async create(input: NewSession, tx?: IdentityExecutor): Promise<SessionRecord> {
+    await this.sweepExpired(input.now, { limit: EXPIRED_SWEEP_BATCH, idle: false }, tx);
     const [row] = await execOf(this.db, tx)
       .insert(t.sessions)
       .values({
@@ -129,6 +135,31 @@ export class SessionsRepo {
     const rows = await execOf(this.db, tx)
       .delete(t.sessions)
       .where(eq(t.sessions.userId, userId))
+      .returning({ id: t.sessions.id });
+    return rows.length;
+  }
+
+  /**
+   * Delete up to `limit` sessions that can never authenticate again at `now`:
+   * past the absolute expiry and — with `idle` (default) — not seen within the
+   * idle timeout (AC-25). Expired sessions are already rejected by
+   * {@link findActiveByHash}; this only reclaims the rows. Returns the count.
+   */
+  async sweepExpired(
+    now: Date,
+    opts: { limit?: number; idle?: boolean } = {},
+    tx?: IdentityExecutor,
+  ): Promise<number> {
+    const { limit = EXPIRED_SWEEP_BATCH, idle = true } = opts;
+    const exec = execOf(this.db, tx);
+    const absolute = lt(t.sessions.expiresAt, now);
+    const dead = idle
+      ? or(absolute, lt(t.sessions.lastSeenAt, new Date(now.getTime() - SESSION_IDLE_MS)))
+      : absolute;
+    const expired = exec.select({ id: t.sessions.id }).from(t.sessions).where(dead).limit(limit);
+    const rows = await exec
+      .delete(t.sessions)
+      .where(inArray(t.sessions.id, expired))
       .returning({ id: t.sessions.id });
     return rows.length;
   }
