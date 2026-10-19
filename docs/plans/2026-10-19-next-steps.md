@@ -193,6 +193,51 @@ Approach:
 > Note: an earlier claim that Settings had stub sections was **wrong**. `SETTINGS_SECTIONS`
 > (`client/src/vendor/ui/nav.ts`) has only `api-keys` and `models`, and both are implemented.
 
+### Status as of 2026-10-19 (end of session)
+
+Done on branch `feat/gitlab-integration-next-steps`, not merged yet:
+- **A:** README and the Obsidian notes cover GitLab.
+- **B:** insights recorded.
+- **E:** the trace/status race is fixed. 10/10 full runs were green. A rare Docker hook timeout remains; see G6.
+- **F:** settings repository and `PullListService`.
+- **C:** multi-user server mode is implemented.
+  - Spec `specs/2026-10-19-multi-user-server.md` and plan `docs/plans/multi-user-server.md`, 29 tasks.
+  - Seven `/pr-self-review` rounds; the last one had 0 critical findings.
+  - Migrations `0021`–`0025` are new.
+
+Task D (GitLab comment posting) is still open. It can start now that C is done: it posts as the service account.
+
+### Task G: follow-ups from the multi-user `/pr-self-review` rounds (small each · ready)
+
+None of these block the push. Each needs a test.
+
+1. **Type-safety pass**, removing `as` casts:
+   - make `useAgent` return `AgentWithActors` (`client/src/app/agents/[id]/page.tsx:129`);
+   - build `toSecretsStatusDto` from a typed provider tuple instead of `as SecretsStatusDetailed` (`server/src/modules/settings/helpers.ts:67`);
+   - add an `isAuthzCode` type guard (`client/src/lib/providers.tsx:64`);
+   - define `WithAgentActors<T>` via `Omit` (`server/src/modules/agents/helpers.ts:167`);
+   - replace `one!` / `dto!` / `ws!` / `user!` with explicit guards;
+   - add `Role.safeParse` in `MemberRow`.
+2. **Settings dedupe in `0024`:** the dedupe ranks rows by `age(xmin)`, which is not reliable after a dump/restore or a VACUUM FREEZE.
+   - `0024` may already be applied somewhere, so do not edit it.
+   - If any environment still has per-user duplicates, add a pre-check migration that fails when duplicates hold *different* values.
+   - Alternatively, document a backup step.
+3. **OAuth callback:** consume the flow atomically with the binding check, `DELETE … WHERE state_hash = $1 AND binding_hash = $2` (`server/src/modules/identity/sign-in-service.ts:223`). With this change, a stray callback can no longer burn a victim's in-flight sign-in.
+4. **Audit durability:** `secret.save` and `settings.update` are written fire-and-forget after the response (`platform/auth/audit-hook.ts`). Move them into the service transaction, as the identity services already do. Audit `secret.save` on the write itself, not on the final HTTP status.
+5. **Test refactor:**
+   - add one shared `renderWithProviders` with a fetch router (or MSW);
+   - drop the per-file mocks of `@/lib/hooks` / session / permissions / app-shell / RunStatus;
+   - wait on visible output, not on fetch call counts;
+   - replace `querySelector('img')` in `ActorLabel.test.tsx`.
+6. **Small DB items:**
+   - `fillfactor = 90` on `sessions` and `api_tokens`;
+   - a batched `replaceMany` in `SecretStoreRepository`;
+   - `useCan` / `useIsAdmin` → `lib/hooks/permissions.ts`;
+   - one error channel per mutation, so the toast and the inline alert don't both fire;
+   - `metadata` for `/sign-in`.
+7. **Known flake (Task E leftover):** under heavy Docker load, a testcontainers `beforeAll` sometimes exceeds 120 s. The fix is a shared Postgres via `globalSetup` with a database per file.
+8. **`vendor/ui`:** add `aria-disabled` support to `Toggle` / `Checkbox` / `IconBtn`. Members currently get *hidden* controls there, not disabled ones.
+
 ---
 
 ## 3. How to execute
