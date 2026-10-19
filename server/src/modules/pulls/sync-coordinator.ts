@@ -69,7 +69,16 @@ export class PrSyncCoordinator<R extends CoordinatedRepo = CoordinatedRepo> {
   private readonly describeError: (err: unknown) => string;
 
   constructor(private deps: PrSyncCoordinatorDeps<R>) {
-    this.describeError = deps.describeError ?? describeSyncError;
+    const describe = deps.describeError ?? describeSyncError;
+    // Never throws: it runs inside every catch below, including the last-resort
+    // guard, where a throw would leave the repo stuck "in flight" forever.
+    this.describeError = (err) => {
+      try {
+        return describe(err);
+      } catch {
+        return 'PR sync failed';
+      }
+    };
   }
 
   isRunning(repoId: string): boolean {
@@ -175,12 +184,13 @@ export class PrSyncCoordinator<R extends CoordinatedRepo = CoordinatedRepo> {
       .then(() => this.execute(repo))
       .catch((err: unknown) => {
       // execute() handles its own errors; this is a last-resort guard so a
-      // detached promise can never become an unhandled rejection.
+      // detached promise can never become an unhandled rejection. Release the
+      // single-flight slot first, before anything else that could fail.
+      this.inflight.delete(repo.id);
       this.deps.log?.warn(
         { err: this.describeError(err), repoId: repo.id },
         'PR sync bookkeeping failed',
       );
-      this.inflight.delete(repo.id);
       const event: PrSyncDoneEvent = { state: 'failed', last_synced_at: null, last_sync_error: 'PR sync failed' };
       this.notify(repo.id, event);
       return event;
