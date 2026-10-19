@@ -64,6 +64,8 @@ export const cases: WorkflowCase[] = [
   },
 
   // --- activation pair (2 sessions): positive + near-miss negative ------------------------------
+  // 6 turns, same for both sides: CLAUDE.md's insights loop has the model read the in-scope
+  // INSIGHTS.md before acting, which used up the old 4-turn budget before the skill call.
   {
     kind: "activation",
     name: "engineering-insights activates on a genuine discovery",
@@ -72,7 +74,7 @@ export const cases: WorkflowCase[] = [
       "після зміни моделі ембедингів. Хочу це зафіксувати, щоб більше не наступати.",
     skill: "engineering-insights",
     shouldActivate: true,
-    maxTurns: 4,
+    maxTurns: 6,
   },
   {
     kind: "activation",
@@ -81,6 +83,6 @@ export const cases: WorkflowCase[] = [
       "Поясни, як у pgvector працюють розмірності колонок і чому невідповідність повертає нуль рядків.",
     skill: "engineering-insights",
     shouldActivate: false,
-    maxTurns: 4,
+    maxTurns: 6,
   },
 ];
