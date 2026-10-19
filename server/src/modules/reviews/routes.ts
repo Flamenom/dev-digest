@@ -14,6 +14,11 @@ import { ReviewService } from './service.js';
  *   GET    /runs/:id/trace                             → the single-document RunTrace
  *   GET    /pulls/:id/reviews                          → persisted reviews + findings for a PR
  *   POST   /findings/:id/(accept|dismiss)              → finding actions
+ *
+ * Multi-user: runs record their initiator (`started_by` on run/review DTOs),
+ * finding actions their actor (`acted_by`); cancel is owner-or-Admin (AC-30,
+ * enforced in the service). Audit of accept/dismiss/deletes is the global
+ * audit hook's job (route policy), not this module's.
  */
 const FINDING_ACTIONS = ['accept', 'dismiss'] as const;
 export default async function reviewsRoutes(appBase: FastifyInstance) {
@@ -28,7 +33,7 @@ export default async function reviewsRoutes(appBase: FastifyInstance) {
     '/pulls/:id/review',
     { schema: { params: IdParams }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
     async (req) => {
-    const { workspaceId } = await getContext(container, req);
+    const { workspaceId, userId } = await getContext(container, req);
     const body = RunRequest.parse(req.body ?? {});
     const targets = await service.resolveTargets(workspaceId, {
       ...(body.agentId !== undefined ? { agentId: body.agentId } : {}),
@@ -39,6 +44,7 @@ export default async function reviewsRoutes(appBase: FastifyInstance) {
       req.params.id,
       targets,
       req.log,
+      userId,
     );
     return { pr_id: req.params.id, runs, reviews };
   });
@@ -119,8 +125,8 @@ export default async function reviewsRoutes(appBase: FastifyInstance) {
 
   // ---- Cancel an in-flight run --------------------------------------------
   app.post('/runs/:id/cancel', { schema: { params: IdParams } }, async (req) => {
-    const { workspaceId } = await getContext(container, req);
-    await service.cancelRun(workspaceId, req.params.id);
+    const { workspaceId, userId, role } = await getContext(container, req);
+    await service.cancelRun(workspaceId, req.params.id, { userId, role });
     return { ok: true };
   });
 
@@ -149,8 +155,8 @@ export default async function reviewsRoutes(appBase: FastifyInstance) {
   // ---- Finding actions (accept / dismiss) ---------------------------------
   for (const action of FINDING_ACTIONS) {
     app.post(`/findings/:id/${action}`, { schema: { params: IdParams } }, async (req) => {
-      const { workspaceId } = await getContext(container, req);
-      const result = await service.actOnFinding(workspaceId, req.params.id, action);
+      const { workspaceId, userId } = await getContext(container, req);
+      const result = await service.actOnFinding(workspaceId, req.params.id, action, userId);
       return result;
     });
   }

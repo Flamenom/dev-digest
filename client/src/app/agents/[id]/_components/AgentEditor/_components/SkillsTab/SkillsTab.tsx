@@ -5,15 +5,22 @@ import { useTranslations } from "next-intl";
 import { Badge, Checkbox, Chip, EmptyState, ErrorState, Skeleton, TextInput } from "@devdigest/ui";
 import type { Agent, Skill } from "@devdigest/shared";
 import { useAgentSkills, useSetAgentSkills, useWorkspaceSkills } from "@/lib/hooks/agents";
+import { useCan } from "@/lib/permissions";
 import { linkedIdsOf, matchesFilter, moveTo, orderRows, toggleLinked } from "./helpers";
 import { s } from "./styles";
 
 const DRAG_HANDLE_GLYPH = "≡";
 
 /** Skills tab — link/unlink and order the agent's skills (membership model).
-    Every change posts the FULL ordered set to POST /agents/:id/skills. */
+    Every change posts the FULL ordered set to POST /agents/:id/skills.
+    Attaching skills is Admin-only (AC-33): a Member sees the linked set and
+    order read-only (no toggling, no dragging) with the "Admins only" hint. */
 export function SkillsTab({ agent }: { agent: Agent }) {
   const t = useTranslations("agents");
+  const tAuth = useTranslations("auth");
+  const { isAdmin, isPending: sessionPending } = useCan();
+  // Inert until the session resolves (fail closed); the hint only once we know.
+  const readOnly = !isAdmin;
   const skillsQ = useWorkspaceSkills();
   const linksQ = useAgentSkills(agent.id);
   const setSkills = useSetAgentSkills(agent.id);
@@ -31,11 +38,12 @@ export function SkillsTab({ agent }: { agent: Agent }) {
   const visible = filtering ? rows.filter((sk) => matchesFilter(sk, filter)) : rows;
 
   const toggle = (skillId: string, on: boolean) => {
-    if (setSkills.isPending) return;
+    if (readOnly || setSkills.isPending) return;
     setSkills.mutate(toggleLinked(linkedIds, skillId, on));
   };
 
   const startDrag = (e: React.DragEvent, skillId: string) => {
+    if (readOnly) return;
     // dataTransfer is absent in jsdom — guard every access.
     e.dataTransfer?.setData?.("text/plain", skillId);
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
@@ -105,6 +113,7 @@ export function SkillsTab({ agent }: { agent: Agent }) {
           />
         </div>
       </div>
+      {readOnly && !sessionPending && <p style={s.readOnlyHint}>{tAuth("gate.adminsOnly")}</p>}
       <p style={s.caption}>{t("skills.orderHint")}</p>
       {visible.length === 0 ? (
         <div style={s.noMatches}>{t("skills.noMatches")}</div>
@@ -115,9 +124,9 @@ export function SkillsTab({ agent }: { agent: Agent }) {
               key={sk.id}
               skill={sk}
               linked={displayIds.includes(sk.id)}
-              draggable={displayIds.includes(sk.id) && !filtering && !setSkills.isPending}
+              draggable={!readOnly && displayIds.includes(sk.id) && !filtering && !setSkills.isPending}
               dragging={dragId === sk.id}
-              onToggle={(on) => toggle(sk.id, on)}
+              onToggle={readOnly ? undefined : (on) => toggle(sk.id, on)}
               onDragStart={(e) => startDrag(e, sk.id)}
               onDragOver={(e) => dragOverRow(e, sk.id)}
               onDragEnd={endDrag}
@@ -146,7 +155,8 @@ function SkillRow({
   linked: boolean;
   draggable: boolean;
   dragging: boolean;
-  onToggle: (on: boolean) => void;
+  /** Absent = read-only (Member): the checkbox shows the state but does nothing. */
+  onToggle?: (on: boolean) => void;
   onDragStart: (e: React.DragEvent) => void;
   onDragOver: (e: React.DragEvent) => void;
   onDragEnd: () => void;

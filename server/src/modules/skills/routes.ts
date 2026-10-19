@@ -8,6 +8,7 @@ import { IdParams } from '../_shared/schemas.js';
 import { NotFoundError, ValidationError } from '../../platform/errors.js';
 import { SkillsService } from './service.js';
 import { parseSkillImport } from './import.js';
+import { toSkillResponse, toSkillResponses, toSkillVersionResponses } from './helpers.js';
 
 /** `/skills/:id/versions/:v` — id is a uuid, v a positive integer. */
 const VersionParams = z.object({
@@ -33,6 +34,10 @@ const VersionParams = z.object({
  * NOTE: /skills/usage and /skills/import are registered BEFORE /skills/:id
  * (and :id is uuid-validated) so the static paths can never be shadowed by
  * the param route.
+ *
+ * Attribution (AC-47): writes pass the caller's `userId` from `getContext`
+ * (never the body/form); skill DTOs carry `created_by` / `updated_by` and
+ * version entries `author` as `ActorRef`s (null for legacy rows).
  */
 
 const CreateSkillBody = z.object({
@@ -64,10 +69,11 @@ const UpdateSkillBody = z.object({
 export default async function skillsRoutes(appBase: FastifyInstance) {
   const app = appBase.withTypeProvider<ZodTypeProvider>();
   const service = new SkillsService(app.container);
+  const lookup = (ids: readonly string[]) => app.container.actorDirectory.lookup(ids);
 
   app.get('/skills', async (req) => {
     const { workspaceId } = await getContext(app.container, req);
-    return service.list(workspaceId);
+    return toSkillResponses(await service.list(workspaceId), lookup);
   });
 
   // Static sibling of /skills/:id — registered first so it can't be shadowed.
@@ -99,33 +105,37 @@ export default async function skillsRoutes(appBase: FastifyInstance) {
     const { workspaceId } = await getContext(app.container, req);
     const skill = await service.get(workspaceId, req.params.id);
     if (!skill) throw new NotFoundError('Skill not found');
-    return skill;
+    return toSkillResponse(skill, lookup);
   });
 
   app.post('/skills', { schema: { body: CreateSkillBody } }, async (req, reply) => {
-    const { workspaceId } = await getContext(app.container, req);
+    const { workspaceId, userId } = await getContext(app.container, req);
     const body = req.body;
-    const skill = await service.create(workspaceId, {
-      name: body.name,
-      description: body.description,
-      type: body.type,
-      body: body.body,
-      ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
-      ...(body.source !== undefined ? { source: body.source } : {}),
-      ...(body.evidence_files !== undefined ? { evidenceFiles: body.evidence_files } : {}),
-    });
+    const skill = await service.create(
+      workspaceId,
+      {
+        name: body.name,
+        description: body.description,
+        type: body.type,
+        body: body.body,
+        ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
+        ...(body.source !== undefined ? { source: body.source } : {}),
+        ...(body.evidence_files !== undefined ? { evidenceFiles: body.evidence_files } : {}),
+      },
+      userId,
+    );
     reply.status(201);
-    return skill;
+    return toSkillResponse(skill, lookup);
   });
 
   app.put(
     '/skills/:id',
     { schema: { params: IdParams, body: UpdateSkillBody } },
     async (req) => {
-      const { workspaceId } = await getContext(app.container, req);
-      const skill = await service.update(workspaceId, req.params.id, req.body);
+      const { workspaceId, userId } = await getContext(app.container, req);
+      const skill = await service.update(workspaceId, req.params.id, req.body, userId);
       if (!skill) throw new NotFoundError('Skill not found');
-      return skill;
+      return toSkillResponse(skill, lookup);
     },
   );
 
@@ -135,10 +145,15 @@ export default async function skillsRoutes(appBase: FastifyInstance) {
     '/skills/:id/attached-docs',
     { schema: { params: IdParams, body: SetAttachedDocsBody } },
     async (req) => {
-      const { workspaceId } = await getContext(app.container, req);
-      const skill = await service.setAttachedDocs(workspaceId, req.params.id, req.body.paths);
+      const { workspaceId, userId } = await getContext(app.container, req);
+      const skill = await service.setAttachedDocs(
+        workspaceId,
+        req.params.id,
+        req.body.paths,
+        userId,
+      );
       if (!skill) throw new NotFoundError('Skill not found');
-      return skill;
+      return toSkillResponse(skill, lookup);
     },
   );
 
@@ -162,10 +177,10 @@ export default async function skillsRoutes(appBase: FastifyInstance) {
     '/skills/:id/restore',
     { schema: { params: IdParams, body: RestoreSkillBody } },
     async (req) => {
-      const { workspaceId } = await getContext(app.container, req);
-      const skill = await service.restore(workspaceId, req.params.id, req.body.version);
+      const { workspaceId, userId } = await getContext(app.container, req);
+      const skill = await service.restore(workspaceId, req.params.id, req.body.version, userId);
       if (!skill) throw new NotFoundError('Skill or version not found');
-      return skill;
+      return toSkillResponse(skill, lookup);
     },
   );
 
@@ -173,13 +188,14 @@ export default async function skillsRoutes(appBase: FastifyInstance) {
     const { workspaceId } = await getContext(app.container, req);
     const versions = await service.listVersions(workspaceId, req.params.id);
     if (!versions) throw new NotFoundError('Skill not found');
-    return versions;
+    return toSkillVersionResponses(versions, lookup);
   });
 
   app.get('/skills/:id/versions/:v', { schema: { params: VersionParams } }, async (req) => {
     const { workspaceId } = await getContext(app.container, req);
     const version = await service.getVersion(workspaceId, req.params.id, req.params.v);
     if (!version) throw new NotFoundError('Skill version not found');
-    return version;
+    const [entry] = await toSkillVersionResponses([version], lookup);
+    return entry;
   });
 }

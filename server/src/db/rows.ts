@@ -16,3 +16,14 @@ export type PullRow = typeof t.pullRequests.$inferSelect;
 export type AgentRunRow = typeof t.agentRuns.$inferSelect;
 export type EvalCaseRow = typeof t.evalCases.$inferSelect;
 export type EvalRunRow = typeof t.evalRuns.$inferSelect;
+
+// Multi-user server mode (migration 0021). Consumed by the identity / audit /
+// secrets repositories only — map them to domain types at the repository boundary.
+export type UserRow = typeof t.users.$inferSelect;
+export type WorkspaceMemberRow = typeof t.workspaceMembers.$inferSelect;
+export type SessionRow = typeof t.sessions.$inferSelect;
+export type OAuthFlowRow = typeof t.oauthFlows.$inferSelect;
+export type ApiTokenRow = typeof t.apiTokens.$inferSelect;
+export type EncryptedSecretRow = typeof t.encryptedSecrets.$inferSelect;
+export type AuditEventRow = typeof t.auditEvents.$inferSelect;
+export type AuditEventInsert = typeof t.auditEvents.$inferInsert;

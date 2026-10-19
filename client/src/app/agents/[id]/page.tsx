@@ -9,6 +9,9 @@ import { Button, Dropdown, ErrorState, Skeleton, Icon, Badge } from "@devdigest/
 import { AppShell } from "../../../components/app-shell";
 import { AgentCard } from "../_components/AgentCard";
 import { AgentEditor } from "./_components/AgentEditor";
+import { AdminOnly } from "@/components/admin-gate";
+import { ActorLabel } from "@/components/actor-label";
+import type { AgentWithActors } from "@devdigest/shared";
 import { useAgents, useAgent, useUpdateAgent } from "../../../lib/hooks/agents";
 import { ApiError } from "../../../lib/api";
 
@@ -69,16 +72,28 @@ export default function AgentEditorPage() {
           <div style={{ padding: "16px 16px 12px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
               <h1 style={{ fontSize: 18, fontWeight: 700, flex: 1 }}>Agents</h1>
-              <Dropdown
-                width={210}
-                align="right"
-                trigger={
-                  <Button kind="primary" size="sm" icon="Plus">
-                    Add
-                  </Button>
+              {/* Creating an agent is Admin-only (AC-33): a Member gets the
+                  control aria-disabled with the visible "Admins only" hint. */}
+              <AdminOnly>
+                {(gate) =>
+                  gate.allowed ? (
+                    <Dropdown
+                      width={210}
+                      align="right"
+                      trigger={
+                        <Button kind="primary" size="sm" icon="Plus">
+                          Add
+                        </Button>
+                      }
+                      items={[{ label: "Create from scratch", icon: "Edit", onClick: () => router.push("/agents") }]}
+                    />
+                  ) : (
+                    <Button {...gate.controlProps} kind="primary" size="sm" icon="Plus" onClick={gate.guard()}>
+                      Add
+                    </Button>
+                  )
                 }
-                items={[{ label: "Create from scratch", icon: "Edit", onClick: () => router.push("/agents") }]}
-              />
+              </AdminOnly>
             </div>
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: "0 12px 12px" }}>
@@ -109,6 +124,15 @@ export default function AgentEditorPage() {
                 {agent.provider}/{agent.model}
               </Badge>
               {!agent.enabled && <Badge color="var(--text-muted)">disabled</Badge>}
+              {/* Last updater (AC-47), only when the server sends attribution —
+                  absent on pre-multi-user payloads, so nothing renders there. */}
+              {(agent as AgentWithActors).updated_by !== undefined && (
+                <ActorLabel
+                  actor={(agent as AgentWithActors).updated_by}
+                  verb="updated"
+                  style={{ fontSize: 12, color: "var(--text-muted)" }}
+                />
+              )}
               <div style={{ marginLeft: "auto" }}>
                 <Button kind="secondary" size="sm" icon="GitPullRequest" onClick={() => router.push("/")}>
                   Run on a PR…

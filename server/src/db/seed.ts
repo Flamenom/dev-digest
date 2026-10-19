@@ -111,7 +111,7 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
 
   await db
     .insert(t.workspaceMembers)
-    .values({ workspaceId, userId, role: 'owner' })
+    .values({ workspaceId, userId, role: 'admin' })
     .onConflictDoNothing();
 
   // ---- default settings ----

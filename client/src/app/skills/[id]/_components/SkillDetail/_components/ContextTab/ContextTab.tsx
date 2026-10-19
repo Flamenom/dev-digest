@@ -3,7 +3,10 @@
    keyboard alternative (move up/down buttons), attach toggle, filename, path,
    root-dir badge (colour + text label), token count, Preview. Persists the skill's ORDERED
    list of paths only (never text) via useSetSkillDocs. Discovery is per-repo:
-   selector when the workspace has >1 repo, defaulting to the first (R-7). */
+   selector when the workspace has >1 repo, defaulting to the first (R-7).
+   Multi-user (AC-33): attaching/reordering is an Admin edit — a Member sees
+   the same list read-only (no toggle/move/drag) under an "Only admins can
+   change attached documents" notice; Preview stays available. */
 "use client";
 
 import React from "react";
@@ -26,6 +29,7 @@ import type { DiscoveredDocument, Skill } from "@devdigest/shared";
 import { useRepos } from "@/lib/hooks/core";
 import { useDocument, useProjectContext, useSetSkillDocs } from "@/lib/hooks/projectContext";
 import { rootDirOf } from "@/lib/root-dir";
+import { useCan } from "@/lib/permissions";
 import { BUCKET_COLORS, DRAG_HANDLE_GLYPH, NEUTRAL_COLORS } from "./constants";
 import { fileName, matchesQuery, moveTo, movePath, orderDocs, serializePreview, togglePath } from "./helpers";
 import { s } from "./styles";
@@ -34,6 +38,7 @@ export function ContextTab({ skill }: { skill: Skill }) {
   const t = useTranslations("skills");
   const reposQ = useRepos();
   const setDocs = useSetSkillDocs(skill.id);
+  const { isAdmin: canEdit } = useCan();
 
   // Only the EXPLICIT selection is state; the effective repo derives from it.
   const [selectedRepoId, setSelectedRepoId] = React.useState<string | null>(null);
@@ -144,8 +149,9 @@ export function ContextTab({ skill }: { skill: Skill }) {
         </div>
       </div>
       <p style={s.caption}>
-        {t("context.inheritanceNote")} {t("context.orderHint")}
+        {t("context.inheritanceNote")} {canEdit && t("context.orderHint")}
       </p>
+      {!canEdit && <p style={s.readOnlyNotice}>{t("context.readOnlyNotice")}</p>}
 
       {!cloneAvailable ? (
         <EmptyState
@@ -168,7 +174,8 @@ export function ContextTab({ skill }: { skill: Skill }) {
                 doc={doc}
                 name={name}
                 attached={isAttached}
-                draggable={isAttached && !filtering && !setDocs.isPending}
+                editable={canEdit}
+                draggable={canEdit && isAttached && !filtering && !setDocs.isPending}
                 dragging={dragPath === doc.path}
                 tokensLabel={t("context.tokens", { count: doc.estimated_tokens })}
                 moveUpLabel={t("context.moveUp", { name })}
@@ -221,6 +228,7 @@ function DocumentRow({
   doc,
   name,
   attached,
+  editable,
   draggable,
   dragging,
   tokensLabel,
@@ -238,6 +246,8 @@ function DocumentRow({
   doc: DiscoveredDocument;
   name: string;
   attached: boolean;
+  /** False for a Member: no attach toggle handler, no move buttons. */
+  editable: boolean;
   draggable: boolean;
   dragging: boolean;
   tokensLabel: string;
@@ -271,7 +281,7 @@ function DocumentRow({
       ) : (
         <span style={s.handlePlaceholder} aria-hidden />
       )}
-      {attached && (
+      {attached && editable && (
         <span style={s.orderBtns}>
           <IconBtn icon="ArrowUp" size={24} label={moveUpLabel} onClick={onMoveUp} />
           <IconBtn icon="ArrowDown" size={24} label={moveDownLabel} onClick={onMoveDown} />
@@ -279,7 +289,7 @@ function DocumentRow({
       )}
       <Checkbox
         checked={attached}
-        onChange={onToggle}
+        onChange={editable ? onToggle : undefined}
         label={
           <span className="mono" style={s.name}>
             {name}

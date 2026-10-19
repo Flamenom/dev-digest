@@ -1,6 +1,6 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { SecretsProvider, SecretKey } from '@devdigest/shared';
+import type { SecretsProvider, SecretKey, SecretKeyStatus, SecretsInspector } from '@devdigest/shared';
 
 /**
  * LocalSecretsProvider — writable MVP secrets backend.
@@ -13,7 +13,7 @@ import type { SecretsProvider, SecretKey } from '@devdigest/shared';
  * Stored values take precedence over env so a key entered in the UI wins.
  * Swap for a VaultSecretsProvider later without touching call sites.
  */
-export class LocalSecretsProvider implements SecretsProvider {
+export class LocalSecretsProvider implements SecretsProvider, SecretsInspector {
   private cache: Record<string, string> | null = null;
 
   constructor(
@@ -47,4 +47,19 @@ export class LocalSecretsProvider implements SecretsProvider {
     await mkdir(dirname(this.filePath), { recursive: true });
     await writeFile(this.filePath, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
   }
+
+  /**
+   * Local-mode status (AC-38): `set` exactly when `get` resolves a value (a
+   * stored override OR the env fallback — the same rule the existing booleans
+   * use), else `unset`. Local mode keeps no history, so `updatedAt`/`updatedBy`
+   * are always null; nothing is ever `undecryptable` (no encryption here).
+   */
+  status = async (keys: readonly SecretKey[]): Promise<Map<SecretKey, SecretKeyStatus>> => {
+    const out = new Map<SecretKey, SecretKeyStatus>();
+    for (const key of keys) {
+      const value = await this.get(key);
+      out.set(key, { state: value ? 'set' : 'unset', updatedAt: null, updatedBy: null });
+    }
+    return out;
+  };
 }

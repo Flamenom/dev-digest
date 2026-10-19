@@ -15,6 +15,7 @@ import blast from './blast/routes.js';
 import brief from './brief/routes.js';
 import projectContext from './project-context/routes.js';
 import evalPipeline from './eval/routes.js';
+import identity from './identity/routes.js';
 
 /**
  * Module registry. Each feature module is a Fastify plugin in
@@ -48,4 +49,6 @@ export const modules: Record<string, FastifyPluginAsync> = {
   // `eval` is a reserved word, so the plugin binding is named `evalPipeline`;
   // the REGISTRY KEY stays `eval` (registry keys are plain strings).
   eval: evalPipeline,
+  // Multi-user server mode: sign-in, session, members, personal API tokens.
+  identity,
 };

@@ -11,14 +11,19 @@
        whose vacuous-perfect `1.0` must never be displayed as a score (AC-21);
      - while a batch is in flight the rows flip to their own result as each case
        finishes (§19.6) — the tab polls the batch's `eval_runs` rows and merges
-       them over each case's persisted `last_run`. */
+       them over each case's persisted `last_run`.
+
+   Multi-user (AC-30/AC-33): running evals and authoring a new case are Member
+   actions; Edit / Delete appear only on cases the user may change
+   (`canEditEvalCase` — own case, or any for an Admin; a legacy case with no
+   recorded creator is Admin-only). */
 "use client";
 
 import React from "react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { Badge, Button, EmptyState, Icon, MetricCard, SectionLabel, Skeleton } from "@devdigest/ui";
-import type { Agent } from "@devdigest/shared";
+import type { Agent, EvalCaseRecordWithActor } from "@devdigest/shared";
 import {
   useAgentEvalCases,
   useAgentEvalDashboard,
@@ -28,6 +33,7 @@ import {
   useStartEvalBatch,
 } from "@/lib/hooks/eval";
 import { EvalCaseEditorModal } from "@/components/EvalCaseEditorModal";
+import { useCan } from "@/lib/permissions";
 import { CaseRow } from "./_components/CaseRow";
 import { EM_DASH, ERROR_CODE_KEYS, METRIC_CARDS } from "./constants";
 import {
@@ -67,6 +73,9 @@ export function EvalsTab({ agent }: { agent: Agent }) {
   const startBatch = useStartEvalBatch();
   const runCase = useRunEvalCase();
   const removeCase = useDeleteEvalCase();
+  const { canEditEvalCase } = useCan();
+  // Typed against the actor-carrying DTO: the server adds `created_by`.
+  const canChange = (record: EvalCaseRecordWithActor) => canEditEvalCase(record);
 
   // Only fetch run rows while this tab has a batch — passing `null` disables the
   // query, so an idle tab never pulls the agent's whole run history (which would
@@ -238,8 +247,8 @@ export function EvalsTab({ agent }: { agent: Agent }) {
                 status={status}
                 busy={running || runCase.isPending}
                 onRun={() => runCase.mutate({ caseId: record.id, agentId: agent.id })}
-                onEdit={() => setEditor({ caseId: record.id })}
-                onDelete={() => onDelete(record.id, false)}
+                onEdit={canChange(record) ? () => setEditor({ caseId: record.id }) : undefined}
+                onDelete={canChange(record) ? () => onDelete(record.id, false) : undefined}
                 t={t}
               />
             ))}

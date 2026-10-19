@@ -10,7 +10,7 @@ import {
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
-import { workspaces } from './core';
+import { workspaces, users } from './core';
 import { pullRequests } from './pulls';
 
 // ============================================================ Eval / Conformance / Compose
@@ -42,6 +42,8 @@ export const evalCases = pgTable(
      * legal state and renders as "source finding no longer exists".
      */
     sourceFindingId: uuid('source_finding_id'),
+    /** Creator (migration 0021); null for cases created before it (seeded / legacy). */
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   },
   (t) => ({
     /**
@@ -53,6 +55,7 @@ export const evalCases = pgTable(
      * `NULLS NOT DISTINCT`: it would permit only ONE row without provenance.
      */
     sourceFindingUq: uniqueIndex('eval_cases_source_finding_uq').on(t.sourceFindingId),
+    createdByIdx: index('eval_cases_created_by_idx').on(t.createdBy),
   }),
 );
 

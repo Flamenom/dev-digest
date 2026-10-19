@@ -104,6 +104,10 @@ export const s = {
   } satisfies CSSProperties,
 
   footerSpacer: { flex: 1 } satisfies CSSProperties,
+  /** "Created by A" next to Delete (AC-47 attribution). */
+  createdBy: { fontSize: 12, color: "var(--text-muted)" } satisfies CSSProperties,
+  /** Replaces Run-on-save + Save when the user may not change the case (AC-30). */
+  readOnlyNotice: { fontSize: 12, color: "var(--text-muted)", maxWidth: 260, lineHeight: 1.4 } satisfies CSSProperties,
 
   runOnSave: {
     display: "flex",

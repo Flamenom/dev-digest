@@ -17,8 +17,15 @@ import { s } from "./styles";
  * to `settings.feature_models`. Each feature falls back to its registry default
  * when unset.
  */
-export function SettingsModels() {
+export interface SettingsModelsProps {
+  /** Member view: selectors inert with a visible "Admins only" hint (AC-33). */
+  readOnly?: boolean;
+}
+
+export function SettingsModels({ readOnly = false }: SettingsModelsProps) {
   const t = useTranslations("settings");
+  const tAuth = useTranslations("auth");
+  const hintId = React.useId();
   const { data: settings } = useSettings();
   const update = useUpdateSettings();
   const { data: models } = useProviderModels("openrouter");
@@ -35,6 +42,12 @@ export function SettingsModels() {
   return (
     <div style={s.wrap}>
       <SectionTitle title={t("models.title")} body={t("models.body")} />
+      {readOnly && (
+        // One visible explanation, programmatically linked to every inert selector.
+        <div id={hintId} style={s.readOnlyHint}>
+          {tAuth("gate.adminsOnly")}
+        </div>
+      )}
 
       {FEATURE_MODELS.map((f) => {
         const current = chosen[f.id]?.model ?? f.defaultModel;
@@ -55,12 +68,27 @@ export function SettingsModels() {
               }
               hint={f.description}
             >
-              <SearchableSelect
-                value={current}
-                onChange={(m) => setModel(f.id, m)}
-                options={options}
-                placeholder={t("models.search")}
-              />
+              {readOnly ? (
+                <div
+                  role="textbox"
+                  aria-readonly="true"
+                  aria-disabled="true"
+                  aria-describedby={hintId}
+                  aria-label={t("models.readOnlyValueLabel", { label: f.label })}
+                  tabIndex={0}
+                  className="mono"
+                  style={s.readOnlyValue}
+                >
+                  {current}
+                </div>
+              ) : (
+                <SearchableSelect
+                  value={current}
+                  onChange={(m) => setModel(f.id, m)}
+                  options={options}
+                  placeholder={t("models.search")}
+                />
+              )}
             </FormField>
           </div>
         );

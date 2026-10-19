@@ -6,7 +6,13 @@ import { ReviewRepository } from './repository.js';
 import { type ReviewDto, type ReviewDtoFinding } from './helpers.js';
 import { ReviewRunExecutor, type Logger } from './run-executor.js';
 import { actOnFinding as actOnFindingImpl } from './findings.js';
-import { reviewToDto } from './helpers.js';
+import type { ActorLookup } from '../_shared/actors.js';
+import {
+  assertCanCancelRun,
+  attachReviewActors,
+  attachRunActors,
+  type ReviewActor,
+} from './actors.js';
 
 // Re-export DTO types + converters for backward-compatible imports from
 // './service.js' (these previously lived here; logic now in ./helpers.ts).
@@ -29,10 +35,13 @@ export class ReviewService {
   private repo: ReviewRepository;
   private agents: Container['agentsRepo'];
   private executor: ReviewRunExecutor;
+  /** Batch actor resolver for DTO attribution (Rec-3; one `IN (...)` query). */
+  private lookupActors: ActorLookup;
 
   constructor(private container: Container) {
     this.repo = new ReviewRepository(container.db);
     this.agents = container.agentsRepo;
+    this.lookupActors = (ids) => container.actorDirectory.lookup(ids);
     this.executor = new ReviewRunExecutor(container, this.repo, this.agents);
   }
 
@@ -66,9 +75,10 @@ export class ReviewService {
     return this.repo.activeRunsForPull(workspaceId, prId);
   }
 
-  /** All runs for a PR (any status), newest first — the run history (incl. failures). */
+  /** All runs for a PR (any status), newest first — the run history (incl. failures),
+   *  each with `started_by` (AC-45; null for legacy runs). */
   async listRuns(workspaceId: string, prId: string) {
-    return this.repo.listRunsForPull(workspaceId, prId);
+    return attachRunActors(await this.repo.listRunsForPull(workspaceId, prId), this.lookupActors);
   }
 
   /** Delete one run from the history (+ its trace). */
@@ -85,11 +95,15 @@ export class ReviewService {
    * Workspace-scoped: the run is verified to belong to the caller's workspace
    * BEFORE anything is signalled, so a foreign runId cannot be used to stop
    * someone else's run (or to probe which run ids exist).
+   *
+   * Ownership (AC-30): a Member may cancel only a run they started; an Admin
+   * any run. Legacy runs (null initiator) are Admin-only. Checked before any
+   * signal is sent, so a refused cancel has no effect.
    */
-  async cancelRun(workspaceId: string, runId: string): Promise<void> {
-    if (!(await this.repo.runExistsInWorkspace(workspaceId, runId))) {
-      throw new NotFoundError('Run not found');
-    }
+  async cancelRun(workspaceId: string, runId: string, actor: ReviewActor): Promise<void> {
+    const run = await this.repo.getRunInitiator(workspaceId, runId);
+    if (!run) throw new NotFoundError('Run not found');
+    assertCanCancelRun(run.initiatedBy, actor);
     this.publish(runId, 'info', 'Cancellation requested — stopping…');
     this.container.runBus.cancel(runId);
     await this.repo.cancelRunIfRunning(workspaceId, runId);
@@ -113,13 +127,15 @@ export class ReviewService {
    * Run a review for each target agent. Each agent gets its own runId
    * (= agent_runs.id) created up-front so the SSE route can be subscribed
    * before/while the run progresses. A partial failure in one agent does not
-   * abort the others.
+   * abort the others. `initiatedBy` = the user who triggered the run (AC-45;
+   * for a bearer-token call, e.g. MCP, the token owner).
    */
   async runReview(
     workspaceId: string,
     prId: string,
     targets: AgentRow[],
     logger?: Logger,
+    initiatedBy: string | null = null,
   ): Promise<{ runs: { run_id: string; agent_id: string; agent_name: string }[]; reviews: ReviewDto[] }> {
     const pull = await this.repo.getPull(workspaceId, prId);
     if (!pull) throw new NotFoundError('Pull request not found');
@@ -138,6 +154,7 @@ export class ReviewService {
         prId,
         provider: agent.provider,
         model: agent.model,
+        initiatedBy,
       });
       runs.push({ run_id: runId, agent_id: agent.id, agent_name: agent.name });
       jobs.push({ agent, runId });
@@ -164,8 +181,16 @@ export class ReviewService {
     workspaceId: string,
     findingId: string,
     action: FindingActionKind,
+    actorUserId: string | null = null,
   ): Promise<{ finding: ReviewDtoFinding }> {
-    return actOnFindingImpl(this.repo, workspaceId, findingId, action);
+    return actOnFindingImpl(
+      this.repo,
+      workspaceId,
+      findingId,
+      action,
+      actorUserId,
+      this.lookupActors,
+    );
   }
 
   // ===========================================================================
@@ -183,8 +208,12 @@ export class ReviewService {
         if (a) names.set(review.agentId, a.name);
       }
     }
-    return rows.map(({ review, findings }) =>
-      reviewToDto(review, findings, review.agentId ? names.get(review.agentId) : null),
+    return attachReviewActors(
+      rows.map((r) => ({
+        ...r,
+        agentName: r.review.agentId ? names.get(r.review.agentId) : null,
+      })),
+      this.lookupActors,
     );
   }
 

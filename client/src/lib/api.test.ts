@@ -91,3 +91,32 @@ describe("api verb helpers", () => {
     expect(init.method ?? "GET").toBe(method);
   });
 });
+
+describe("credentials + CSRF (multi-user server mode, AC-50)", () => {
+  const headersOf = (i: number) =>
+    (fetchMock.mock.calls[i]![1] as RequestInit).headers as Record<string, string>;
+
+  it("sends the session cookie and the CSRF header on every state-changing verb, none on GET", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({})));
+    await api.get("/repos");
+    await api.post("/repos", { url: "https://github.com/a/b" });
+    await api.put("/settings", { a: 1 });
+    await api.patch("/members/u1", { role: "member" });
+    await api.del("/tokens/t1");
+
+    for (let i = 0; i < 5; i++) {
+      expect((fetchMock.mock.calls[i]![1] as RequestInit).credentials).toBe("include");
+    }
+    expect(headersOf(0)["x-devdigest-csrf"]).toBeUndefined();
+    for (const i of [1, 2, 3, 4]) expect(headersOf(i)["x-devdigest-csrf"]).toBe("1");
+  });
+
+  it("keeps the CSRF header on multipart uploads and when the caller passes its own headers", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({})));
+    await api.upload("/skills/import", new File(["x"], "s.md"));
+    await apiFetch("/x", { method: "post", headers: { "x-devdigest-csrf": "0" } });
+    expect(headersOf(0)["x-devdigest-csrf"]).toBe("1");
+    expect(headersOf(0)["content-type"]).toBeUndefined();
+    expect(headersOf(1)["x-devdigest-csrf"]).toBe("1");
+  });
+});

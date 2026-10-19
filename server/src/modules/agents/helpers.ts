@@ -1,4 +1,5 @@
 import type {
+  ActorRef,
   Agent,
   AgentListItem,
   AgentVersion,
@@ -7,6 +8,7 @@ import type {
   ReviewStrategy,
 } from '@devdigest/shared';
 import { AgentVersionConfig } from '@devdigest/shared';
+import { withActors, type ActorLookup } from '../_shared/actors.js';
 import type { AgentRow, AgentVersionRow } from './repository.js';
 
 /**
@@ -102,4 +104,83 @@ export function isConfigChange(
     (patch.repoIntel !== undefined && patch.repoIntel !== existing.repoIntel) ||
     patch.outputSchema !== undefined
   );
+}
+
+// ---- Actor attribution (multi-user, AC-47) ---------------------------------
+
+/**
+ * Raw actor ids a service result carries to the route. The route resolves them
+ * into `ActorRef`s with ONE batched lookup (`presentAgents` / `presentVersions`)
+ * and strips the raw ids from the response. Legacy / seeded rows → null.
+ */
+export interface AgentActorIds {
+  created_by_id: string | null;
+  updated_by_id: string | null;
+}
+export interface VersionAuthorId {
+  author_id: string | null;
+}
+
+export type WithAgentActorIds<T extends Agent> = T & AgentActorIds;
+export type AgentVersionWithAuthorId = AgentVersion & VersionAuthorId;
+
+/** Response shape: the DTO plus resolved creator / last updater. */
+export type WithAgentActors<T extends Agent> = T & {
+  created_by: ActorRef;
+  updated_by: ActorRef;
+};
+/** Response shape: a version DTO plus its resolved author. */
+export type AgentVersionWithAuthorRef = AgentVersion & { author: ActorRef };
+
+export function agentActorIds(row: Pick<AgentRow, 'createdBy' | 'updatedBy'>): AgentActorIds {
+  return { created_by_id: row.createdBy ?? null, updated_by_id: row.updatedBy ?? null };
+}
+
+/** `toAgentDto` + the row's raw actor ids. */
+export function toAgentRecord(row: AgentRow): WithAgentActorIds<Agent> {
+  return { ...toAgentDto(row), ...agentActorIds(row) };
+}
+
+/** `toAgentListItemDto` + the row's raw actor ids. */
+export function toAgentListRecord(
+  row: AgentRow,
+  skillCount: number,
+): WithAgentActorIds<AgentListItem> {
+  return { ...toAgentListItemDto(row, skillCount), ...agentActorIds(row) };
+}
+
+/** `toAgentVersionDto` + the snapshot's raw author id. */
+export function toAgentVersionRecord(row: AgentVersionRow): AgentVersionWithAuthorId {
+  return { ...toAgentVersionDto(row), author_id: row.authorId ?? null };
+}
+
+/** Resolve `created_by` / `updated_by` for agent records and drop the raw ids. */
+export async function presentAgents<T extends Agent>(
+  records: readonly WithAgentActorIds<T>[],
+  lookup: ActorLookup,
+): Promise<Array<WithAgentActors<T>>> {
+  const enriched = await withActors(
+    records,
+    { created_by: (r) => r.created_by_id, updated_by: (r) => r.updated_by_id },
+    lookup,
+  );
+  return enriched.map(({ created_by_id: _c, updated_by_id: _u, ...dto }) => dto as WithAgentActors<T>);
+}
+
+/** Single-record convenience over `presentAgents`. */
+export async function presentAgent<T extends Agent>(
+  record: WithAgentActorIds<T>,
+  lookup: ActorLookup,
+): Promise<WithAgentActors<T>> {
+  const [one] = await presentAgents([record], lookup);
+  return one!;
+}
+
+/** Resolve each version's `author` and drop the raw id. */
+export async function presentVersions(
+  records: readonly AgentVersionWithAuthorId[],
+  lookup: ActorLookup,
+): Promise<AgentVersionWithAuthorRef[]> {
+  const enriched = await withActors(records, { author: (r) => r.author_id }, lookup);
+  return enriched.map(({ author_id: _a, ...dto }) => dto);
 }

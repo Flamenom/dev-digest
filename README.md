@@ -40,8 +40,8 @@ flowchart LR
 
   CC["Claude Code"] -->|"stdio"| MCP["mcp/<br/>5 tools"]
   MCP -->|"REST"| API
-  GH["GitHub"]
-  API -->|"PR sync"| GH
+  GH["GitHub / gitlab.com"]
+  API -->|"PR sync (on open)"| GH
 
   CLONE["git clone (add repo)"] --> INDEX["repo-intel<br/>index symbols + import graph<br/>→ repo map"]
   API --> CLONE
@@ -59,16 +59,18 @@ flowchart LR
 ```
 
 The review flow end to end: **add a repo** → server clones it and `repo-intel`
-indexes it → **import PRs** from GitHub → open a PR and
+indexes it → **import PRs** from GitHub or GitLab → open a PR and
 **Review** → `reviewer-core` assembles a prompt from the diff + the repo map,
 calls the LLM, validates every finding against the diff (the **grounding gate**
 drops hallucinated line references), and persists structured findings with a
-severity and score. All local; the only outbound calls are to GitHub (PR data)
-and the LLM (via OpenRouter).
+severity and score. All local; the only outbound calls are to the git host (GitHub or gitlab.com —
+PR data) and the LLM (via OpenRouter).
 
-The PR list stays fresh on its own: `GET /repos/:id/pulls` syncs open PRs from
-GitHub on every read when a token is configured (falling back to the persisted
-rows offline), and the web app refetches it every 60s and on window focus.
+The PR list is **synced on open** (both providers): opening a repo's Pull
+Requests page renders the stored list immediately and, unless the repo was
+synced in the last 60 s, starts one background sync for that repo (single-flight
+— other viewers join it). When it finishes the list updates in place. There is
+no periodic refresh; **Refresh** forces a sync regardless of the TTL.
 
 Each package has its own README with deeper diagrams:
 [`client`](client/README.md) (UI route map) ·
@@ -80,13 +82,41 @@ Each package has its own README with deeper diagrams:
 
 ## Features
 
-Base flow — **local launch** (one command), **Settings** (LLM key + GitHub
-token), **add repository** (clone + index), **import PRs** (diff, commits, body,
+Base flow — **local launch** (one command), **Settings** (LLM key + GitHub /
+GitLab token), **add repository** (clone + index), **import PRs** (diff, commits, body,
 linked issue), GitHub-like **diff view**, **agents** (five seeded reviewers —
 General, Security, Performance, Test Quality, API Contract; create/edit your own: model + system prompt + skills), and
 **run a review** (structured findings with severity + score, grounding gate,
 repo-map context). Each run has a **trace drawer** (prompt assembly, raw output,
 live log).
+
+### GitLab (gitlab.com, read-only)
+
+A workspace can mix GitHub and GitLab repositories — the provider is chosen per
+repo from its URL. Spec: [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merge-requests.md).
+
+- **Token** — one GitLab access token per workspace (personal, group or project
+  token), set in **Settings → API Keys → GitLab access token** and checked with
+  **Test connection**. Minimal scopes: `read_api` + `read_repository`. It is
+  used for every GitLab call (sync, PR page, clone), whoever triggers it.
+- **Add a repo** — paste a gitlab.com URL on the Add repository screen. Nested
+  groups work (`https://gitlab.com/space-profit/platform/crm-frontend`), and so
+  do a trailing `/`, a `.git` suffix, `/-/…` route suffixes (`/-/tree/main`,
+  `/-/merge_requests/5`) and the SSH form `git@gitlab.com:group/project.git`.
+  Only `gitlab.com` is supported; self-managed GitLab is not.
+- **Pull requests** — open merge requests appear in the PR list as
+  "Pull request" `#<iid>` (no "MR" wording); the only provider-specific label is
+  **View on GitLab**. Draft MRs get a **Draft** badge and stay reviewable. The
+  list stores metadata and `+/−` stats only; diffs, files and commits load when
+  you open the PR page.
+- **Sync on open** — same model as GitHub (see above): the list header shows
+  *Synced N ago* / *Updating…*; if a sync fails the list stays visible with a
+  *Couldn't sync — showing data from …* notice.
+- **Everything else works** — review runs, findings, Intent, PR Brief, Smart
+  Diff, Blast Radius and eval cases behave as on GitHub.
+- **Read-only comments** — DevDigest does not post to GitLab yet: the comment
+  controls are disabled with a note, and **Copy finding** / **Copy text** is the
+  alternative. Existing GitLab discussions are not imported.
 
 | Lesson | Feature | What it does | Where in the UI | Spec |
 |--------|---------|--------------|-----------------|------|
@@ -101,6 +131,7 @@ live log).
 | L05 | Project Context | Attach `specs/` / `docs/` / `insights/` markdown from the clone to an agent; injected as untrusted context on every run | `/repos/:repoId/project-context` · agent editor → Context tab | [`project-context`](specs/2026-08-27-project-context.md) |
 | L05 | PR Brief | Why + risk brief for the PR (cached), Risk Areas and a Review Focus block | PR → Overview → PR Brief card | [`pr-brief`](specs/2026-08-27-pr-brief.md) |
 | L06 | Eval Pipeline | In-app regression harness for reviewer agents: accepted findings become `must_find` cases, dismissed ones `must_not_flag`; cases run through the real engine, scored by code | Finding → "Turn into eval case" · `/evals` · `/evals/:agentId` · agent editor → Evals tab | [`06-eval-pipeline`](specs/06-eval-pipeline.md) |
+| — | GitLab (read-only) | gitlab.com repos (nested groups) beside GitHub ones, MR import, sync-on-open PR list, Draft badge, read-only comments — [details](#gitlab-gitlabcom-read-only) | Add repository · Settings → API Keys · PR list | [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merge-requests.md) |
 
 **Two different "evals".** The **Eval Pipeline** above is a product feature
 (server `modules/eval`, Postgres, Eval Dashboard) that evaluates the in-app
@@ -143,7 +174,7 @@ Postgres keeps running (`docker compose down` to stop it).
 Flags: `--no-seed` · `--no-client` · `--db-only` · `--help`.
 
 > Add your keys in `server/.env` (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`,
-> `GITHUB_TOKEN`) or via the Settings UI at runtime.
+> `GITHUB_TOKEN`, `GITLAB_TOKEN`) or via the Settings UI at runtime.
 
 ## Manual steps (what the script does)
 
@@ -196,5 +227,15 @@ Postgres); everything else is hermetic. The browser e2e flows live in
   host port in `docker-compose.yml`.
 - **`vector` type errors** — the pgvector extension is enabled by migration `0000`;
   make sure migrations ran against the Dockerized DB, not a different one.
+- **`pnpm db:migrate` fails with `migration 0020: GitLab repos differing only by
+  case in full_name exist`** (or `… differing only by host casing`) — migration
+  `0020` adds a case-insensitive identity index and aborts rather than deleting
+  data. Nothing is applied (all pending migrations run in one transaction).
+  Remove the newer duplicate repository (keep the oldest), then re-run
+  `pnpm db:migrate`.
+- **Adding a gitlab.com repo fails** — *Add a GitLab access token in Settings →
+  API Keys* means no token is set; *token was rejected* means it is invalid or
+  expired; *project can't be accessed* means the token can't see that project
+  (GitLab answers 404 for projects outside the token's access).
 - **Reset everything** — `docker compose down -v` drops the volume, then re-run
   `./scripts/dev.sh`.

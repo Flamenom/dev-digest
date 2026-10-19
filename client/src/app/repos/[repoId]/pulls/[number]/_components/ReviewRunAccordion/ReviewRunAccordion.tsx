@@ -2,12 +2,17 @@
    the PR). Header shows agent + verdict + counts + score + when it ran; the
    body holds that run's VerdictBanner summary and its own FindingsPanel. A PR
    can have many runs (different agents / re-runs over time) — each is separate
-   and collapsible so older runs don't bury the latest. */
+   and collapsible so older runs don't bury the latest.
+
+   Multi-user (AC-33/AC-45): the header shows "Run by <name>" when the review
+   carries `started_by`; Delete review is Admin-only and hidden for Members. */
 "use client";
 
 import React from "react";
 import { Icon, Badge } from "@devdigest/ui";
-import type { ReviewRecord, Verdict } from "@devdigest/shared";
+import type { ReviewRecordWithActor, Verdict } from "@devdigest/shared";
+import { ActorLabel } from "@/components/actor-label";
+import { HiddenForMember } from "@/components/admin-gate";
 import { FindingsPanel } from "../FindingsPanel";
 import { VerdictBanner } from "../VerdictBanner";
 import { useDeleteReview } from "@/lib/hooks/reviews";
@@ -33,7 +38,7 @@ export function ReviewRunAccordion({
   targetFindingId = null,
   targetNonce = 0,
 }: {
-  review: ReviewRecord;
+  review: ReviewRecordWithActor;
   prId: string;
   defaultOpen?: boolean;
   repoFullName?: string | null;
@@ -102,6 +107,11 @@ export function ReviewRunAccordion({
           {findings.length} finding{findings.length === 1 ? "" : "s"}
           {blockers > 0 ? ` · ${blockers} blocker${blockers === 1 ? "" : "s"}` : ""}
         </span>
+        {review.started_by !== undefined && (
+          <span style={{ fontSize: 12, color: "var(--text-muted)", minWidth: 0 }}>
+            <ActorLabel actor={review.started_by} verb="run" />
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         {review.score != null && (
           <Badge mono color="var(--text-secondary)">
@@ -111,27 +121,29 @@ export function ReviewRunAccordion({
         <span className="mono" style={{ fontSize: 12, color: "var(--text-muted)" }}>
           {formatWhen(review.created_at)}
         </span>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            if (window.confirm(`Delete this "${review.agent_name ?? "agent"}" review run and its findings?`)) {
-              del.mutate(review.id);
-            }
-          }}
-          disabled={del.isPending}
-          title="Delete this review run"
-          aria-label="Delete this review run"
-          style={{
-            background: "none",
-            border: "none",
-            cursor: del.isPending ? "not-allowed" : "pointer",
-            color: "var(--text-muted)",
-            display: "inline-flex",
-            padding: 4,
-          }}
-        >
-          <Icon.Trash size={14} style={del.isPending ? { animation: "ddspin 1s linear infinite" } : undefined} />
-        </button>
+        <HiddenForMember>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (window.confirm(`Delete this "${review.agent_name ?? "agent"}" review run and its findings?`)) {
+                del.mutate(review.id);
+              }
+            }}
+            disabled={del.isPending}
+            title="Delete this review run"
+            aria-label="Delete this review run"
+            style={{
+              background: "none",
+              border: "none",
+              cursor: del.isPending ? "not-allowed" : "pointer",
+              color: "var(--text-muted)",
+              display: "inline-flex",
+              padding: 4,
+            }}
+          >
+            <Icon.Trash size={14} style={del.isPending ? { animation: "ddspin 1s linear infinite" } : undefined} />
+          </button>
+        </HiddenForMember>
         <Icon.ChevronDown
           size={16}
           style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .15s", color: "var(--text-muted)" }}

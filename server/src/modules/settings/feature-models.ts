@@ -1,12 +1,17 @@
-import { eq } from 'drizzle-orm';
 import {
   FEATURE_MODELS,
   FeatureModelChoice,
   type FeatureModelId,
 } from '@devdigest/shared';
-import type { Db } from '../../db/client.js';
-import * as t from '../../db/schema.js';
 import { rowsToSettings } from './helpers.js';
+import type { SettingsRepository } from './repository.js';
+
+/**
+ * Structural `{ settingsRepo }` (satisfied by the Container) — importing the
+ * Container type here would create a composition-root cycle once the container
+ * itself wires `resolveFeatureModel` into a service's deps object.
+ */
+type SettingsSource = { settingsRepo: Pick<SettingsRepository, 'listRows'> };
 
 /**
  * Per-feature model configuration.
@@ -34,17 +39,11 @@ export function defaultFeatureModel(id: FeatureModelId): FeatureModelChoice {
  * `resolveFeatureModel` instead.
  */
 export async function getFeatureModelOverride(
-  // Structural `{ db }` (satisfied by the Container) — importing the Container
-  // type here would create a composition-root cycle once the container itself
-  // wires `resolveFeatureModel` into a service's deps object.
-  container: { db: Db },
+  container: SettingsSource,
   workspaceId: string,
   id: FeatureModelId,
 ): Promise<FeatureModelChoice | undefined> {
-  const rows = await container.db
-    .select({ key: t.settings.key, value: t.settings.value })
-    .from(t.settings)
-    .where(eq(t.settings.workspaceId, workspaceId));
+  const rows = await container.settingsRepo.listRows(workspaceId);
   const fm = (rowsToSettings(rows) as { feature_models?: Record<string, unknown> }).feature_models;
   const parsed = FeatureModelChoice.safeParse(fm?.[id]);
   return parsed.success ? parsed.data : undefined;
@@ -52,7 +51,7 @@ export async function getFeatureModelOverride(
 
 /** Resolve `id` to a concrete provider+model: workspace override, else registry default. */
 export async function resolveFeatureModel(
-  container: { db: Db },
+  container: SettingsSource,
   workspaceId: string,
   id: FeatureModelId,
 ): Promise<FeatureModelChoice> {

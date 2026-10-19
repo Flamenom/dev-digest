@@ -34,6 +34,17 @@ export interface ShellContext {
   onRemoveRepo?: (id: string) => void;
   onRefresh?: () => void;
   prCount?: number;
+  /**
+   * Identity slot rendered at the right end of the top bar (multi-user server
+   * mode). When absent the bar keeps its static placeholder avatar, exactly as
+   * before — ADDITIVE, optional.
+   */
+  userMenu?: React.ReactNode;
+  /**
+   * When set, "Add repository…" in the repo switcher is inert and shows this
+   * visible reason (e.g. "Admins only") — ADDITIVE, optional.
+   */
+  addRepoDisabledReason?: string;
 }
 
 export interface Crumb {

@@ -74,7 +74,7 @@ export function Topbar({ ctx, crumb = [] }: { ctx: ShellContext; crumb?: Crumb[]
       )}
       {ctx.onRefresh && <IconBtn icon="RefreshCw" label="Refresh" onClick={ctx.onRefresh} />}
       <IconBtn icon="Bell" label="Notifications" />
-      <Avatar name="you" size={26} />
+      {ctx.userMenu ?? <Avatar name="you" size={26} />}
     </header>
   );
 }

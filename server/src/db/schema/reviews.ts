@@ -11,7 +11,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import type { BriefMissingInput, IntentSource } from '@devdigest/shared';
 import { now } from './_shared';
-import { workspaces } from './core';
+import { workspaces, users } from './core';
 import { pullRequests } from './pulls';
 
 // ============================================================ Review & findings
@@ -72,6 +72,8 @@ export const findings = pgTable(
     trifectaComponents: jsonb('trifecta_components').$type<string[]>(),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
     dismissedAt: timestamp('dismissed_at', { withTimezone: true }),
+    /** Actor of the latest accept/dismiss (migration 0021); the audit log keeps every action. */
+    actedBy: uuid('acted_by').references(() => users.id, { onDelete: 'set null' }),
   },
   (t) => ({
     /**
@@ -80,6 +82,7 @@ export const findings = pgTable(
      * PR list full-scans `findings` on every render, and the list is polled.
      */
     reviewIdx: index('findings_review_idx').on(t.reviewId),
+    actedByIdx: index('findings_acted_by_idx').on(t.actedBy),
   }),
 );
 

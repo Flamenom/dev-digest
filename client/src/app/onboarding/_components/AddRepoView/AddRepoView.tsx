@@ -4,7 +4,11 @@
    Escapable: Esc or the close button returns to the app.
 
    A 4xx from POST /repos is silent under the global query error policy, so the
-   view renders it inline — known host error codes get a localized message. */
+   view renders it inline — known host error codes get a localized message.
+
+   Adding a repository is Admin-only (AC-33): for a Member the submit control
+   stays focusable but aria-disabled, with a visible "Admins only" hint. The
+   server enforces the rule too (POST /repos → 403 forbidden_role). */
 "use client";
 
 import React from "react";
@@ -13,6 +17,8 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Button, Icon, IconBtn, Kbd, TextInput, FormField } from "@devdigest/ui";
 import { useAddRepo } from "@/lib/hooks";
+import { AdminOnly } from "@/components/admin-gate";
+import { useCan } from "@/lib/permissions";
 import { ApiError } from "@/lib/api";
 import { addRepoErrorCode } from "./helpers";
 import { s } from "./styles";
@@ -23,6 +29,7 @@ export function AddRepoView() {
   const [repoUrl, setRepoUrl] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const addRepo = useAddRepo();
+  const { isAdmin: canAdd } = useCan();
 
   const close = React.useCallback(() => router.push("/"), [router]);
 
@@ -36,7 +43,7 @@ export function AddRepoView() {
   }, [close]);
 
   const submit = async () => {
-    if (!repoUrl.trim()) return;
+    if (!repoUrl.trim() || addRepo.isPending) return;
     setError(null);
     try {
       const repo = await addRepo.mutateAsync(repoUrl.trim());
@@ -83,7 +90,7 @@ export function AddRepoView() {
             mono
             placeholder={t("urlPlaceholder")}
             onKeyDown={(e) => {
-              if (e.key === "Enter") submit();
+              if (e.key === "Enter" && canAdd) submit();
             }}
           />
         </FormField>
@@ -100,15 +107,22 @@ export function AddRepoView() {
             {t("cancel")}
           </Button>
           <div style={s.spacer} />
-          <Button
-            kind="primary"
-            size="md"
-            icon="Plus"
-            onClick={submit}
-            disabled={!repoUrl.trim() || addRepo.isPending}
-          >
-            {addRepo.isPending ? t("cloning") : t("submit")}
-          </Button>
+          <AdminOnly>
+            {(gate) => (
+              <Button
+                {...gate.controlProps}
+                kind="primary"
+                size="md"
+                icon="Plus"
+                onClick={gate.guard(submit)}
+                // A Member's control must stay focusable so the hint is
+                // reachable — never natively disabled for them.
+                disabled={gate.allowed && (!repoUrl.trim() || addRepo.isPending)}
+              >
+                {addRepo.isPending ? t("cloning") : t("submit")}
+              </Button>
+            )}
+          </AdminOnly>
         </div>
       </div>
 

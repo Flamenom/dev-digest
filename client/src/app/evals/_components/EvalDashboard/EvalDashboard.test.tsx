@@ -9,6 +9,7 @@ import type {
   EvalRunAllResult,
 } from "@devdigest/shared";
 import evalMessages from "../../../../../messages/en/eval.json";
+import authMessages from "../../../../../messages/en/auth.json";
 import agentMessages from "../../../../../messages/en/agents.json";
 
 /* The client test harness has no MSW and no QueryClientProvider, so the data
@@ -62,6 +63,25 @@ vi.mock("@/lib/hooks/eval", () => ({
   useUpdateEvalCase: () => ({ mutate: vi.fn(), isPending: false }),
   useDeleteEvalCase: () => ({ mutate: vi.fn(), isPending: false }),
   useRunEvalCase: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
+/* Multi-user gating reads the session probe: mocked as the local-mode Admin
+   (every control enabled, as before); a test may flip `session` to a Member. */
+const session = vi.hoisted(() => ({
+  mode: "local" as "local" | "google",
+  role: "admin" as "admin" | "member",
+  userId: "u-admin",
+}));
+vi.mock("@/lib/hooks/session", () => ({
+  SESSION_QUERY_KEY: ["session"],
+  useSession: () => ({
+    data: {
+      mode: session.mode,
+      user: { id: session.userId, email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: session.role },
+      workspace: { id: "w1", name: "Team" },
+    },
+    isPending: false,
+  }),
 }));
 
 import { EvalDashboard } from "./EvalDashboard";
@@ -124,7 +144,7 @@ function renderDashboard() {
   render(
     <NextIntlClientProvider
       locale="en"
-      messages={{ eval: evalMessages, agents: agentMessages }}
+      messages={{ auth: authMessages, eval: evalMessages, agents: agentMessages }}
     >
       <EvalDashboard />
     </NextIntlClientProvider>,

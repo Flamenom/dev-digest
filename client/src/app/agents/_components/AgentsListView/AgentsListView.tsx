@@ -1,5 +1,9 @@
 /* /agents — Agents list (A2, L03). AgentCards + create. Selecting an agent
-   navigates to the 5-tab editor at /agents/:id. */
+   navigates to the 5-tab editor at /agents/:id.
+
+   Multi-user (AC-33): creating an agent is Admin-only — a Member gets the
+   "Add agent" control focusable but aria-disabled with the visible
+   "Admins only" hint (no menu opens), and no empty-state CTA. */
 "use client";
 
 import React from "react";
@@ -7,6 +11,8 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Button, Dropdown, EmptyState, ErrorState, Skeleton, Icon } from "@devdigest/ui";
 import { AppShell } from "@/components/app-shell";
+import { AdminOnly } from "@/components/admin-gate";
+import { useCan } from "@/lib/permissions";
 import { useAgents, useUpdateAgent } from "@/lib/hooks/agents";
 import { AgentCard } from "../AgentCard";
 import { CreateAgentModal } from "./_components/CreateAgentModal";
@@ -19,6 +25,7 @@ export function AgentsListView() {
   const router = useRouter();
   const { data: agents, isLoading, isError, refetch } = useAgents();
   const update = useUpdateAgent();
+  const { isAdmin } = useCan();
   const [creating, setCreating] = React.useState(false);
   const [search, setSearch] = React.useState("");
 
@@ -42,25 +49,42 @@ export function AgentsListView() {
               style={s.searchInput}
             />
           </div>
-          <Dropdown
-            width={220}
-            align="right"
-            trigger={
-              <Button kind="primary" size="sm" icon="Plus" iconRight="ChevronDown">
-                {t("list.addAgent")}
-              </Button>
+          <AdminOnly>
+            {(gate) =>
+              gate.allowed ? (
+                <Dropdown
+                  width={220}
+                  align="right"
+                  trigger={
+                    <Button kind="primary" size="sm" icon="Plus" iconRight="ChevronDown">
+                      {t("list.addAgent")}
+                    </Button>
+                  }
+                  items={[
+                    { label: t("list.createFromScratch"), icon: "Edit", onClick: () => setCreating(true) },
+                    { divider: true },
+                    ...TEMPLATES.map((tp) => ({
+                      label: tp,
+                      icon: "Cpu" as const,
+                      muted: true,
+                      onClick: () => setCreating(true),
+                    })),
+                  ]}
+                />
+              ) : (
+                <Button
+                  {...gate.controlProps}
+                  kind="primary"
+                  size="sm"
+                  icon="Plus"
+                  iconRight="ChevronDown"
+                  onClick={gate.guard()}
+                >
+                  {t("list.addAgent")}
+                </Button>
+              )
             }
-            items={[
-              { label: t("list.createFromScratch"), icon: "Edit", onClick: () => setCreating(true) },
-              { divider: true },
-              ...TEMPLATES.map((tp) => ({
-                label: tp,
-                icon: "Cpu" as const,
-                muted: true,
-                onClick: () => setCreating(true),
-              })),
-            ]}
-          />
+          </AdminOnly>
         </div>
 
         {isLoading && (
@@ -76,8 +100,8 @@ export function AgentsListView() {
             icon="Cpu"
             title={t("list.emptyTitle")}
             body={t("list.emptyBody")}
-            cta={t("list.emptyCta")}
-            onCta={() => setCreating(true)}
+            cta={isAdmin ? t("list.emptyCta") : undefined}
+            onCta={isAdmin ? () => setCreating(true) : undefined}
           />
         )}
         {list.length > 0 && (

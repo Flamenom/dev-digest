@@ -227,7 +227,7 @@ describe('routes (no DB)', () => {
     // 201 = created by the EVAL service. The accept/dismiss handler has no such
     // status and would have thrown on the (absent) database.
     expect(res.statusCode).toBe(201);
-    expect(res.json()).toEqual({ id: 'case-1', name: 'from-finding' });
+    expect(res.json()).toEqual({ id: 'case-1', name: 'from-finding', created_by: null });
     expect(calls).toEqual([`createFromFinding:w1:${UUID}`]);
     await app.close();
   });

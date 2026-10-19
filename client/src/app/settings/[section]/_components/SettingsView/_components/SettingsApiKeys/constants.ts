@@ -1,4 +1,5 @@
 import type { ConnTestProviderHost } from "@/lib/types";
+import type { SecretState } from "@devdigest/shared";
 
 /** One configurable provider key row in the API Keys section. */
 export interface KeyRowSpec {
@@ -17,3 +18,10 @@ export const KEY_ROWS: readonly KeyRowSpec[] = [
   // Minimal read-only scopes hint (AC-53): read_api + read_repository.
   { provider: "gitlab", labelKey: "apiKeys.gitlabLabel", hintKey: "apiKeys.gitlabHint" },
 ];
+
+/** Badge label per secret state (AC-38, AC-41 "Needs re-entry"). */
+export const STATE_LABEL_KEY: Readonly<Record<SecretState, string>> = {
+  set: "apiKeys.configured",
+  unset: "apiKeys.notSet",
+  undecryptable: "apiKeys.needsReentry",
+};

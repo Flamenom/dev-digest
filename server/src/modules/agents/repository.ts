@@ -114,20 +114,27 @@ export class AgentsRepository {
         enabled: values.enabled ?? true,
         version: INITIAL_AGENT_VERSION,
         createdBy: values.createdBy ?? null,
+        // Multi-user (AC-47): the creator is also the first "last updater".
+        updatedBy: values.createdBy ?? null,
       })
       .returning();
-    await this.snapshotVersion(row!, INITIAL_AGENT_VERSION);
+    await this.snapshotVersion(row!, INITIAL_AGENT_VERSION, values.createdBy ?? null);
     return row!;
   }
 
   /**
    * Update an agent. Any config change bumps the version and snapshots the new
    * config into agent_versions (reproducibility for eval).
+   *
+   * `actorId` (multi-user, AC-47) — when provided, recorded as the agent's
+   * `updated_by` and as the new version's `author_id`. Omitted (legacy callers)
+   * leaves `updated_by` untouched and the snapshot authorless.
    */
   async update(
     workspaceId: string,
     id: string,
     patch: UpdateAgent,
+    actorId?: string | null,
   ): Promise<AgentRow | undefined> {
     const existing = await this.getById(workspaceId, id);
     if (!existing) return undefined;
@@ -152,11 +159,12 @@ export class AgentsRepository {
         ...(patch.repoIntel !== undefined ? { repoIntel: patch.repoIntel } : {}),
         ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
         ...(configChanged ? { version: nextVersion } : {}),
+        ...(actorId !== undefined ? { updatedBy: actorId } : {}),
       })
       .where(and(eq(t.agents.workspaceId, workspaceId), eq(t.agents.id, id)))
       .returning();
 
-    if (configChanged && row) await this.snapshotVersion(row, nextVersion);
+    if (configChanged && row) await this.snapshotVersion(row, nextVersion, actorId ?? null);
     return row;
   }
 
@@ -171,22 +179,42 @@ export class AgentsRepository {
     workspaceId: string,
     id: string,
     paths: string[],
+    actorId?: string | null,
   ): Promise<AgentRow | undefined> {
     const [row] = await this.db
       .update(t.agents)
-      .set({ attachedDocPaths: paths })
+      .set({
+        attachedDocPaths: paths,
+        ...(actorId !== undefined ? { updatedBy: actorId } : {}),
+      })
       .where(and(eq(t.agents.workspaceId, workspaceId), eq(t.agents.id, id)))
       .returning();
     return row;
   }
 
-  private async snapshotVersion(row: AgentRow, version: number): Promise<void> {
+  /**
+   * Record `actorId` as the agent's last updater without touching any config
+   * (skill link/reorder writes, AC-47). No version bump, no snapshot.
+   */
+  async touchUpdatedBy(workspaceId: string, id: string, actorId: string | null): Promise<void> {
+    await this.db
+      .update(t.agents)
+      .set({ updatedBy: actorId })
+      .where(and(eq(t.agents.workspaceId, workspaceId), eq(t.agents.id, id)));
+  }
+
+  private async snapshotVersion(
+    row: AgentRow,
+    version: number,
+    authorId: string | null,
+  ): Promise<void> {
     const skills = await this.skillIdsForAgent(row.id);
     await this.db
       .insert(t.agentVersions)
       .values({
         agentId: row.id,
         version,
+        authorId,
         configJson: {
           provider: row.provider,
           model: row.model,

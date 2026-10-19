@@ -21,6 +21,8 @@ export const s = {
     flexShrink: 0,
   } satisfies CSSProperties,
   name: { fontSize: 18, fontWeight: 700, minWidth: 0 } satisfies CSSProperties,
+  /** "Updated by …" attribution, pushed to the header's right edge. */
+  updatedBy: { marginLeft: "auto", fontSize: 12.5, color: "var(--text-muted)" } satisfies CSSProperties,
   tabsBar: { marginTop: 14 } satisfies CSSProperties,
   body: { flex: 1, minHeight: 0, overflow: "auto", padding: 28 } satisfies CSSProperties,
 } as const;

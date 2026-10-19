@@ -62,8 +62,10 @@ export interface CaseRowProps {
   /** Disables the per-row Run while this case (or its batch) is executing. */
   busy: boolean;
   onRun: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
+  /** Absent = the user may not change this case (AC-30) — the icon is not rendered. */
+  onEdit?: () => void;
+  /** Absent = the user may not delete this case (AC-30) — the icon is not rendered. */
+  onDelete?: () => void;
   t: Translate;
 }
 
@@ -102,8 +104,8 @@ export function CaseRow({ record, result, status, busy, onRun, onEdit, onDelete,
             a busy row simply drops the handler — the server would answer 409
             `batch_already_running` anyway and 4xx stays silent. */}
         <IconBtn icon="Play" label={t("evalsTab.run")} onClick={busy ? undefined : onRun} />
-        <IconBtn icon="Edit" label={t("evalsTab.edit")} onClick={onEdit} />
-        <IconBtn icon="Trash" label={t("evalsTab.delete")} onClick={onDelete} danger />
+        {onEdit && <IconBtn icon="Edit" label={t("evalsTab.edit")} onClick={onEdit} />}
+        {onDelete && <IconBtn icon="Trash" label={t("evalsTab.delete")} onClick={onDelete} danger />}
       </span>
     </li>
   );

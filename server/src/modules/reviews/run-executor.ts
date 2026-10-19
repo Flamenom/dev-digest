@@ -79,8 +79,12 @@ export class ReviewRunExecutor {
     // Pre-work failure (e.g. diff load) fails EVERY queued run. The error was
     // already emitted via runLog (fanned out → in each run's buffer); here we
     // mark the rows failed and persist the buffered log so it survives a reload.
+    // Trace first, terminal status second (see TRACE_BEFORE_STATUS below).
     const failAll = async (msg: string) => {
       for (const { runId, agent } of jobs) {
+        await this.repo
+          .saveRunTrace(runId, this.traceFromBuffer(runId, pull, agent, '0/0 passed'))
+          .catch(() => undefined);
         await this.repo
           .completeAgentRun(runId, {
             status: 'failed',
@@ -91,9 +95,6 @@ export class ReviewRunExecutor {
             grounding: '0/0 passed',
             error: msg,
           })
-          .catch(() => undefined);
-        await this.repo
-          .saveRunTrace(runId, this.traceFromBuffer(runId, pull, agent, '0/0 passed'))
           .catch(() => undefined);
         this.container.runBus.complete(runId);
       }
@@ -352,20 +353,11 @@ export class ReviewRunExecutor {
       // the timeline colors on, NOT the model's self-reported verdict.
       const blockers = countBlockers(keptFindings, agent.ciFailOn);
 
-      // ---- Observability: agent_runs + ONE run_traces document --------------
-      await this.repo.completeAgentRun(runId, {
-        status: 'done',
-        durationMs,
-        tokensIn,
-        tokensOut,
-        costUsd,
-        findingsCount: findingRows.length,
-        grounding,
-        score: outcome.review.score,
-        blockers,
-        error: null,
-      });
-
+      // ---- Observability: ONE run_traces document + agent_runs --------------
+      // TRACE_BEFORE_STATUS: the trace is written BEFORE the run turns terminal,
+      // so any reader that sees status done/failed/cancelled (the PR timeline,
+      // a reload, waitForPrRuns in tests) can also fetch the trace — the other
+      // order made GET /runs/:id/trace 404 in that window.
       const trace: RunTrace = {
         config: {
           agent: agent.name,
@@ -400,6 +392,18 @@ export class ReviewRunExecutor {
       };
       runLog.info('Run complete; trace persisted');
       await this.repo.saveRunTrace(runId, trace);
+      await this.repo.completeAgentRun(runId, {
+        status: 'done',
+        durationMs,
+        tokensIn,
+        tokensOut,
+        costUsd,
+        findingsCount: findingRows.length,
+        grounding,
+        score: outcome.review.score,
+        blockers,
+        error: null,
+      });
       this.container.runBus.complete(runId);
 
       return { review, findings: findingRows, grounding, raw: outcome.review };
@@ -410,25 +414,27 @@ export class ReviewRunExecutor {
       const status = cancelled ? 'cancelled' : 'failed';
       const msg = cancelled ? 'Cancelled by user' : (err as Error).message;
       runLog.error(cancelled ? 'Run cancelled by user' : `Run failed: ${msg}`);
+      const durationMs = Date.now() - start;
+      // Trace first, terminal status second (TRACE_BEFORE_STATUS).
+      await this.repo
+        .saveRunTrace(
+          runId,
+          this.traceFromBuffer(runId, pull, agent, '0/0 passed', durationMs, {
+            read: specsRead,
+            missing: specsMissing,
+          }),
+        )
+        .catch(() => undefined);
       await this.repo
         .completeAgentRun(runId, {
           status,
-          durationMs: Date.now() - start,
+          durationMs,
           tokensIn: 0,
           tokensOut: 0,
           findingsCount: 0,
           grounding: '0/0 passed',
           error: msg,
         })
-        .catch(() => undefined);
-      await this.repo
-        .saveRunTrace(
-          runId,
-          this.traceFromBuffer(runId, pull, agent, '0/0 passed', Date.now() - start, {
-            read: specsRead,
-            missing: specsMissing,
-          }),
-        )
         .catch(() => undefined);
       this.container.runBus.complete(runId);
       throw err;

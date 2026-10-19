@@ -43,3 +43,19 @@ export function fileHrefFor(
     ? githubBlobUrl(repoFullName, headSha, f.file, f.start_line, f.end_line)
     : undefined;
 }
+
+/**
+ * The finding's latest judgement, for the "Accepted by / Dismissed by" label
+ * (AC-46: the latest action wins). If both timestamps are somehow set, the
+ * newer one wins; unparseable timestamps fall back to "dismissed" precedence.
+ */
+export function latestJudgement(
+  f: Pick<FindingRecord, "accepted_at" | "dismissed_at">,
+): "accepted" | "dismissed" | null {
+  if (f.accepted_at && f.dismissed_at) {
+    return Date.parse(f.accepted_at) > Date.parse(f.dismissed_at) ? "accepted" : "dismissed";
+  }
+  if (f.dismissed_at) return "dismissed";
+  if (f.accepted_at) return "accepted";
+  return null;
+}

@@ -3,9 +3,11 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { CiFailOn, Provider, ReviewStrategy, SetAttachedDocsBody } from '@devdigest/shared';
 import { getContext } from '../_shared/context.js';
+import type { ActorLookup } from '../_shared/actors.js';
 import { IdParams } from '../_shared/schemas.js';
 import { NotFoundError } from '../../platform/errors.js';
 import { AgentsService } from './service.js';
+import { presentAgent, presentAgents, presentVersions } from './helpers.js';
 
 /** `/providers/:id` addresses a provider by name, not a uuid. */
 const ProviderParams = z.object({ id: Provider });
@@ -30,6 +32,12 @@ const VersionParams = z.object({
  *   PUT    /agents/:id/attached-docs → set ordered attached doc paths (no version bump)
  *   GET    /agents/:id/models       → dynamic model list for the agent's provider
  *   GET    /providers/:id/models    → dynamic model list for a provider (editor)
+ *
+ * Multi-user (AC-47): agent responses carry `created_by` / `updated_by` and
+ * version responses `author` as ActorRefs (null for legacy/seeded rows); every
+ * write records the acting user from `getContext`. Write access (Admin-only)
+ * is enforced by the central route policy, and the audit hook records each
+ * write — neither is repeated here.
  */
 
 const CreateAgentBody = z.object({
@@ -72,17 +80,19 @@ const SetSkillsBody = z
 export default async function agentsRoutes(appBase: FastifyInstance) {
   const app = appBase.withTypeProvider<ZodTypeProvider>();
   const service = new AgentsService(app.container);
+  // Resolved per call (not captured at registration) so overrides stay live.
+  const lookup: ActorLookup = (ids) => app.container.actorDirectory.lookup(ids);
 
   app.get('/agents', async (req) => {
     const { workspaceId } = await getContext(app.container, req);
-    return service.list(workspaceId);
+    return presentAgents(await service.list(workspaceId), lookup);
   });
 
   app.get('/agents/:id', { schema: { params: IdParams } }, async (req) => {
     const { workspaceId } = await getContext(app.container, req);
     const agent = await service.get(workspaceId, req.params.id);
     if (!agent) throw new NotFoundError('Agent not found');
-    return agent;
+    return presentAgent(agent, lookup);
   });
 
   app.post('/agents', { schema: { body: CreateAgentBody } }, async (req, reply) => {
@@ -105,17 +115,17 @@ export default async function agentsRoutes(appBase: FastifyInstance) {
       userId,
     );
     reply.status(201);
-    return agent;
+    return presentAgent(agent, lookup);
   });
 
   app.put(
     '/agents/:id',
     { schema: { params: IdParams, body: UpdateAgentBody } },
     async (req) => {
-      const { workspaceId } = await getContext(app.container, req);
-      const agent = await service.update(workspaceId, req.params.id, req.body);
+      const { workspaceId, userId } = await getContext(app.container, req);
+      const agent = await service.update(workspaceId, req.params.id, req.body, userId);
       if (!agent) throw new NotFoundError('Agent not found');
-      return agent;
+      return presentAgent(agent, lookup);
     },
   );
 
@@ -130,7 +140,7 @@ export default async function agentsRoutes(appBase: FastifyInstance) {
     const { workspaceId } = await getContext(app.container, req);
     const versions = await service.listVersions(workspaceId, req.params.id);
     if (!versions) throw new NotFoundError('Agent not found');
-    return versions;
+    return presentVersions(versions, lookup);
   });
 
   app.get(
@@ -140,7 +150,8 @@ export default async function agentsRoutes(appBase: FastifyInstance) {
       const { workspaceId } = await getContext(app.container, req);
       const version = await service.getVersion(workspaceId, req.params.id, req.params.version);
       if (!version) throw new NotFoundError('Agent version not found');
-      return version;
+      const [one] = await presentVersions([version], lookup);
+      return one;
     },
   );
 
@@ -153,10 +164,15 @@ export default async function agentsRoutes(appBase: FastifyInstance) {
     '/agents/:id/versions/:version/promote',
     { schema: { params: VersionParams } },
     async (req) => {
-      const { workspaceId } = await getContext(app.container, req);
-      const result = await service.promoteVersion(workspaceId, req.params.id, req.params.version);
+      const { workspaceId, userId } = await getContext(app.container, req);
+      const result = await service.promoteVersion(
+        workspaceId,
+        req.params.id,
+        req.params.version,
+        userId,
+      );
       if (!result) throw new NotFoundError('Agent version not found');
-      return result;
+      return { ...result, agent: await presentAgent(result.agent, lookup) };
     },
   );
 
@@ -171,12 +187,18 @@ export default async function agentsRoutes(appBase: FastifyInstance) {
     '/agents/:id/skills',
     { schema: { params: IdParams, body: SetSkillsBody } },
     async (req) => {
-      const { workspaceId } = await getContext(app.container, req);
+      const { workspaceId, userId } = await getContext(app.container, req);
       const body = req.body;
       const links =
         body.skill_ids !== undefined
-          ? await service.setSkills(workspaceId, req.params.id, body.skill_ids)
-          : await service.linkSkill(workspaceId, req.params.id, body.skill_id!, body.order);
+          ? await service.setSkills(workspaceId, req.params.id, body.skill_ids, userId)
+          : await service.linkSkill(
+              workspaceId,
+              req.params.id,
+              body.skill_id!,
+              body.order,
+              userId,
+            );
       if (!links) throw new NotFoundError('Agent not found');
       return links;
     },
@@ -186,10 +208,15 @@ export default async function agentsRoutes(appBase: FastifyInstance) {
     '/agents/:id/attached-docs',
     { schema: { params: IdParams, body: SetAttachedDocsBody } },
     async (req) => {
-      const { workspaceId } = await getContext(app.container, req);
-      const agent = await service.setAttachedDocs(workspaceId, req.params.id, req.body.paths);
+      const { workspaceId, userId } = await getContext(app.container, req);
+      const agent = await service.setAttachedDocs(
+        workspaceId,
+        req.params.id,
+        req.body.paths,
+        userId,
+      );
       if (!agent) throw new NotFoundError('Agent not found');
-      return agent;
+      return presentAgent(agent, lookup);
     },
   );
 

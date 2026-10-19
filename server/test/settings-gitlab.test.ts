@@ -40,19 +40,22 @@ async function testConnection(
 async function secretsStatus(app: Awaited<ReturnType<typeof buildApp>>) {
   const res = await app.inject({ method: 'GET', url: '/settings/secrets-status' });
   expect(res.statusCode).toBe(200);
-  return res.json() as Record<string, boolean>;
+  return res.json() as Record<string, unknown>;
 }
 
 describe('settings — GitLab token (T13)', () => {
   it('stores the GitLab token independently of GitHub; a second save replaces the first (AC-1)', async () => {
     const { app, secrets } = await makeApp();
 
+    const unset = { state: 'unset', updated_at: null, updated_by: null };
     expect(await secretsStatus(app)).toEqual({
       openai: false,
       anthropic: false,
       openrouter: false,
       github: false,
       gitlab: false,
+      // Additive per-provider detail (multi-user AC-38); local mode has no who/when.
+      states: { openai: unset, anthropic: unset, openrouter: unset, github: unset, gitlab: unset },
     });
 
     await testConnection(app, { provider: 'gitlab', key: 'glpat-first-token' });

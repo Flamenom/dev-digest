@@ -148,6 +148,41 @@
       "when": 1792403761533,
       "tag": "0020_cool_lucky_pierre",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1792412976923,
+      "tag": "0021_next_loki",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792419755756,
+      "tag": "0022_nice_the_executioner",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792422981159,
+      "tag": "0023_demonic_joseph",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792426982785,
+      "tag": "0024_fixed_famine",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1792429569567,
+      "tag": "0025_sleepy_blur",
+      "breakpoints": true
     }
   ]
 }

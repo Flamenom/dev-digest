@@ -14,7 +14,10 @@
      only, which React escapes.
    - **Promoting is append-only (§9.2).** Promoting v7 at v9 creates v10; the
      confirmation says so instead of implying a rollback, and `changed: false`
-     reports "already the active configuration" rather than a fake success. */
+     reports "already the active configuration" rather than a fake success.
+   - **Promoting is Admin-only (AC-33).** A Member can compare, but the
+     Promote control is aria-disabled with the visible "Admins only" hint and
+     the confirmation never opens. */
 "use client";
 
 import React from "react";
@@ -23,6 +26,7 @@ import { Button, Icon, Modal, SectionLabel } from "@devdigest/ui";
 import type { EvalCompare, EvalPromptDiffLine } from "@devdigest/shared";
 import { useEvalCompare, usePromoteAgentVersion } from "@/lib/hooks/eval";
 import { useToast } from "@/lib/toast";
+import { AdminOnly } from "@/components/admin-gate";
 import {
   costDelta,
   DIFF_PREFIX,
@@ -129,9 +133,18 @@ export function CompareModal({
     <div style={s.footer}>
       {closeButton}
       {target != null && (
-        <Button kind="primary" icon="GitBranch" onClick={() => setConfirming(true)}>
-          {t("compare.promote", { version: target })}
-        </Button>
+        <AdminOnly>
+          {(gate) => (
+            <Button
+              {...gate.controlProps}
+              kind="primary"
+              icon="GitBranch"
+              onClick={gate.guard(() => setConfirming(true))}
+            >
+              {t("compare.promote", { version: target })}
+            </Button>
+          )}
+        </AdminOnly>
       )}
     </div>
   );

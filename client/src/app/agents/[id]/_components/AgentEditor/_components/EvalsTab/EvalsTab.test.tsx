@@ -10,6 +10,7 @@ import type {
   EvalCaseRunRecord,
 } from "@devdigest/shared";
 import messages from "../../../../../../../../messages/en/eval.json";
+import authMessages from "../../../../../../../../messages/en/auth.json";
 
 /* The client test harness has no MSW and no QueryClientProvider, so the whole
    eval data layer is replaced by a mutable module-scope state object. */
@@ -45,6 +46,25 @@ vi.mock("@/lib/hooks/eval", () => ({
   useEvalCase: () => ({ data: undefined, isLoading: false }),
   useCreateEvalCase: () => ({ mutate: vi.fn(), isPending: false }),
   useUpdateEvalCase: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
+/* Multi-user gating reads the session probe: mocked as the local-mode Admin
+   (every control enabled, as before); a test may flip `session` to a Member. */
+const session = vi.hoisted(() => ({
+  mode: "local" as "local" | "google",
+  role: "admin" as "admin" | "member",
+  userId: "u-admin",
+}));
+vi.mock("@/lib/hooks/session", () => ({
+  SESSION_QUERY_KEY: ["session"],
+  useSession: () => ({
+    data: {
+      mode: session.mode,
+      user: { id: session.userId, email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: session.role },
+      workspace: { id: "w1", name: "Team" },
+    },
+    isPending: false,
+  }),
 }));
 
 import { EvalsTab } from "./EvalsTab";
@@ -153,7 +173,7 @@ afterEach(() => {
 
 function renderTab() {
   render(
-    <NextIntlClientProvider locale="en" messages={{ eval: messages }}>
+    <NextIntlClientProvider locale="en" messages={{ auth: authMessages, eval: messages }}>
       <EvalsTab agent={AGENT} />
     </NextIntlClientProvider>,
   );
@@ -242,5 +262,60 @@ describe("AgentEditor Evals tab (screen E)", () => {
     expect(screen.getByText("90%")).toBeInTheDocument();
     expect(screen.getByText("$0.0123")).toBeInTheDocument();
     expect(screen.getByText(/1 \/ 2 cases passed/i)).toBeInTheDocument();
+  });
+});
+
+/* AC-30 / AC-33: Members run evals and author cases; Edit / Delete appear only
+   on cases they created. A legacy case (no recorded creator) is Admin-only. */
+describe("AgentEditor Evals tab — eval-case ownership (AC-30)", () => {
+  afterEach(() => {
+    session.mode = "local";
+    session.role = "admin";
+    session.userId = "u-admin";
+  });
+
+  const seedCases = () => {
+    state.dashboard = dashboard([]);
+    state.cases = [
+      evalCase("case-own", "own-case", { created_by: { user_id: "u-a", name: "Ada" } } as Partial<EvalCaseRecord>),
+      evalCase("case-other", "others-case", { created_by: { user_id: "u-b", name: "Bob" } } as Partial<EvalCaseRecord>),
+      evalCase("case-legacy", "legacy-case", { created_by: null } as Partial<EvalCaseRecord>),
+    ];
+  };
+
+  it("Member: Edit/Delete only on their own case; Run, Run all and New case stay enabled", () => {
+    session.mode = "google";
+    session.role = "member";
+    session.userId = "u-a";
+    seedCases();
+    renderTab();
+
+    const own = rowNamed("own-case");
+    expect(within(own).getByRole("button", { name: "Edit" })).toBeInTheDocument();
+    expect(within(own).getByRole("button", { name: "Delete" })).toBeInTheDocument();
+
+    for (const name of ["others-case", "legacy-case"]) {
+      const row = rowNamed(name);
+      expect(within(row).queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+      expect(within(row).queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+      expect(within(row).getByRole("button", { name: "Run" })).toBeInTheDocument();
+    }
+
+    fireEvent.click(within(rowNamed("others-case")).getByRole("button", { name: "Run" }));
+    expect(runCaseMutate).toHaveBeenCalledWith({ caseId: "case-other", agentId: "ag1" });
+    expect(screen.getByRole("button", { name: /Run all evals/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /New case/i })).toBeEnabled();
+  });
+
+  it("Admin: Edit/Delete on every case, including the legacy one", () => {
+    session.mode = "google";
+    seedCases();
+    renderTab();
+
+    for (const name of ["own-case", "others-case", "legacy-case"]) {
+      const row = rowNamed(name);
+      expect(within(row).getByRole("button", { name: "Edit" })).toBeInTheDocument();
+      expect(within(row).getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    }
   });
 });

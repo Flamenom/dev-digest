@@ -1,11 +1,15 @@
 /* AppShell.tsx — thin orchestrator: wires @devdigest/ui AppFrame to the command
    palette, shortcuts help, global keyboard shortcuts, and the shell context.
-   All concerns live in ./hooks; overlay open/close is local view state. */
+   All concerns live in ./hooks; overlay open/close is local view state.
+   In google mode the top bar carries the signed-in user's identity
+   (UserMenu); local mode keeps the shell exactly as before (AC-32). */
 "use client";
 
 import React from "react";
 import { AppFrame, CommandPalette, ShortcutsHelp, type Crumb } from "@devdigest/ui";
+import { useSession } from "@/lib/hooks";
 import { useGlobalShortcuts, useShellCommands, useShellContext } from "./hooks";
+import { UserMenu } from "./_components/UserMenu";
 
 export function AppShell({ children, crumb }: { children: React.ReactNode; crumb?: Crumb[] }) {
   const [paletteOpen, setPaletteOpen] = React.useState(false);
@@ -17,7 +21,10 @@ export function AppShell({ children, crumb }: { children: React.ReactNode; crumb
 
   useGlobalShortcuts({ onOpenPalette: openPalette, onOpenHelp: openHelp });
   const commands = useShellCommands();
-  const ctx = useShellContext({ onOpenCommandPalette: openPalette });
+  const { data: session } = useSession();
+  const user = session?.mode === "google" ? session.user : null;
+  const userMenu = React.useMemo(() => (user ? <UserMenu user={user} /> : undefined), [user]);
+  const ctx = useShellContext({ onOpenCommandPalette: openPalette, userMenu });
 
   return (
     <>

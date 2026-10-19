@@ -1,7 +1,9 @@
 /* ConfigTab — skill configuration (§4.4): Enabled toggle top-right, Name*,
    Description (directive-interface hint), Type, and the skill-body editor.
    When the body changed, Save first asks for an optional one-line version note
-   (mini-modal) — the PUT then bumps the version server-side. Delete confirms. */
+   (mini-modal) — the PUT then bumps the version server-side. Delete confirms.
+   Multi-user (AC-33): Save is aria-disabled + "Admins only" for a Member and
+   Delete is hidden; local mode resolves to Admin (unchanged). */
 "use client";
 
 import React from "react";
@@ -11,6 +13,7 @@ import { Button, FormField, Modal, SelectInput, TextInput, Toggle } from "@devdi
 import type { Skill, SkillType } from "@devdigest/shared";
 import { useDeleteSkill, useUpdateSkill } from "@/lib/hooks/skills";
 import { useToast } from "@/lib/toast";
+import { AdminOnly, HiddenForMember } from "@/components/admin-gate";
 import { BodyEditor } from "../../../../../_components/BodyEditor";
 import { SKILL_TYPES } from "../../../../../_components/constants";
 import { slugify } from "../../../../../_components/helpers";
@@ -126,13 +129,25 @@ export function ConfigTab({ skill }: { skill: Skill }) {
         <BodyEditor value={body} onChange={setBody} slug={slugify(name)} dirty={bodyDirty} />
       </FormField>
       <div style={s.actions}>
-        <Button kind="primary" icon="Check" onClick={onSave} disabled={update.isPending || !name.trim()}>
-          {update.isPending ? t("config.saving") : t("config.save")}
-        </Button>
+        <AdminOnly>
+          {(gate) => (
+            <Button
+              kind="primary"
+              icon="Check"
+              {...gate.controlProps}
+              onClick={gate.guard(onSave)}
+              disabled={update.isPending || !name.trim()}
+            >
+              {update.isPending ? t("config.saving") : t("config.save")}
+            </Button>
+          )}
+        </AdminOnly>
         <div style={s.spacer} />
-        <Button kind="danger" icon="Trash" onClick={onDelete} disabled={del.isPending}>
-          {t("config.delete")}
-        </Button>
+        <HiddenForMember>
+          <Button kind="danger" icon="Trash" onClick={onDelete} disabled={del.isPending}>
+            {t("config.delete")}
+          </Button>
+        </HiddenForMember>
       </div>
     </div>
   );

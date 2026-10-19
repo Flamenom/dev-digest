@@ -25,6 +25,7 @@ export * from './schema/ci';
 export * from './schema/runs';
 export * from './schema/ops';
 export * from './schema/repo-intel';
+export * from './schema/identity';
 
 import { users, workspaces, workspaceMembers, settings } from './schema/core';
 import { repos } from './schema/repos';
@@ -45,6 +46,13 @@ import {
   fileRank,
   repoMapCache,
 } from './schema/repo-intel';
+import {
+  sessions,
+  oauthFlows,
+  apiTokens,
+  encryptedSecrets,
+  auditEvents,
+} from './schema/identity';
 
 /** Convenience: the full schema object for drizzle() client typing. */
 export const schema = {
@@ -90,4 +98,10 @@ export const schema = {
   fileFacts,
   fileRank,
   repoMapCache,
+  // multi-user server mode (migration 0021).
+  sessions,
+  oauthFlows,
+  apiTokens,
+  encryptedSecrets,
+  auditEvents,
 };

@@ -3,7 +3,7 @@
    normalized into ApiError so errors.ts can map them to forward-leading
    tool errors. Everything above receives the DevDigestApi interface. */
 
-import { API_BASE, FETCH_TIMEOUT_MS } from './config.js';
+import { API_BASE, API_TOKEN, FETCH_TIMEOUT_MS, assertTokenTransport } from './config.js';
 
 /** Normalized API failure. `status: 0` = network error (API down); `code: 'timeout'` = HTTP timeout. */
 export class ApiError extends Error {
@@ -23,7 +23,12 @@ export interface DevDigestApi {
   post<T>(path: string, body?: unknown): Promise<T>;
 }
 
-async function apiFetch<T>(base: string, path: string, init?: RequestInit): Promise<T> {
+async function apiFetch<T>(
+  base: string,
+  path: string,
+  token: string | undefined,
+  init?: RequestInit,
+): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${base}${path}`, {
@@ -33,6 +38,10 @@ async function apiFetch<T>(base: string, path: string, init?: RequestInit): Prom
         // Only declare a JSON body when one is actually sent — a body-less POST
         // with content-type json trips Fastify's empty-body check.
         ...(init?.body != null ? { 'content-type': 'application/json' } : {}),
+        // Bearer only when a token is configured — without one the request is
+        // byte-for-byte what local mode sends today. The token never reaches a
+        // log line or an ApiError message.
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
         ...(init?.headers ?? {}),
       },
     });
@@ -63,12 +72,15 @@ async function apiFetch<T>(base: string, path: string, init?: RequestInit): Prom
   return (await res.json()) as T;
 }
 
-/** Build the real HTTP-backed DevDigestApi (composition root only; tests inject a fake). */
-export function createApi(base: string = API_BASE): DevDigestApi {
+/** Build the real HTTP-backed DevDigestApi (composition root only; tests inject a fake).
+    Throws ConfigError (naming the setting, never the token) when a token would
+    be sent over cleartext http to a non-loopback host. */
+export function createApi(base: string = API_BASE, token: string | undefined = API_TOKEN): DevDigestApi {
+  assertTokenTransport(base, token);
   return {
-    get: <T>(path: string) => apiFetch<T>(base, path),
+    get: <T>(path: string) => apiFetch<T>(base, path, token),
     post: <T>(path: string, body?: unknown) =>
-      apiFetch<T>(base, path, {
+      apiFetch<T>(base, path, token, {
         method: 'POST',
         body: body !== undefined ? JSON.stringify(body) : undefined,
       }),

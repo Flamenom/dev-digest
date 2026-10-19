@@ -34,6 +34,9 @@ export function okResult(structuredContent: Record<string, unknown>): CallToolRe
 
 const API_DOWN_TEXT = 'DevDigest API is not running — start it with ./scripts/dev.sh';
 
+export const UNAUTHENTICATED_TEXT =
+  'DevDigest rejected the API token (or none is set). Create or renew one in Settings → API tokens and set DEVDIGEST_API_TOKEN.';
+
 /** Map any thrown value to an isError tool result. Never throws. */
 export function toToolError(err: unknown, ctx?: ToolErrorContext): CallToolResult {
   if (err instanceof ResolveError) return toolError(err.message);
@@ -51,6 +54,11 @@ export function toToolError(err: unknown, ctx?: ToolErrorContext): CallToolResul
       );
     }
     if (err.status === 0) return toolError(API_DOWN_TEXT);
+    // 401 never echoes the server body — fixed guidance, no token material.
+    if (err.status === 401) return toolError(UNAUTHENTICATED_TEXT);
+    // 403 = authenticated but not allowed (role / owner / session-only action):
+    // the server's message already says why, so pass it through.
+    if (err.status === 403) return toolError(`DevDigest denied this action: ${err.message}`);
     if (err.status === 404) {
       return toolError(ctx?.notFound ?? `Not found: ${err.message}. Check the arguments and retry.`);
     }

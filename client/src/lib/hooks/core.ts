@@ -6,12 +6,12 @@
 
 import { useQuery, useMutation, useQueryClient, queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
+import type { SecretsStatusDetailed } from "@devdigest/shared";
 import type {
   Settings,
   SettingsUpdate,
   ConnTestProviderHost,
   ConnTestResultHost,
-  SecretsStatusHost,
   RepoWithHost,
   PrListPage,
   PrDetailHost,
@@ -57,11 +57,15 @@ export function useTestConnection() {
   });
 }
 
-/** Which provider keys are configured (booleans only — never the values). */
+/**
+ * Which provider keys are configured — never the values. The booleans are true
+ * only for state `set`; `states` adds the per-key `set|unset|undecryptable`
+ * state with `updated_at` / `updated_by` (multi-user server mode, AC-38).
+ */
 export function useSecretsStatus() {
   return useQuery({
     queryKey: ["secrets-status"],
-    queryFn: () => api.get<SecretsStatusHost>("/settings/secrets-status"),
+    queryFn: () => api.get<SecretsStatusDetailed>("/settings/secrets-status"),
     staleTime: 30_000,
   });
 }

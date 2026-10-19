@@ -3,6 +3,17 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import type { Convention } from "@devdigest/shared";
 import messages from "../../../../../../../messages/en/conventions.json";
+import authMessages from "../../../../../../../messages/en/auth.json";
+
+// Multi-user gating: drive the session-derived role directly ("admin" =
+// today's behaviour, also what local mode resolves to).
+const perm = vi.hoisted(() => ({ role: "admin" as "admin" | "member" }));
+vi.mock("@/lib/permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/permissions")>();
+  const current = () =>
+    actual.buildPermissions({ mode: "google", role: perm.role, userId: "u1", isPending: false });
+  return { ...actual, useCan: current, useIsAdmin: () => current().isAdmin };
+});
 
 const updateMutate = vi.fn();
 vi.mock("@/lib/hooks/conventions", () => ({
@@ -51,7 +62,7 @@ const GITLAB_REPO: EvidenceLinkRepo = {
 
 function renderCard(c: Convention, repo: EvidenceLinkRepo | null = REPO) {
   render(
-    <NextIntlClientProvider locale="en" messages={{ conventions: messages }}>
+    <NextIntlClientProvider locale="en" messages={{ conventions: messages, auth: authMessages }}>
       <ConventionCard convention={c} repoId="r1" repo={repo} />
     </NextIntlClientProvider>,
   );
@@ -133,5 +144,34 @@ describe("ConventionCard", () => {
     fireEvent.click(screen.getByText("Cancel"));
     expect(updateMutate).not.toHaveBeenCalled();
     expect(screen.getByText("Always use async/await instead of .then() chains")).toBeInTheDocument();
+  });
+});
+
+describe("ConventionCard gating (AC-33)", () => {
+  afterEach(() => {
+    perm.role = "admin";
+  });
+
+  it("Member: Accept / Reject are aria-disabled, described by one 'Admins only' hint, inert; no rule edit", () => {
+    perm.role = "member";
+    renderCard(convention());
+    const accept = screen.getByRole("button", { name: /Accept/ });
+    const reject = screen.getByRole("button", { name: /Reject/ });
+    for (const btn of [accept, reject]) {
+      expect(btn).toHaveAttribute("aria-disabled", "true");
+      expect(btn).toHaveAccessibleDescription("Admins only");
+      fireEvent.click(btn);
+    }
+    expect(screen.getAllByText("Admins only")).toHaveLength(1);
+    expect(updateMutate).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Edit rule" })).not.toBeInTheDocument();
+  });
+
+  it("Admin: Accept fires the status PATCH", () => {
+    renderCard(convention());
+    const accept = screen.getByRole("button", { name: /Accept/ });
+    expect(accept).not.toHaveAttribute("aria-disabled");
+    fireEvent.click(accept);
+    expect(updateMutate).toHaveBeenCalledWith({ id: "c1", patch: { status: "accepted" } });
   });
 });

@@ -47,7 +47,9 @@ export function usePrSyncCompletion(
 
   React.useEffect(() => {
     if (!repoId || listenKey == null) return;
-    const es = new EventSource(`${API_BASE}/repos/${repoId}/pulls/sync/events`);
+    const es = new EventSource(`${API_BASE}/repos/${repoId}/pulls/sync/events`, {
+      withCredentials: true, // session cookie (AC-54); SSE is GET-only, no CSRF header
+    });
     let settled = false;
 
     // Single settle path for `done` and `error`: close, invalidate once, report.

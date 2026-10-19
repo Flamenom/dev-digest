@@ -3,6 +3,9 @@ import type { Db } from '../../../db/client.js';
 import * as t from '../../../db/schema.js';
 import type { RunSummary, RunTrace } from '@devdigest/shared';
 
+/** A run-history row + its raw initiator id (resolved to `started_by` by the route). */
+export type RunSummaryRecord = RunSummary & { initiatedBy: string | null };
+
 // ---- in-flight / history --------------------------------------------------
 
 /** In-flight runs for a PR (status='running') — the server-side source of
@@ -41,7 +44,7 @@ export async function listRunsForPull(
   db: Db,
   workspaceId: string,
   prId: string,
-): Promise<RunSummary[]> {
+): Promise<RunSummaryRecord[]> {
   const rows = await db
     .select({ run: t.agentRuns, agentName: t.agents.name })
     .from(t.agentRuns)
@@ -65,6 +68,7 @@ export async function listRunsForPull(
     ran_at: run.ranAt ? run.ranAt.toISOString() : null,
     score: run.score,
     blockers: run.blockers,
+    initiatedBy: run.initiatedBy,
   }));
 }
 
@@ -133,6 +137,24 @@ export async function runExistsInWorkspace(
   return rows.length > 0;
 }
 
+/**
+ * The run's initiator, scoped to the workspace — the AC-30 ownership input for
+ * cancel. `undefined` = no such run in this workspace; `initiatedBy: null` =
+ * a legacy (pre-multi-user) run or an initiator whose user row was removed.
+ */
+export async function getRunInitiator(
+  db: Db,
+  workspaceId: string,
+  runId: string,
+): Promise<{ initiatedBy: string | null } | undefined> {
+  const [row] = await db
+    .select({ initiatedBy: t.agentRuns.initiatedBy })
+    .from(t.agentRuns)
+    .where(and(eq(t.agentRuns.id, runId), eq(t.agentRuns.workspaceId, workspaceId)))
+    .limit(1);
+  return row;
+}
+
 /** On boot: any run still 'running' is orphaned (its process died / restarted),
  *  so mark it failed. Prevents permanently stuck "running" runs in the UI. */
 export async function reapStaleRunningRuns(db: Db): Promise<number> {
@@ -155,6 +177,8 @@ export async function createAgentRun(
     prId: string;
     provider: string | null;
     model: string | null;
+    /** The user who started the run (AC-45); null only for system-initiated runs. */
+    initiatedBy?: string | null;
   },
 ): Promise<string> {
   const [row] = await db
@@ -167,6 +191,7 @@ export async function createAgentRun(
       model: values.model,
       status: 'running',
       source: 'local',
+      initiatedBy: values.initiatedBy ?? null,
     })
     .returning({ id: t.agentRuns.id });
   return row!.id;

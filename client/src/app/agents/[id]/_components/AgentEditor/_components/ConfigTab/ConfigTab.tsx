@@ -6,11 +6,14 @@ import { FormField, TextInput, SelectInput, SearchableSelect, Textarea, Toggle, 
 import type { Agent, CiFailOn, Provider, ReviewStrategy } from "@devdigest/shared";
 import { useUpdateAgent, useProviderModels } from "@/lib/hooks/agents";
 import { useToast } from "@/lib/toast";
+import { AdminOnly } from "@/components/admin-gate";
 import { toModelOptions } from "@/lib/model-label";
 import { CI_FAIL_ON_VALUES, OUTPUT_SCHEMA_VALUE, PROVIDER_OPTIONS, STRATEGY_VALUES } from "./constants";
 import { s } from "./styles";
 
-/** Config tab — name/description/provider/model/system-prompt + enabled toggle. */
+/** Config tab — name/description/provider/model/system-prompt + enabled toggle.
+    Saving is an agent edit (PUT /agents/:id), Admin-only (AC-33): a Member can
+    read the config, but Save stays aria-disabled with the "Admins only" hint. */
 export function ConfigTab({ agent }: { agent: Agent }) {
   const t = useTranslations("agents");
   const toast = useToast();
@@ -134,9 +137,19 @@ export function ConfigTab({ agent }: { agent: Agent }) {
         <SelectInput value={OUTPUT_SCHEMA_VALUE} options={[OUTPUT_SCHEMA_VALUE]} />
       </FormField>
       <div style={s.actions}>
-        <Button kind="primary" icon="Check" onClick={save} disabled={update.isPending}>
-          {update.isPending ? t("config.saving") : t("config.save")}
-        </Button>
+        <AdminOnly>
+          {(gate) => (
+            <Button
+              {...gate.controlProps}
+              kind="primary"
+              icon="Check"
+              onClick={gate.guard(save)}
+              disabled={update.isPending}
+            >
+              {update.isPending ? t("config.saving") : t("config.save")}
+            </Button>
+          )}
+        </AdminOnly>
         {update.isSuccess && (
           <span style={s.savedNote}>{t("config.saved", { version: update.data?.version })}</span>
         )}

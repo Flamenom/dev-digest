@@ -3,21 +3,23 @@
 import React from "react";
 import { useTranslations } from "next-intl";
 import { Button, Icon, FormField, TextInput } from "@devdigest/ui";
+import type { SecretState } from "@devdigest/shared";
 import { useTestConnection, useSecretsStatus } from "@/lib/hooks";
 import { ApiError } from "@/lib/api";
 import type { ConnTestProviderHost } from "@/lib/types";
 import { SectionTitle } from "../SectionTitle";
-import { KEY_ROWS } from "./constants";
+import { KEY_ROWS, STATE_LABEL_KEY } from "./constants";
+import { keyState } from "./helpers";
 import { s } from "./styles";
 
-/** "Configured / Not set" pill driven by GET /settings/secrets-status. */
-function StatusBadge({ configured }: { configured: boolean | undefined }) {
+/** "Configured / Not set / Needs re-entry" pill driven by GET /settings/secrets-status. */
+function StatusBadge({ state }: { state: SecretState | undefined }) {
   const t = useTranslations("settings");
-  if (configured === undefined) return null; // status still loading
+  if (state === undefined) return null; // status still loading
   return (
-    <span style={s.badge(configured)}>
-      <span style={s.badgeDot(configured)} />
-      {configured ? t("apiKeys.configured") : t("apiKeys.notSet")}
+    <span style={s.badge(state)}>
+      <span style={s.badgeDot(state)} />
+      {t(STATE_LABEL_KEY[state])}
     </span>
   );
 }
@@ -26,12 +28,12 @@ function KeyRow({
   label,
   provider,
   hint,
-  configured,
+  state,
 }: {
   label: string;
   provider: ConnTestProviderHost;
   hint: string;
-  configured: boolean | undefined;
+  state: SecretState | undefined;
 }) {
   const t = useTranslations("settings");
   const [val, setVal] = React.useState("");
@@ -53,7 +55,7 @@ function KeyRow({
     // Named group: FormField's <label> is not bound to the input, so the row and
     // its input carry the provider label for assistive tech (and tests).
     <div role="group" aria-label={label}>
-      <FormField label={label} hint={hint} right={<StatusBadge configured={configured} />}>
+      <FormField label={label} hint={hint} right={<StatusBadge state={state} />}>
         <div style={s.keyRow}>
           <div style={s.keyInput}>
             <TextInput
@@ -83,21 +85,60 @@ function KeyRow({
   );
 }
 
-export function SettingsApiKeys() {
+/** Member view of one key: label, hint and state badge — no input, no Test (AC-33). */
+function ReadOnlyKeyRow({ label, hint, state }: { label: string; hint: string; state: SecretState | undefined }) {
+  return (
+    <div role="group" aria-label={label} style={s.readOnlyRow}>
+      <div style={s.readOnlyText}>
+        <div style={s.readOnlyLabel}>{label}</div>
+        <div style={s.readOnlyHint}>{hint}</div>
+      </div>
+      <StatusBadge state={state} />
+    </div>
+  );
+}
+
+/** "Only admins can change API keys" (Member view). */
+function ReadOnlyNotice() {
+  const t = useTranslations("auth");
+  return (
+    <div role="note" style={s.notice}>
+      <Icon.Info size={15} />
+      <span>{t("gate.apiKeysReadOnly")}</span>
+    </div>
+  );
+}
+
+export interface SettingsApiKeysProps {
+  /** Member view: state badges only, no inputs or Save & Test (UI gating table). */
+  readOnly?: boolean;
+}
+
+export function SettingsApiKeys({ readOnly = false }: SettingsApiKeysProps) {
   const t = useTranslations("settings");
   const { data: status } = useSecretsStatus();
   return (
     <div style={s.wrap}>
-      <SectionTitle title={t("apiKeys.title")} body={t("apiKeys.body")} />
-      {KEY_ROWS.map((row) => (
-        <KeyRow
-          key={row.provider}
-          label={t(row.labelKey)}
-          provider={row.provider}
-          hint={t(row.hintKey)}
-          configured={status?.[row.provider]}
-        />
-      ))}
+      <SectionTitle title={t("apiKeys.title")} body={readOnly ? t("apiKeys.readOnlyBody") : t("apiKeys.body")} />
+      {readOnly && <ReadOnlyNotice />}
+      {KEY_ROWS.map((row) =>
+        readOnly ? (
+          <ReadOnlyKeyRow
+            key={row.provider}
+            label={t(row.labelKey)}
+            hint={t(row.hintKey)}
+            state={keyState(status, row.provider)}
+          />
+        ) : (
+          <KeyRow
+            key={row.provider}
+            label={t(row.labelKey)}
+            provider={row.provider}
+            hint={t(row.hintKey)}
+            state={keyState(status, row.provider)}
+          />
+        ),
+      )}
     </div>
   );
 }

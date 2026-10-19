@@ -4,10 +4,30 @@ import { NextIntlClientProvider } from "next-intl";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, DiscoveredDocument, DiscoverySummary, Repo } from "@devdigest/shared";
 import messages from "../../../../../../../../messages/en/agents.json";
+import authMessages from "../../../../../../../../messages/en/auth.json";
 
 // ContextTab talks to the API through lib/api only — mock it wholesale.
 vi.mock("@/lib/api", () => ({
   api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn() },
+}));
+
+/* Multi-user gating reads the session probe: mocked as the local-mode Admin
+   (every control enabled, as before); a test may flip `session` to a Member. */
+const session = vi.hoisted(() => ({
+  mode: "local" as "local" | "google",
+  role: "admin" as "admin" | "member",
+  userId: "u-admin",
+}));
+vi.mock("@/lib/hooks/session", () => ({
+  SESSION_QUERY_KEY: ["session"],
+  useSession: () => ({
+    data: {
+      mode: session.mode,
+      user: { id: session.userId, email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: session.role },
+      workspace: { id: "w1", name: "Team" },
+    },
+    isPending: false,
+  }),
 }));
 
 import { api } from "@/lib/api";
@@ -78,7 +98,7 @@ function renderTab() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <NextIntlClientProvider locale="en" messages={{ agents: messages }}>
+      <NextIntlClientProvider locale="en" messages={{ auth: authMessages, agents: messages }}>
         <ContextTab agent={AGENT} />
       </NextIntlClientProvider>
     </QueryClientProvider>,

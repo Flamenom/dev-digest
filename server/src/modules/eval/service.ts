@@ -44,8 +44,10 @@ import {
   type EvalExpectation,
   type EvalOwnerKind,
   type EvalRunResult,
+  type Role,
 } from '@devdigest/shared';
 import { AppError, NotFoundError, ValidationError } from '../../platform/errors.js';
+import { ForbiddenOwnerError } from '../../platform/auth-errors.js';
 import { nextFreeName, slugifyCaseName } from './naming.js';
 import { parseExpectedOutput } from './scoring.js';
 import {
@@ -162,11 +164,27 @@ export interface EvalServiceDeps {
   runner: EvalServiceRunner;
 }
 
+/**
+ * The acting user, as plain values (never a request object). The route passes
+ * `getContext()`'s `userId` + `role`; local mode is the system user as Admin.
+ */
+export interface EvalActor {
+  userId: string;
+  role: Role;
+}
+
+/**
+ * `EvalCaseRecord` plus the creator's raw user id (multi-user AC-47). The id is
+ * NOT a wire field: the route resolves it to the `created_by` ActorRef with one
+ * batched lookup (`withCaseCreators`) and drops it from the response.
+ */
+export type EvalCaseView = EvalCaseRecord & { creator_id: string | null };
+
 /** R1's result. The route maps `created` to 201 vs 200 (AC-9 idempotency). */
 export interface EvalCaseCreation {
   /** `false` when an existing case was returned instead of a new one. */
   created: boolean;
-  record: EvalCaseRecord;
+  record: EvalCaseView;
 }
 
 // ===========================================================================
@@ -300,13 +318,19 @@ export class EvalService {
     workspaceId: string,
     findingId: string,
     input?: EvalCaseFromFindingInput | null,
+    actor?: EvalActor,
   ): Promise<EvalCaseCreation> {
     const ctx = await this.findingContextOr404(workspaceId, findingId);
 
+    // An idempotent re-click returns the ORIGINAL case untouched — its creator
+    // stays whoever clicked first.
     const existing = await this.deps.evalRepo.findCaseBySourceFinding(workspaceId, findingId);
     if (existing) return { created: false, record: await this.toRecord(workspaceId, existing) };
 
-    const values = await this.composeFromFinding(workspaceId, ctx, input);
+    const values = {
+      ...(await this.composeFromFinding(workspaceId, ctx, input)),
+      createdBy: actor?.userId ?? null,
+    };
 
     try {
       const created = await this.deps.evalRepo.insertCase(values);
@@ -488,7 +512,7 @@ export class EvalService {
   }
 
   /** R3 — every case of one agent, with its last run. 404 for a missing / foreign agent. */
-  async listForAgent(workspaceId: string, agentId: string): Promise<EvalCaseRecord[]> {
+  async listForAgent(workspaceId: string, agentId: string): Promise<EvalCaseView[]> {
     await this.requireAgent(workspaceId, agentId);
     const [cases, lastRuns] = await Promise.all([
       this.deps.evalRepo.listCasesForOwner(workspaceId, agentId),
@@ -498,7 +522,7 @@ export class EvalService {
   }
 
   /** R5 — one case. 404 for a missing case AND for another workspace's case (never 403). */
-  async getCase(workspaceId: string, caseId: string): Promise<EvalCaseRecord> {
+  async getCase(workspaceId: string, caseId: string): Promise<EvalCaseView> {
     return this.toRecord(workspaceId, await this.requireCase(workspaceId, caseId));
   }
 
@@ -514,7 +538,11 @@ export class EvalService {
    * column is named explicitly: the body is never spread (A08), which is what
    * keeps `workspace_id` and `source_finding_id` out of the caller's reach.
    */
-  async createCase(workspaceId: string, input: EvalCaseInput): Promise<EvalCaseRecord> {
+  async createCase(
+    workspaceId: string,
+    input: EvalCaseInput,
+    actor?: EvalActor,
+  ): Promise<EvalCaseView> {
     const ownerId = this.requireOwnerId(input.owner_id);
     const expectedOutput = this.requireExpectedOutput(input.expected_output);
     const inputDiff = this.requireInputDiff(input.input_diff);
@@ -538,6 +566,8 @@ export class EvalService {
       notes: input.notes ?? null,
       // NOT settable from a body: provenance is minted by `createFromFinding`.
       sourceFindingId: null,
+      // NOT settable from a body either: the creator is the authenticated actor.
+      createdBy: actor?.userId ?? null,
     });
     return this.toRecord(workspaceId, created);
   }
@@ -554,7 +584,9 @@ export class EvalService {
     workspaceId: string,
     caseId: string,
     input: Partial<EvalCaseInput>,
-  ): Promise<EvalCaseRecord> {
+    actor?: EvalActor,
+  ): Promise<EvalCaseView> {
+    if (actor) await this.assertCanModify(workspaceId, caseId, actor);
     const patch: EvalCasePatch = {};
     if (input.name !== undefined) {
       const name = input.name.trim();
@@ -586,7 +618,9 @@ export class EvalService {
     workspaceId: string,
     caseId: string,
     opts: { force?: boolean } = {},
+    actor?: EvalActor,
   ): Promise<{ deleted: true }> {
+    if (actor) await this.assertCanModify(workspaceId, caseId, actor);
     const result = await this.deps.evalRepo.deleteCase(workspaceId, caseId, {
       force: opts.force === true,
     });
@@ -655,6 +689,26 @@ export class EvalService {
     return found;
   }
 
+  /**
+   * AC-30 — edit/delete is "Member own / Admin any". Order matters: the tenant
+   * check comes first (another workspace's case is 404, never 403, A01); only a
+   * case that provably belongs to this workspace can answer 403. A case with no
+   * recorded creator (legacy / seeded, before multi-user) is Admin-only.
+   *
+   * Callers without an actor (in-process, non-HTTP) skip this; every HTTP route
+   * passes one.
+   */
+  private async assertCanModify(
+    workspaceId: string,
+    caseId: string,
+    actor: EvalActor,
+  ): Promise<void> {
+    const found = await this.requireCase(workspaceId, caseId);
+    if (actor.role === 'admin') return;
+    const creator = found.createdBy ?? null;
+    if (creator === null || creator !== actor.userId) throw new ForbiddenOwnerError();
+  }
+
   /** 404 for a missing agent AND for another workspace's agent — never 403 (A01). */
   private async requireAgent(workspaceId: string, agentId: string): Promise<void> {
     const agent = await this.deps.agentsRepo.getById(workspaceId, agentId);
@@ -693,7 +747,7 @@ export class EvalService {
   }
 
   /** One case + its last run, in one extra query. Used by the single-case reads. */
-  private async toRecord(workspaceId: string, c: EvalCaseDomain): Promise<EvalCaseRecord> {
+  private async toRecord(workspaceId: string, c: EvalCaseDomain): Promise<EvalCaseView> {
     const lastRuns = await this.deps.evalRepo.latestRunPerCase(workspaceId, c.ownerId);
     return this.project(c, lastRuns.get(c.id));
   }
@@ -704,7 +758,7 @@ export class EvalService {
    * existed), so this projection is where they are validated — degrading
    * loudly through `diff_warnings` rather than throwing on stored data.
    */
-  private project(c: EvalCaseDomain, lastRun?: EvalRunDomain): EvalCaseRecord {
+  private project(c: EvalCaseDomain, lastRun?: EvalRunDomain): EvalCaseView {
     const parsed = parseExpectedOutput(c.expectedOutput);
     const expectedOutput = parsed ?? UNPARSEABLE_EXPECTED_OUTPUT;
     const meta = EvalPrMeta.safeParse(c.inputMeta);
@@ -726,6 +780,7 @@ export class EvalService {
       source_finding_id: c.sourceFindingId,
       last_run: lastRun && lastRun.finished ? toLastRun(lastRun, expectedOutput) : null,
       diff_warnings: warnings,
+      creator_id: c.createdBy ?? null,
     };
   }
 }

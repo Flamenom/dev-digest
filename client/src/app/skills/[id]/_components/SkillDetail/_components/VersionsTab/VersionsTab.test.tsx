@@ -3,6 +3,17 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import type { Skill, SkillVersionEntry } from "@devdigest/shared";
 import messages from "../../../../../../../../messages/en/skills.json";
+import authMessages from "../../../../../../../../messages/en/auth.json";
+
+// Multi-user gating: drive the session-derived role directly ("admin" =
+// today's behaviour, also what local mode resolves to).
+const perm = vi.hoisted(() => ({ role: "admin" as "admin" | "member" }));
+vi.mock("@/lib/permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/permissions")>();
+  const current = () =>
+    actual.buildPermissions({ mode: "google", role: perm.role, userId: "u1", isPending: false });
+  return { ...actual, useCan: current, useIsAdmin: () => current().isAdmin };
+});
 
 vi.mock("@/lib/toast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), toast: vi.fn() }),
@@ -40,7 +51,7 @@ const SKILL: Skill = {
 
 function renderTab() {
   return render(
-    <NextIntlClientProvider locale="en" messages={{ skills: messages }}>
+    <NextIntlClientProvider locale="en" messages={{ skills: messages, auth: authMessages }}>
       <VersionsTab skill={SKILL} />
     </NextIntlClientProvider>,
   );
@@ -76,5 +87,40 @@ describe("VersionsTab", () => {
     expect(screen.getByText("Diff v1 → v2")).toBeInTheDocument();
     expect(screen.getByText("old body")).toBeInTheDocument();
     expect(screen.getByText("new body")).toBeInTheDocument();
+  });
+});
+
+describe("VersionsTab gating + version author (AC-33, AC-47/48)", () => {
+  afterEach(() => {
+    perm.role = "admin";
+  });
+
+  it("Member: Restore is aria-disabled with an 'Admins only' hint and never confirms or POSTs; Diff stays usable", () => {
+    perm.role = "member";
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderTab();
+    const restore = screen.getAllByRole("button", { name: /Restore/ })[1]!;
+    expect(restore).toHaveAttribute("aria-disabled", "true");
+    expect(restore).toHaveAccessibleDescription("Admins only");
+    fireEvent.click(restore);
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(restoreMutate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Diff/ })[0]!);
+    expect(screen.getByText("Diff v1 → v2")).toBeInTheDocument();
+    confirmSpy.mockRestore();
+  });
+
+  it("names each version's author when present: user name, Local user, or —", () => {
+    VERSIONS[0] = { ...VERSIONS[0]!, author: { user_id: "u2", name: "Ann" } } as SkillVersionEntry;
+    VERSIONS[1] = { ...VERSIONS[1]!, author: { user_id: "sys", name: "System", is_system: true } } as SkillVersionEntry;
+    try {
+      renderTab();
+      expect(screen.getByText(/Ann/)).toBeInTheDocument();
+      expect(screen.getByText(/Local user/)).toBeInTheDocument();
+      expect(screen.queryByText("Admins only")).not.toBeInTheDocument();
+    } finally {
+      for (const v of VERSIONS) delete (v as { author?: unknown }).author;
+    }
   });
 });

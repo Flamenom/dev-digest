@@ -8,16 +8,22 @@ import { ReviewRunAccordion } from "../ReviewRunAccordion";
 import { FindingHostProvider } from "../FindingCard";
 import type { HostLinkRepo } from "@/lib/host-urls";
 import { s } from "./styles";
-import type { FindingRecord, ReviewRecord, RunSummary, PrCommit } from "@devdigest/shared";
+import type {
+  FindingRecord,
+  ReviewRecordWithActor,
+  RunSummaryWithActor,
+  PrCommit,
+} from "@devdigest/shared";
 import type { UseMutationResult } from "@tanstack/react-query";
+import { useCan } from "@/lib/permissions";
 
 interface FindingsTabProps {
   prId: string | null;
   liveRunIds: string[];
   reviewRunning: boolean;
   lethalTrifecta: FindingRecord[];
-  runs: ReviewRecord[];
-  prRuns: RunSummary[] | undefined;
+  runs: ReviewRecordWithActor[];
+  prRuns: RunSummaryWithActor[] | undefined;
   prCommits: PrCommit[];
   cancelMutation: UseMutationResult<any, any, string, any>;
   /** The PR's repository — finding file:line links are built from it via
@@ -53,9 +59,17 @@ export function FindingsTab({
   onDelete,
   onRunDone,
 }: FindingsTabProps) {
-  const handleCancelAll = useCallback(() => {
-    liveRunIds.forEach((id) => cancelMutation.mutate(id));
-  }, [liveRunIds, cancelMutation]);
+  // Gating (AC-30/AC-33, UX only — the server enforces it): a Member may cancel
+  // only runs they started and never deletes history; an Admin (and local
+  // mode, where the seeded user is Admin) keeps every control as before.
+  const can = useCan();
+  const runById = new Map((prRuns ?? []).map((r) => [r.run_id, r]));
+  const cancellableLiveIds = liveRunIds.filter((id) => can.canCancelRun(runById.get(id)));
+
+  const handleCancelAll = () => {
+    cancellableLiveIds.forEach((id) => cancelMutation.mutate(id));
+  };
+  const handleCancelOne = (id: string) => cancelMutation.mutate(id);
 
   const handleOpenFirstTrace = useCallback(() => {
     if (liveRunIds[0]) onOpenTrace(liveRunIds[0]);
@@ -111,15 +125,17 @@ export function FindingsTab({
               icon="Sparkles"
               right={
                 <div style={s.cancelActions}>
-                  <Button
-                    kind="danger"
-                    size="sm"
-                    icon="X"
-                    loading={cancelMutation.isPending}
-                    onClick={handleCancelAll}
-                  >
-                    Cancel
-                  </Button>
+                  {cancellableLiveIds.length > 0 && (
+                    <Button
+                      kind="danger"
+                      size="sm"
+                      icon="X"
+                      loading={cancelMutation.isPending}
+                      onClick={handleCancelAll}
+                    >
+                      Cancel
+                    </Button>
+                  )}
                   <Button kind="ghost" size="sm" icon="FileText" onClick={handleOpenFirstTrace}>
                     Open run trace
                   </Button>
@@ -166,7 +182,10 @@ export function FindingsTab({
               findingsByRun={findingsByRun}
               onOpenTrace={onOpenTrace}
               onGoToReview={handleGoToReview}
-              onDelete={onDelete}
+              onDelete={can.isAdmin ? onDelete : undefined}
+              onCancel={handleCancelOne}
+              canCancelRun={can.canCancelRun}
+              cancelPending={cancelMutation.isPending}
             />
           </div>
         )}

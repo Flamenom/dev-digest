@@ -49,6 +49,8 @@ export const s = {
     fontWeight: 600,
     color: "var(--text-muted)",
   } satisfies CSSProperties,
+  /** "Accepted by / Dismissed by <name>" next to file:line (AC-46). */
+  actorLabel: { fontSize: 12, color: "var(--text-muted)" } satisfies CSSProperties,
   metaRow: {
     display: "flex",
     alignItems: "center",
