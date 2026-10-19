@@ -38,16 +38,20 @@ if (PLACEHOLDER.test(appPassword))
   fail('APP_DB_PASSWORD is still the .env.example placeholder; generate one with: openssl rand -hex 24');
 if (!STRONG.test(appPassword))
   fail('APP_DB_PASSWORD must be >= 32 chars of [A-Za-z0-9_-]; generate one with: openssl rand -hex 24');
-let ownerPassword = '';
+let ownerPassword;
 try {
   ownerPassword = decodeURIComponent(new URL(url).password);
 } catch {
-  /* unparsable URL: the driver reports it below */
+  fail('DATABASE_URL is not a valid postgres URL');
 }
-// The owner password comes from POSTGRES_PASSWORD (migrate's DATABASE_URL).
+// The owner password comes from POSTGRES_PASSWORD (migrate's DATABASE_URL) and
+// must meet the same bar as the runtime role's: the owner holds every right.
+if (!ownerPassword) fail('POSTGRES_PASSWORD is missing (no password in DATABASE_URL)');
 if (PLACEHOLDER.test(ownerPassword))
   fail('POSTGRES_PASSWORD is still the .env.example placeholder; generate one with: openssl rand -hex 24');
-if (ownerPassword && ownerPassword === appPassword)
+if (!STRONG.test(ownerPassword))
+  fail('POSTGRES_PASSWORD must be >= 32 chars of [A-Za-z0-9_-]; generate one with: openssl rand -hex 24');
+if (ownerPassword === appPassword)
   fail('APP_DB_PASSWORD must differ from POSTGRES_PASSWORD');
 
 const grantsSql = readFileSync(join(here, 'grants.sql'), 'utf8');

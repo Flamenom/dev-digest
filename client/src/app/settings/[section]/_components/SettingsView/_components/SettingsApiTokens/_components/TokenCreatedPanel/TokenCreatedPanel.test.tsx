@@ -15,12 +15,26 @@ function renderPanel() {
   );
 }
 
+// Own-property descriptor before any stub (jsdom usually has none — clipboard lives on the
+// prototype or is absent), so afterEach can put navigator back exactly as it was.
+const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+
 function stubClipboard(writeText: (text: string) => Promise<void>) {
   Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
 }
 
+function restoreClipboard() {
+  if (originalClipboard) {
+    Object.defineProperty(navigator, "clipboard", originalClipboard);
+  } else {
+    // Removing the own property re-exposes whatever the prototype provides (or nothing).
+    delete (navigator as { clipboard?: unknown }).clipboard;
+  }
+}
+
 afterEach(() => {
   cleanup();
+  restoreClipboard();
   vi.restoreAllMocks();
 });
 

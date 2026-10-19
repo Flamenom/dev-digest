@@ -148,16 +148,16 @@ async function googleBootChecks(container: Container, log: BootLogger): Promise<
  * google mode: sweep expired OIDC flows and sessions every
  * {@link IDENTITY_SWEEP_INTERVAL_MS} (one bounded batch per table per tick —
  * the create-time sweeps only run when someone signs in). The timer is
- * `unref()`ed so it never keeps the process alive, cleared in `onClose`, and a
+ * `unref()`ed so it never keeps the process alive, cleared in `onClose` (which then awaits an in-flight sweep), and a
  * tick is skipped while the previous one is still running. Failures are
  * logged, never thrown (maintenance must not take the API down).
  */
 function scheduleIdentitySweep(app: FastifyInstance, container: Container): void {
-  let running = false;
+  // The in-flight sweep (null when idle) — also the "skip this tick" flag.
+  let inFlight: Promise<void> | null = null;
   const timer = setInterval(() => {
-    if (running) return;
-    running = true;
-    container.identityRepo
+    if (inFlight) return;
+    inFlight = container.identityRepo
       .sweepExpired(container.clock.now())
       .then((swept) => {
         if (swept.oauthFlows > 0 || swept.sessions > 0) app.log.info(swept, 'swept expired oauth flows / sessions');
@@ -166,11 +166,16 @@ function scheduleIdentitySweep(app: FastifyInstance, container: Container): void
         app.log.warn({ err: err instanceof Error ? err.message : String(err) }, 'identity expiry sweep failed');
       })
       .finally(() => {
-        running = false;
+        inFlight = null;
       });
   }, IDENTITY_SWEEP_INTERVAL_MS);
   timer.unref();
-  app.addHook('onClose', async () => clearInterval(timer));
+  app.addHook('onClose', async () => {
+    clearInterval(timer);
+    // Let a running sweep settle before shutdown completes (it already logs
+    // its own failure; the catch only guards against an unexpected rejection).
+    await inFlight?.catch(() => undefined);
+  });
 }
 
 /**

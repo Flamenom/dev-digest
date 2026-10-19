@@ -94,7 +94,11 @@ export const settings = pgTable(
     workspaceId: uuid('workspace_id')
       .notNull()
       .references(() => workspaces.id, { onDelete: 'cascade' }),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * First author of the key (informational). SET NULL, not cascade: the row is
+     * workspace-wide, so deleting that user must not delete everyone's setting.
+     */
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
     key: text('key').notNull(),
     value: jsonb('value'),
   },
@@ -105,5 +109,7 @@ export const settings = pgTable(
      * per-user `settings_ws_user_key_uq`, which allowed shadow rows per Admin).
      */
     wsKeyUq: uniqueIndex('settings_ws_key_uq').on(t.workspaceId, t.key),
+    /** FK index: user deletes (ON DELETE SET NULL) scan by user_id. */
+    userIdx: index('settings_user_idx').on(t.userId),
   }),
 );

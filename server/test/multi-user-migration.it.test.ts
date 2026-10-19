@@ -388,6 +388,7 @@ d('migration 0024 — settings (workspace, key) uniqueness, sweep + rotation ind
   let container: StartedPostgreSqlContainer;
   let sql: postgres.Sql;
   let oldDir: string;
+  let upToDir: string;
   let ws1: string;
   let ws2: string;
 
@@ -428,13 +429,16 @@ d('migration 0024 — settings (workspace, key) uniqueness, sweep + rotation ind
     await put(ws1, ub, 'solo', true);
     await put(ws2, ua, 'theme', 'ws2-dark');
 
-    await migrate(drizzle(sql), { migrationsFolder: MIGRATIONS_DIR });
+    // Up to and including 0024 only — 0025 (below) drops sessions_last_seen_at_idx.
+    upToDir = migrationsBefore('0025_');
+    await migrate(drizzle(sql), { migrationsFolder: upToDir });
   }, 180_000);
 
   afterAll(async () => {
     await sql?.end({ timeout: 5 });
     await container?.stop();
     if (oldDir) rmSync(oldDir, { recursive: true, force: true });
+    if (upToDir) rmSync(upToDir, { recursive: true, force: true });
   });
 
   it('keeps exactly one row per (workspace, key) — the most recently written', async () => {
@@ -466,5 +470,64 @@ d('migration 0024 — settings (workspace, key) uniqueness, sweep + rotation ind
     const byName = new Map(idx.map((r) => [r.indexname as string, r.indexdef as string]));
     expect(byName.get('sessions_last_seen_at_idx')).toMatch(/ON public\.sessions USING btree \(last_seen_at\)$/);
     expect(byName.get('encrypted_secrets_key_id_idx')).toMatch(/ON public\.encrypted_secrets USING btree \(key_id\)$/);
+  });
+});
+
+/**
+ * Migration 0025: settings are workspace-wide since 0024, so `settings.user_id`
+ * (first author) becomes ON DELETE SET NULL instead of CASCADE and gets its own
+ * FK index; `sessions_last_seen_at_idx` is dropped (last_seen_at is written on
+ * the request path — the index would defeat HOT updates).
+ */
+d('migration 0025 — settings.user_id SET NULL + FK index, no sessions last_seen_at index', () => {
+  let container: StartedPostgreSqlContainer;
+  let sql: postgres.Sql;
+  let oldDir: string;
+  let ws: string;
+  let author: string;
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer('pgvector/pgvector:pg16')
+      .withDatabase('devdigest')
+      .withUsername('devdigest')
+      .withPassword('devdigest')
+      .start();
+    sql = postgres(container.getConnectionUri(), { max: 1, onnotice: () => {} });
+    await sql`CREATE EXTENSION IF NOT EXISTS vector`;
+    oldDir = migrationsBefore('0025_');
+    await migrate(drizzle(sql), { migrationsFolder: oldDir });
+
+    const [w] = await sql`INSERT INTO workspaces (name) VALUES ('mig-0025') RETURNING id`;
+    ws = w!.id as string;
+    const [a] = await sql`INSERT INTO users (email, name) VALUES ('a@0025', 'A') RETURNING id`;
+    author = a!.id as string;
+    await sql`INSERT INTO settings (workspace_id, user_id, key, value)
+              VALUES (${ws}, ${author}, 'theme', '"dark"'::jsonb)`;
+
+    await migrate(drizzle(sql), { migrationsFolder: MIGRATIONS_DIR });
+  }, 180_000);
+
+  afterAll(async () => {
+    await sql?.end({ timeout: 5 });
+    await container?.stop();
+    if (oldDir) rmSync(oldDir, { recursive: true, force: true });
+  });
+
+  it('keeps a workspace setting with user_id NULL when its first author is deleted', async () => {
+    await sql`DELETE FROM users WHERE id = ${author}`;
+    const rows = await sql`SELECT user_id, key, value FROM settings WHERE workspace_id = ${ws}`;
+    expect(rows.map((r) => [r.user_id, r.key, r.value])).toEqual([[null, 'theme', 'dark']]);
+    const [fk] = await sql`
+      SELECT confdeltype FROM pg_constraint WHERE conname = 'settings_user_id_users_id_fk'`;
+    expect(fk!.confdeltype).toBe('n'); // SET NULL
+  });
+
+  it('adds settings_user_idx and drops sessions_last_seen_at_idx', async () => {
+    const idx = await sql`
+      SELECT indexname, indexdef FROM pg_indexes
+      WHERE indexname IN ('settings_user_idx', 'sessions_last_seen_at_idx')`;
+    const byName = new Map(idx.map((r) => [r.indexname as string, r.indexdef as string]));
+    expect(byName.get('settings_user_idx')).toMatch(/ON public\.settings USING btree \(user_id\)$/);
+    expect(byName.has('sessions_last_seen_at_idx')).toBe(false);
   });
 });

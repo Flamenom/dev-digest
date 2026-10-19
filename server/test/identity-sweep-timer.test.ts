@@ -54,4 +54,44 @@ describe('identity expiry sweep timer (google mode)', () => {
     expect(warn).toHaveBeenCalledWith({ err: 'db down' }, 'identity expiry sweep failed');
     await t.close();
   });
+
+  it('close waits for an in-flight sweep to settle', async () => {
+    const setSpy = vi.spyOn(globalThis, 'setInterval');
+    const t = await buildHermeticGoogleApp({ recordDb: true });
+    const call = setSpy.mock.calls.findIndex(([, ms]) => ms === IDENTITY_SWEEP_INTERVAL_MS);
+    const tick = setSpy.mock.calls[call]![0] as () => void;
+    let finish!: () => void;
+    vi.spyOn(t.container.identityRepo, 'sweepExpired').mockReturnValue(
+      new Promise((resolve) => {
+        finish = () => resolve({ oauthFlows: 0, sessions: 0 });
+      }),
+    );
+    tick();
+    let closed = false;
+    const closing = t.close().then(() => {
+      closed = true;
+    });
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    expect(closed).toBe(false);
+    finish();
+    await closing;
+    expect(closed).toBe(true);
+  });
+
+  it('close still completes when the in-flight sweep fails', async () => {
+    const setSpy = vi.spyOn(globalThis, 'setInterval');
+    const t = await buildHermeticGoogleApp({ recordDb: true });
+    const call = setSpy.mock.calls.findIndex(([, ms]) => ms === IDENTITY_SWEEP_INTERVAL_MS);
+    const tick = setSpy.mock.calls[call]![0] as () => void;
+    let fail!: () => void;
+    vi.spyOn(t.container.identityRepo, 'sweepExpired').mockReturnValue(
+      new Promise((_resolve, reject) => {
+        fail = () => reject(new Error('db down'));
+      }),
+    );
+    tick();
+    const closing = t.close();
+    fail();
+    await expect(closing).resolves.toBeUndefined();
+  });
 });

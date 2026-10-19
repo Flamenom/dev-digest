@@ -176,6 +176,13 @@
       "when": 1792426982785,
       "tag": "0024_fixed_famine",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1792429569567,
+      "tag": "0025_sleepy_blur",
+      "breakpoints": true
     }
   ]
 }

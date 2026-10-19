@@ -2,7 +2,6 @@ import { and, count, desc, eq, gt, isNull } from 'drizzle-orm';
 import type { Role } from '@devdigest/shared';
 import type { Db } from '../../../db/client.js';
 import * as t from '../../../db/schema.js';
-import type { ApiTokenRow } from '../../../db/rows.js';
 import { execOf, isUuid, type IdentityExecutor } from './users.repo.js';
 
 // ---- Domain types -----------------------------------------------------------
@@ -41,19 +40,21 @@ export interface ActiveApiToken {
   lastUsedAt: Date | null;
 }
 
-function toRecord(row: ApiTokenRow): ApiTokenRecord {
-  return {
-    id: row.id,
-    userId: row.userId,
-    workspaceId: row.workspaceId,
-    name: row.name,
-    prefix: row.prefix,
-    createdAt: row.createdAt,
-    lastUsedAt: row.lastUsedAt,
-    expiresAt: row.expiresAt,
-    revokedAt: row.revokedAt,
-  };
-}
+/**
+ * Explicit projection for every metadata read/return: `token_hash` is never
+ * selected outside {@link ApiTokensRepo.findActiveByHash}'s WHERE clause.
+ */
+const RECORD_COLUMNS = {
+  id: t.apiTokens.id,
+  userId: t.apiTokens.userId,
+  workspaceId: t.apiTokens.workspaceId,
+  name: t.apiTokens.name,
+  prefix: t.apiTokens.prefix,
+  createdAt: t.apiTokens.createdAt,
+  lastUsedAt: t.apiTokens.lastUsedAt,
+  expiresAt: t.apiTokens.expiresAt,
+  revokedAt: t.apiTokens.revokedAt,
+};
 
 // ---- Repository -------------------------------------------------------------
 
@@ -73,8 +74,8 @@ export class ApiTokensRepo {
         createdAt: input.now,
         expiresAt: input.expiresAt,
       })
-      .returning();
-    return toRecord(row!);
+      .returning(RECORD_COLUMNS);
+    return row!;
   }
 
   /**
@@ -121,10 +122,10 @@ export class ApiTokensRepo {
   ): Promise<ApiTokenRecord | undefined> {
     if (!isUuid(tokenId)) return undefined;
     const [row] = await execOf(this.db, tx)
-      .select()
+      .select(RECORD_COLUMNS)
       .from(t.apiTokens)
       .where(and(eq(t.apiTokens.workspaceId, workspaceId), eq(t.apiTokens.id, tokenId)));
-    return row ? toRecord(row) : undefined;
+    return row;
   }
 
   /** The user's unrevoked tokens in the workspace (expired ones included), newest first. */
@@ -134,7 +135,7 @@ export class ApiTokensRepo {
     tx?: IdentityExecutor,
   ): Promise<ApiTokenRecord[]> {
     const rows = await execOf(this.db, tx)
-      .select()
+      .select(RECORD_COLUMNS)
       .from(t.apiTokens)
       .where(
         and(
@@ -144,7 +145,7 @@ export class ApiTokensRepo {
         ),
       )
       .orderBy(desc(t.apiTokens.createdAt));
-    return rows.map(toRecord);
+    return rows;
   }
 
   /** Unrevoked, unexpired tokens of the user (the AC-58 limit). */

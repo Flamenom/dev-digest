@@ -46,7 +46,7 @@ export class IdentityRepository implements ActorDirectory {
    */
   async sweepExpired(now: Date, limit = EXPIRED_SWEEP_BATCH): Promise<{ oauthFlows: number; sessions: number }> {
     const oauthFlows = await this.oauthFlows.sweepExpired(now, limit);
-    const sessions = await this.sessions.sweepExpired(now, { limit });
+    const sessions = await this.sessions.sweepExpired(now, { limit, idle: true });
     return { oauthFlows, sessions };
   }
 

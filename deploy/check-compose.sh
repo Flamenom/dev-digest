@@ -5,7 +5,8 @@
 #   bash deploy/check-compose.sh [env-file]     # default: deploy/.env.example
 #
 # Secret-value checks (placeholder `replace-me…` rejected in every secret;
-# APP_DB_PASSWORD >= 32 chars of [A-Za-z0-9_-] and != POSTGRES_PASSWORD) run
+# POSTGRES_PASSWORD and APP_DB_PASSWORD each >= 32 chars of [A-Za-z0-9_-], and
+# APP_DB_PASSWORD != POSTGRES_PASSWORD) run
 # automatically for any env file OTHER than `.env.example`, e.g. before deploying:
 #   bash deploy/check-compose.sh deploy/.env
 # `.env.example` ships placeholders by design, so for it only the static checks run.
@@ -150,6 +151,7 @@ for f in "$GRANTS" "$APPLY"; do
   grep -Fq '^[A-Za-z0-9_-]{32,}$' "$f" && echo "  ok  $n requires >= 32 chars of [A-Za-z0-9_-]" || { echo "  FAIL $n lacks the strength rule" >&2; exit 1; }
 done
 grep -q 'POSTGRES_PASSWORD is still the .env.example placeholder' "$APPLY" && echo "  ok  apply-grants.mjs rejects a placeholder POSTGRES_PASSWORD" || { echo "  FAIL apply-grants.mjs accepts a placeholder POSTGRES_PASSWORD" >&2; exit 1; }
+grep -q 'STRONG.test(ownerPassword)' "$APPLY" && echo "  ok  apply-grants.mjs applies the strength rule to POSTGRES_PASSWORD" || { echo "  FAIL apply-grants.mjs accepts a weak POSTGRES_PASSWORD" >&2; exit 1; }
 for p in \
   "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS" \
   "GRANT SELECT, INSERT ON TABLE public.audit_events TO devdigest_app" \
@@ -194,7 +196,9 @@ process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   const fails = [];
   const check = (ok, msg) => { if (!ok) fails.push(msg); else console.log("  ok  " + msg); };
   for (const [k, val] of Object.entries(v)) check(val !== "" && !/replace-?me/i.test(val), `${k} is set and not a replace-me placeholder`);
+  check(/^[A-Za-z0-9_-]{32,}$/.test(v.POSTGRES_PASSWORD), "POSTGRES_PASSWORD is >= 32 chars of [A-Za-z0-9_-] (openssl rand -hex 24)");
   check(/^[A-Za-z0-9_-]{32,}$/.test(v.APP_DB_PASSWORD), "APP_DB_PASSWORD is >= 32 chars of [A-Za-z0-9_-] (openssl rand -hex 24)");
+  check(pwOf(s.migrate?.environment?.DATABASE_URL ?? "") === v.POSTGRES_PASSWORD, "migrate DATABASE_URL carries POSTGRES_PASSWORD unmangled (URL-safe)");
   check(v.APP_DB_PASSWORD !== v.POSTGRES_PASSWORD, "APP_DB_PASSWORD differs from POSTGRES_PASSWORD");
   check(pwOf(s.api?.environment?.DATABASE_URL ?? "") === v.APP_DB_PASSWORD, "api DATABASE_URL carries APP_DB_PASSWORD unmangled (URL-safe)");
   if (fails.length) { for (const f of fails) console.error("  FAIL " + f); process.exit(1); }

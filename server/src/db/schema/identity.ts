@@ -58,8 +58,9 @@ export const sessions = pgTable(
     workspaceIdx: index('sessions_workspace_idx').on(t.workspaceId),
     /** Future expiry sweep (`delete … where expires_at < now()`). */
     expiresIdx: index('sessions_expires_at_idx').on(t.expiresAt),
-    /** Idle-timeout sweep (`delete … where last_seen_at < cutoff`). */
-    lastSeenIdx: index('sessions_last_seen_at_idx').on(t.lastSeenAt),
+    // Deliberately NO index on last_seen_at: it is written on the request path
+    // (touch), and an index on it would defeat HOT updates. The idle sweep runs
+    // only on the periodic timer as a LIMIT-bounded scan (sessions.repo.ts).
   }),
 );
 

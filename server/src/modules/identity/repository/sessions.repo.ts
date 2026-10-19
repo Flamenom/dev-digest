@@ -50,7 +50,7 @@ export class SessionsRepo {
    * periodic sweep also removes idle-expired ones (see {@link sweepExpired}).
    */
   async create(input: NewSession, tx?: IdentityExecutor): Promise<SessionRecord> {
-    await this.sweepExpired(input.now, { limit: EXPIRED_SWEEP_BATCH, idle: false }, tx);
+    await this.sweepExpired(input.now, { limit: EXPIRED_SWEEP_BATCH }, tx);
     const [row] = await execOf(this.db, tx)
       .insert(t.sessions)
       .values({
@@ -141,22 +141,25 @@ export class SessionsRepo {
 
   /**
    * Delete up to `limit` sessions that can never authenticate again at `now`:
-   * past the absolute expiry and — with `idle` (default) — not seen within the
+   * past the absolute expiry and — with `idle` (opt-in, periodic sweep only) — not seen within the
    * idle timeout (AC-25). Expired sessions are already rejected by
    * {@link findActiveByHash}; this only reclaims the rows. Returns the count.
    *
-   * Two bounded deletes, each walking its own index (`sessions_expires_at_idx`,
-   * then `sessions_last_seen_at_idx`) instead of one OR that defeats both. The
-   * id subselect takes `FOR UPDATE SKIP LOCKED`, so concurrent sweeps (the
-   * periodic timer vs. sign-in's inline sweep, or several instances) split the
-   * work instead of queueing on the same rows.
+   * Two bounded deletes instead of one OR: the absolute-expiry batch walks
+   * `sessions_expires_at_idx` (cheap enough for sign-in's inline sweep, which
+   * passes `idle: false`). `last_seen_at` is deliberately NOT indexed — touch()
+   * writes it on the request path and an index would defeat HOT updates — so
+   * the idle batch is a seq scan stopped by LIMIT, run only from the periodic
+   * timer. The id subselect takes `FOR UPDATE SKIP LOCKED`, so concurrent
+   * sweeps (the periodic timer vs. sign-in's inline sweep, or several
+   * instances) split the work instead of queueing on the same rows.
    */
   async sweepExpired(
     now: Date,
     opts: { limit?: number; idle?: boolean } = {},
     tx?: IdentityExecutor,
   ): Promise<number> {
-    const { limit = EXPIRED_SWEEP_BATCH, idle = true } = opts;
+    const { limit = EXPIRED_SWEEP_BATCH, idle = false } = opts;
     let deleted = await this.deleteBatch(lt(t.sessions.expiresAt, now), limit, tx);
     if (idle && deleted < limit) {
       const idleCutoff = new Date(now.getTime() - SESSION_IDLE_MS);
