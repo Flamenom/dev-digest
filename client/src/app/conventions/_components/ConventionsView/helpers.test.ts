@@ -53,7 +53,13 @@ describe("evidenceLabel", () => {
 });
 
 describe("evidenceHostUrl", () => {
-  const github = { full_name: "acme/payments-api", default_branch: "main" };
+  const github = {
+    full_name: "acme/payments-api",
+    default_branch: "main",
+    provider: "github" as const,
+    host: "github.com" as const,
+    web_url: "https://github.com/acme/payments-api",
+  };
   const gitlab = {
     full_name: "space-profit/platform/crm-frontend",
     default_branch: "main",
@@ -62,16 +68,11 @@ describe("evidenceHostUrl", () => {
     web_url: "https://gitlab.com/space-profit/platform/crm-frontend",
   };
 
-  it("keeps the GitHub link unchanged (with and without provider)", () => {
+  it("keeps the GitHub link unchanged", () => {
     const c = convention({ evidence_start_line: 3, evidence_end_line: 5 });
-    const expected = "https://github.com/acme/payments-api/blob/main/src/api/users.ts#L3-L5";
-    expect(evidenceHostUrl(github, c)).toBe(expected);
-    expect(
-      evidenceHostUrl(
-        { ...github, provider: "github", host: "github.com", web_url: "https://github.com/acme/payments-api" },
-        c,
-      ),
-    ).toBe(expected);
+    expect(evidenceHostUrl(github, c)).toBe(
+      "https://github.com/acme/payments-api/blob/main/src/api/users.ts#L3-L5",
+    );
   });
 
   it("builds a GitLab blob link on the default branch with #La-b anchors", () => {

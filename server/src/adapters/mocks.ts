@@ -17,7 +17,8 @@ import type {
   OpenPrPayload,
   CommitFilesPayload,
   IssueMeta,
-  GitClient,
+  HostGitClient,
+  FetchPullHeadOptions,
   CloneOptions,
   UnifiedDiff,
   BlameLine,
@@ -447,11 +448,11 @@ export interface MockGitOptions {
   syncedHead?: string;
 }
 
-export class MockGitClient implements GitClient {
-  public cloned: { repo: RepoRef; url: string }[] = [];
-  public syncs: { repo: RepoRef; branch: string }[] = [];
+export class MockGitClient implements HostGitClient {
+  public cloned: { repo: HostRepoRef; url: string }[] = [];
+  public syncs: { repo: HostRepoRef; branch: string }[] = [];
   /** Every `fetchPullHead` call (GitLab review diffs fetch the MR head ref). */
-  public pullHeadFetches: { repo: RepoRef; n: number }[] = [];
+  public pullHeadFetches: { repo: HostRepoRef; n: number }[] = [];
   private syncedHead?: string;
 
   constructor(private opts: MockGitOptions = {}) {}
@@ -462,21 +463,20 @@ export class MockGitClient implements GitClient {
    * `<root>/@gitlab.com/<namespace…>/<name>`, so the same path on both hosts
    * never shares a clone (AC-15).
    */
-  clonePathFor(repo: RepoRef): string {
-    const provider = (repo as Partial<HostRepoRef>).provider;
-    if (provider === 'gitlab') {
+  clonePathFor(repo: HostRepoRef): string {
+    if (repo.provider === 'gitlab') {
       return `/mock/clones/@gitlab.com/${repo.owner}/${repo.name}`;
     }
     return `/mock/clones/${repo.owner}/${repo.name}`;
   }
-  async clone(repo: RepoRef, url: string, _opts?: CloneOptions): Promise<{ path: string }> {
+  async clone(repo: HostRepoRef, url: string, _opts?: CloneOptions): Promise<{ path: string }> {
     this.cloned.push({ repo, url });
     return { path: this.clonePathFor(repo) };
   }
-  async fetchPullHead(repo: RepoRef, n: number): Promise<void> {
+  async fetchPullHead(repo: HostRepoRef, n: number, _opts?: FetchPullHeadOptions): Promise<void> {
     this.pullHeadFetches.push({ repo, n });
   }
-  async sync(repo: RepoRef, branch: string): Promise<{ head: string }> {
+  async sync(repo: HostRepoRef, branch: string): Promise<{ head: string }> {
     this.syncs.push({ repo, branch });
     // After a sync, HEAD advances to syncedHead (or stays at head if unset).
     this.syncedHead = this.opts.syncedHead ?? this.opts.head ?? 'a1b2c3d4';
@@ -500,7 +500,7 @@ export class MockGitClient implements GitClient {
   async log(): Promise<GitCommit[]> {
     return [{ sha: 'a1b2c3d4', message: 'init', author: 'marisa.koch', date: '2026-06-01' }];
   }
-  async readFile(_repo: RepoRef, path: string): Promise<string> {
+  async readFile(_repo: HostRepoRef, path: string): Promise<string> {
     return this.opts.files?.[path] ?? '';
   }
 }

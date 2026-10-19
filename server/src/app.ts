@@ -66,7 +66,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
-  const container = new Container(config, db, opts.overrides);
+  const container = new Container(config, db, opts.overrides, app.log);
   app.decorate('container', container);
 
   // Reap runs left 'running' by a previous (now-dead) process — otherwise they

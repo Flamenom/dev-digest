@@ -18,6 +18,7 @@ import {
   type DiffCommentApi,
 } from "../comments";
 import { s, chevronFor, fileHeaderLarge } from "../styles";
+import { fc } from "./styles";
 import { CodeLine } from "../CodeLine";
 import { OutdatedComments } from "../OutdatedComments";
 
@@ -112,9 +113,7 @@ export function FileCard({
           <span style={s.delText}>−{file.deletions}</span>
         </span>
         {commentCount > 0 && (
-          <span
-            style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--text-muted)" }}
-          >
+          <span style={fc.commentCount}>
             <Icon.MessageSquare size={12} />
             {commentCount}
           </span>

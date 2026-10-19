@@ -1,8 +1,16 @@
-import { and, asc, eq, inArray, notInArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, notInArray, sql, type SQL } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
-import type { PrDetailHost, PrMeta, PrMetaHost, PrStatus, PullStateInfo } from '@devdigest/shared';
+import type {
+  PrDetailHost,
+  PrMeta,
+  PrMetaHost,
+  PrStatus,
+  PullStateInfo,
+  RepoProvider,
+} from '@devdigest/shared';
 import type { Db } from '../../db/client.js';
 import * as t from '../../db/schema.js';
+import type { ReviewRollupInput } from '../_shared/review-rollup.js';
 
 /** The handle Drizzle passes to a `db.transaction(async (tx) => …)` callback. */
 export type PullsTx = Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -493,5 +501,215 @@ export class SyncStatusRepository implements SyncStatusStore {
       .update(t.repos)
       .set({ lastAttemptAt: at, lastSyncError: error })
       .where(this.scope(workspaceId, repoId));
+  }
+}
+
+// ---- read side for the pulls / polling routes ------------------------------
+
+/**
+ * A workspace's repo as the pulls + polling routes need it, mapped row → domain
+ * at this boundary (no Drizzle row type leaks out). Structurally satisfies the
+ * sync (`SyncRepo`) and detail (`DetailRepo`) inputs.
+ */
+export interface PersistedRepo {
+  id: string;
+  workspaceId: string;
+  owner: string;
+  name: string;
+  fullName: string;
+  provider: RepoProvider;
+  host: string;
+  /** Last SUCCESSFUL PR-list sync — the SSE failure fallback reports it. */
+  lastSyncedAt: Date | null;
+}
+
+/** A persisted PR as the list + detail reads need it (structurally a `DetailPr`). */
+export interface PersistedPr {
+  id: string;
+  workspaceId: string;
+  repoId: string;
+  number: number;
+  title: string;
+  author: string;
+  branch: string;
+  base: string;
+  headSha: string;
+  /** The commit a review last ran against — drives the derived list status. */
+  lastReviewedSha: string | null;
+  additions: number;
+  deletions: number;
+  filesCount: number;
+  /** Host merge state (open/merged/closed) — the review status is derived from it. */
+  status: string;
+  openedAt: Date | null;
+  updatedAt: Date | null;
+  body: string | null;
+  isDraft: boolean | null;
+  statsKnown: boolean | null;
+  /** Head SHA the persisted files/commits were fetched at (GitLab only). */
+  detailHeadSha: string | null;
+}
+
+/** One finding's severity, keyed by the review it belongs to. */
+export interface FindingSeverity {
+  reviewId: string;
+  severity: string;
+}
+
+/** One agent run's dollar cost for a PR (null when the run was never priced). */
+export interface PrRunCost {
+  prId: string;
+  costUsd: number | null;
+}
+
+/** Explicit column projections — keep the domain shapes independent of `select()`. */
+const repoColumns = {
+  id: t.repos.id,
+  workspaceId: t.repos.workspaceId,
+  owner: t.repos.owner,
+  name: t.repos.name,
+  fullName: t.repos.fullName,
+  provider: t.repos.provider,
+  host: t.repos.host,
+  lastSyncedAt: t.repos.lastSyncedAt,
+};
+
+const prColumns = {
+  id: t.pullRequests.id,
+  workspaceId: t.pullRequests.workspaceId,
+  repoId: t.pullRequests.repoId,
+  number: t.pullRequests.number,
+  title: t.pullRequests.title,
+  author: t.pullRequests.author,
+  branch: t.pullRequests.branch,
+  base: t.pullRequests.base,
+  headSha: t.pullRequests.headSha,
+  lastReviewedSha: t.pullRequests.lastReviewedSha,
+  additions: t.pullRequests.additions,
+  deletions: t.pullRequests.deletions,
+  filesCount: t.pullRequests.filesCount,
+  status: t.pullRequests.status,
+  openedAt: t.pullRequests.openedAt,
+  updatedAt: t.pullRequests.updatedAt,
+  body: t.pullRequests.body,
+  isDraft: t.pullRequests.isDraft,
+  statsKnown: t.pullRequests.statsKnown,
+  detailHeadSha: t.pullRequests.detailHeadSha,
+};
+
+/**
+ * Read side of the pulls + polling routes (plus polling's one bookkeeping
+ * write), so neither route file runs Drizzle itself. Every method is
+ * workspace-scoped; rollup MATH stays in `_shared/review-rollup` — this class
+ * only supplies its inputs.
+ */
+export class PullsReadRepository {
+  constructor(private db: Db) {}
+
+  /** The repo, or null when it does not exist in this workspace. */
+  async findRepoForWorkspace(workspaceId: string, repoId: string): Promise<PersistedRepo | null> {
+    const [row] = await this.db
+      .select(repoColumns)
+      .from(t.repos)
+      .where(and(eq(t.repos.workspaceId, workspaceId), eq(t.repos.id, repoId)));
+    return row ?? null;
+  }
+
+  /** Stamp a manual poll on the repo (`last_polled_at`). No-op for another workspace's repo. */
+  async markRepoPolled(workspaceId: string, repoId: string, at: Date): Promise<void> {
+    await this.db
+      .update(t.repos)
+      .set({ lastPolledAt: at })
+      .where(and(eq(t.repos.workspaceId, workspaceId), eq(t.repos.id, repoId)));
+  }
+
+  /** Every persisted PR of the repo (DB only — no host calls). */
+  async listForRepo(scope: PrScope): Promise<PersistedPr[]> {
+    return this.db
+      .select(prColumns)
+      .from(t.pullRequests)
+      .where(
+        and(
+          eq(t.pullRequests.workspaceId, scope.workspaceId),
+          eq(t.pullRequests.repoId, scope.repoId),
+        ),
+      );
+  }
+
+  /** The PR and its repo, or null when the PR is not in this workspace. */
+  async findPrWithRepo(
+    workspaceId: string,
+    prId: string,
+  ): Promise<{ pr: PersistedPr; repo: PersistedRepo | null } | null> {
+    const [pr] = await this.db
+      .select(prColumns)
+      .from(t.pullRequests)
+      .where(and(eq(t.pullRequests.workspaceId, workspaceId), eq(t.pullRequests.id, prId)));
+    if (!pr) return null;
+    const [repo] = await this.db
+      .select(repoColumns)
+      .from(t.repos)
+      .where(and(eq(t.repos.workspaceId, workspaceId), eq(t.repos.id, pr.repoId)));
+    return { pr, repo: repo ?? null };
+  }
+
+  /**
+   * The `kind = 'review'` reviews of these PRs, newest first — the input of
+   * `latestReviewPerAgent` (summary rows are excluded per its caller contract).
+   */
+  async listReviewRollupInputs(workspaceId: string, prIds: readonly string[]): Promise<ReviewRollupInput[]> {
+    if (prIds.length === 0) return [];
+    return this.db
+      .select({
+        id: t.reviews.id,
+        prId: t.reviews.prId,
+        agentId: t.reviews.agentId,
+        score: t.reviews.score,
+        verdict: t.reviews.verdict,
+        runId: t.reviews.runId,
+        createdAt: t.reviews.createdAt,
+      })
+      .from(t.reviews)
+      .where(
+        and(
+          inArray(t.reviews.prId, [...prIds]),
+          eq(t.reviews.kind, 'review'),
+          eq(t.reviews.workspaceId, workspaceId),
+        ),
+      )
+      .orderBy(desc(t.reviews.createdAt));
+  }
+
+  /**
+   * Finding severities of these reviews (dismissed ones included), scoped to
+   * the workspace. Findings carry no workspace column of their own, so the
+   * tenant filter is applied through the owning review — a review id from
+   * another workspace yields no rows even if a caller passes one.
+   */
+  async listFindingSeverities(
+    workspaceId: string,
+    reviewIds: readonly string[],
+  ): Promise<FindingSeverity[]> {
+    if (reviewIds.length === 0) return [];
+    return this.db
+      .select({ reviewId: t.findings.reviewId, severity: t.findings.severity })
+      .from(t.findings)
+      .innerJoin(
+        t.reviews,
+        and(eq(t.findings.reviewId, t.reviews.id), eq(t.reviews.workspaceId, workspaceId)),
+      )
+      .where(inArray(t.findings.reviewId, [...reviewIds]));
+  }
+
+  /** Cost of EVERY agent run of these PRs (all reviewers, not just the latest). */
+  async listRunCosts(workspaceId: string, prIds: readonly string[]): Promise<PrRunCost[]> {
+    if (prIds.length === 0) return [];
+    const rows = await this.db
+      .select({ prId: t.agentRuns.prId, costUsd: t.agentRuns.costUsd })
+      .from(t.agentRuns)
+      .where(and(eq(t.agentRuns.workspaceId, workspaceId), inArray(t.agentRuns.prId, [...prIds])));
+    const out: PrRunCost[] = [];
+    for (const r of rows) if (r.prId != null) out.push({ prId: r.prId, costUsd: r.costUsd });
+    return out;
   }
 }

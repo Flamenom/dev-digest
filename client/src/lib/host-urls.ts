@@ -20,12 +20,21 @@ export type HostLinkRepo = Pick<RepoWithHost, "provider" | "host" | "web_url" | 
  * Provider token for i18n labels — use as an ICU `select` argument, e.g.
  * `t("prHost.viewOn", { provider: hostLabelKey(repo) })` with
  * `"View on {provider, select, gitlab {GitLab} other {GitHub}}"`.
+ * A missing repo (still loading / unknown) → "github".
  * Brand names stay in the catalogs, not in components.
  */
 export type HostLabelKey = RepoWithHost["provider"];
 
-export function hostLabelKey(repo: Pick<RepoWithHost, "provider">): HostLabelKey {
-  return repo.provider === "gitlab" ? "gitlab" : "github";
+export function hostLabelKey(repo: Pick<RepoWithHost, "provider"> | null | undefined): HostLabelKey {
+  return repo?.provider === "gitlab" ? "gitlab" : "github";
+}
+
+/**
+ * The host accepts no posted comments — GitLab in the MVP (server answers
+ * `provider_read_only`). An unknown/unloaded repo is NOT read-only.
+ */
+export function isReadOnlyHost(repo: Pick<RepoWithHost, "provider"> | null | undefined): boolean {
+  return repo?.provider === "gitlab";
 }
 
 /** Encode a repo-relative path (or ref) for a URL while keeping "/" separators. */

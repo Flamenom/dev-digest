@@ -1,5 +1,6 @@
 import type {
   FeatureModelChoice,
+  HostGitClient,
   IntentDetail,
   IntentDetailWrite,
   IntentSource,
@@ -13,11 +14,10 @@ import type {
 } from '@devdigest/shared';
 import { IntentClassification } from '@devdigest/shared';
 import { NotFoundError } from '../../platform/errors.js';
-import { hostRepoRef } from '../_shared/repo-ref.js';
+import { fetchLinkedIssue, gitRepoRef } from '../_shared/linked-issue.js';
 import {
   computeConfidence,
   extractExternalUrls,
-  extractIssueRef,
   extractRepoDocPaths,
   hunkHeadersFromPatch,
   toIntentDetail,
@@ -95,74 +95,9 @@ export interface IntentDeriverDeps {
    * both, so GitHub keeps the `github` path above.
    */
   prHost: (provider: RepoProvider) => Promise<Pick<PullRequestHost, 'getIssue' | 'getLinkedIssueNumber'>>;
-  git: { readFile(repo: RepoRef, path: string): Promise<string> };
+  git: Pick<HostGitClient, 'readFile'>;
   llm: (id: Provider) => Promise<LLMProvider>;
   resolveModel: (workspaceId: string) => Promise<FeatureModelChoice>;
-}
-
-type LinkedIssue =
-  | { status: 'fetched'; ref: string; title: string; body: string | null }
-  | { status: 'unavailable'; ref: string };
-
-/**
- * Resolve + fetch the PR's linked issue. Returns `undefined` when the PR links
- * no issue, `unavailable` when it links one that could not be fetched (any
- * failure, incl. a confidential/404 GitLab issue — AC-23), else the issue.
- *
- * GitHub: body regex + `GitHubClient.getIssue`, byte-identical to pre-GitLab.
- * GitLab: body regex, else the MR's `closes_issues` relation (same project only).
- * The issue text is returned RAW — reviewer-core's prompt builder wraps it as
- * untrusted; never wrap or strip it here.
- */
-async function fetchLinkedIssue(
-  deps: IntentDeriverDeps,
-  repo: IntentRepo,
-  prNumber: number,
-  body: string | null,
-): Promise<LinkedIssue | undefined> {
-  const ref = hostRepoRef({ ...repo, fullName: repo.fullName ?? `${repo.owner}/${repo.name}` });
-  if (ref.provider === 'github') {
-    const issueNumber = extractIssueRef(body);
-    if (issueNumber == null) return undefined;
-    try {
-      const gh = await deps.github();
-      const meta = await gh.getIssue({ owner: repo.owner, name: repo.name }, issueNumber);
-      return { status: 'fetched', ref: `#${issueNumber}`, title: meta.title, body: meta.body ?? null };
-    } catch {
-      return { status: 'unavailable', ref: `#${issueNumber}` };
-    }
-  }
-
-  let issueNumber = extractIssueRef(body);
-  let host: Pick<PullRequestHost, 'getIssue' | 'getLinkedIssueNumber'>;
-  try {
-    host = await deps.prHost(ref.provider);
-    issueNumber ??= (await host.getLinkedIssueNumber(ref, prNumber)) ?? undefined;
-  } catch {
-    // Host unreachable / relation lookup failed: only a body-declared link is
-    // a known (now unavailable) source; otherwise there is nothing to report.
-    return issueNumber == null ? undefined : { status: 'unavailable', ref: `#${issueNumber}` };
-  }
-  if (issueNumber == null) return undefined;
-  const issueRef = `#${issueNumber}`;
-  try {
-    const meta = await host.getIssue(ref, issueNumber);
-    return meta
-      ? { status: 'fetched', ref: issueRef, title: meta.title, body: meta.body ?? null }
-      : { status: 'unavailable', ref: issueRef };
-  } catch {
-    return { status: 'unavailable', ref: issueRef };
-  }
-}
-
-/**
- * The ref handed to `git.readFile`: GitHub keeps the plain `{owner, name}` it
- * always got; other hosts carry provider/fullName so the adapter resolves the
- * right clone directory.
- */
-function gitRepoRef(repo: IntentRepo): RepoRef {
-  const ref = hostRepoRef({ ...repo, fullName: repo.fullName ?? `${repo.owner}/${repo.name}` });
-  return ref.provider === 'github' ? { owner: repo.owner, name: repo.name } : ref;
 }
 
 /** Stored intent for a PR, or null when none has been derived yet. */

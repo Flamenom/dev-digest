@@ -17,7 +17,17 @@ vi.mock("@/lib/hooks/smart-diff", () => ({
 
 import { DiffTab } from "./DiffTab";
 
-afterEach(cleanup);
+// jsdom has no clipboard: stub it per test and put the original back after.
+const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+function stubClipboard(writeText: (text: string) => Promise<void>) {
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+}
+
+afterEach(() => {
+  cleanup();
+  if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+  else Reflect.deleteProperty(navigator, "clipboard");
+});
 
 const NOTE = "Posting comments to GitLab isn't supported yet — copy the text instead.";
 
@@ -28,7 +38,7 @@ const FILES: PrFileHost[] = [
     change_type: "renamed",
     additions: 1,
     deletions: 0,
-    patch: "@@ -1,1 +1,2 @@\n a\n+b",
+    patch: "@@ -1,1 +1,2 @@\n a\n+export const renamed = true;",
   },
   { path: "dist/bundle.js", additions: 9000, deletions: 0, patch: null, patch_omitted: "too_large" },
 ];
@@ -41,9 +51,11 @@ function renderTab(readOnly: boolean) {
         filesCount={FILES.length}
         files={FILES}
         canComment
-        readOnly={readOnly}
-        provider={readOnly ? "gitlab" : "github"}
-        filesOmittedByHost={readOnly ? 1 : 0}
+        host={
+          readOnly
+            ? { readOnly: true, provider: "gitlab", filesOmittedByHost: 1 }
+            : { readOnly: false, provider: "github", filesOmittedByHost: 0 }
+        }
       />
     </NextIntlClientProvider>,
   );
@@ -62,12 +74,12 @@ describe("DiffTab on a read-only host (GitLab)", () => {
 
   it("the inline composer drafts but cannot post; its text can be copied", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    stubClipboard(writeText);
     renderTab(true);
     fireEvent.click(screen.getByRole("button", { name: "Original order" }));
 
-    const row = document.querySelector('[data-line-no="2"]') as HTMLElement;
-    fireEvent.mouseEnter(row);
+    // The "+" affordance appears on hover of the added line.
+    fireEvent.mouseEnter(screen.getByText("export const renamed = true;"));
     fireEvent.click(screen.getByRole("button", { name: "Add a comment on this line" }));
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Consider renaming back" } });
 

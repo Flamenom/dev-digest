@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import type { Finding, GitClient, RunTrace } from '@devdigest/shared';
+import type { Finding, HostGitClient, RunTrace } from '@devdigest/shared';
 import { ReviewRunExecutor } from '../src/modules/reviews/run-executor.js';
 import type { ReviewRepository, PullRow, ReviewRow, FindingRow } from '../src/modules/reviews/repository.js';
 import type { AgentRow } from '../src/db/rows.js';
@@ -16,7 +16,7 @@ import { parseUnifiedDiff } from '../src/adapters/git/diff-parser.js';
  * Hermetic run-executor tests for project-context injection (AC-18/AC-19/
  * AC-21/AC-22/AC-23/AC-24/AC-26 + the AC-35 grounding companion). Everything
  * is faked at the port level: MockLLMProvider (captures the assembled prompt),
- * a temp working tree behind a paths-only GitClient fake, a recording
+ * a temp working tree behind a paths-only HostGitClient fake, a recording
  * ReviewRepository fake, and the real in-memory RunBus. No DB, no network.
  */
 
@@ -166,12 +166,12 @@ async function runScenario(opts: {
 
   const llm = new MockLLMProvider('openai', { structured: REVIEW_FIXTURE });
 
-  // Port-level GitClient fake: paths + diff only (loadDiff calls git.diff;
+  // Port-level HostGitClient fake: paths + diff only (loadDiff calls git.diff;
   // readDocument calls git.clonePathFor — never git.readFile).
   const git = {
     clonePathFor: () => clone,
     diff: async () => parseUnifiedDiff(DIFF_RAW),
-  } as unknown as GitClient;
+  } as unknown as HostGitClient;
 
   const traces: Record<string, RunTrace> = {};
   const completed: Record<string, unknown> = {};

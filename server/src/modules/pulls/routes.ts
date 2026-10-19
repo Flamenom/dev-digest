@@ -1,23 +1,19 @@
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { and, desc, eq, inArray } from 'drizzle-orm';
 import type {
   PrDetailHost,
   GitHubClient,
-  PrListPage,
   PrMetaHost,
   PrReviewComment,
   PrSyncDoneEvent,
-  PrSyncStartResult,
 } from '@devdigest/shared';
-import { PrCommentInput } from '@devdigest/shared';
-import * as t from '../../db/schema.js';
+import { PrCommentInput, PrListPage, PrSyncStartResult } from '@devdigest/shared';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
 import { latestReviewPerAgent, rollupReviews } from '../_shared/review-rollup.js';
 import { AppError, NotFoundError } from '../../platform/errors.js';
 import { deriveReviewStatus } from './status.js';
-import type { SyncRepo } from './sync-service.js';
+import type { PersistedRepo } from './repository.js';
 
 /**
  * F1 — pulls module. PR list (persisted, synced on open) + per-PR detail.
@@ -39,13 +35,11 @@ import type { SyncRepo } from './sync-service.js';
 export default async function pullsRoutes(appBase: FastifyInstance) {
   const app = appBase.withTypeProvider<ZodTypeProvider>();
   const { container } = app;
+  const reads = container.pullsReadRepo;
 
-  /** The workspace-scoped repo row, or 404. */
-  async function loadRepo(workspaceId: string, repoId: string) {
-    const [repo] = await container.db
-      .select()
-      .from(t.repos)
-      .where(and(eq(t.repos.workspaceId, workspaceId), eq(t.repos.id, repoId)));
+  /** The workspace-scoped repo, or 404. */
+  async function loadRepo(workspaceId: string, repoId: string): Promise<PersistedRepo> {
+    const repo = await reads.findRepoForWorkspace(workspaceId, repoId);
     if (!repo) throw new NotFoundError('Repo not found');
     return repo;
   }
@@ -55,7 +49,7 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
    * NEVER make the list read wait on it — the read serves persisted rows only.
    * `onOpen` itself only reads the sync status; the sync is detached.
    */
-  function triggerOnOpen(repo: SyncRepo, log: FastifyBaseLogger): void {
+  function triggerOnOpen(repo: PersistedRepo, log: FastifyBaseLogger): void {
     container.prSync.onOpen(repo).catch((err: unknown) => {
       log.warn({ err, repoId: repo.id }, 'PR sync-on-open trigger failed; serving persisted PRs');
     });
@@ -67,10 +61,7 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
    * (where they are never written) keeps the exact pre-GitLab DTO field set (AC-60).
    */
   async function readPersistedList(workspaceId: string, repoId: string): Promise<PrMetaHost[]> {
-    const rows = await container.db
-      .select()
-      .from(t.pullRequests)
-      .where(and(eq(t.pullRequests.workspaceId, workspaceId), eq(t.pullRequests.repoId, repoId)));
+    const rows = await reads.listForRepo({ workspaceId, repoId });
 
     // SCORE + FINDINGS severity breakdown per PR for the list's score ring and
     // findings column, aggregated across ALL agents that reviewed the PR (a PR is
@@ -95,22 +86,10 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
       { CRITICAL: number; WARNING: number; SUGGESTION: number }
     >();
     if (prIds.length > 0) {
-      const reviewRows = await container.db
-        .select({
-          id: t.reviews.id,
-          prId: t.reviews.prId,
-          agentId: t.reviews.agentId,
-          score: t.reviews.score,
-          // `verdict`/`runId` are unused by the list row (N10 freezes it) but are
-          // part of the shared rollup's input shape; `createdAt` is what makes
-          // "latest per agent" well-defined.
-          verdict: t.reviews.verdict,
-          runId: t.reviews.runId,
-          createdAt: t.reviews.createdAt,
-        })
-        .from(t.reviews)
-        .where(and(inArray(t.reviews.prId, prIds), eq(t.reviews.kind, 'review')))
-        .orderBy(desc(t.reviews.createdAt));
+      // `verdict`/`runId` are unused by the list row (N10 freezes it) but are
+      // part of the shared rollup's input shape; `createdAt` is what makes
+      // "latest per agent" well-defined.
+      const reviewRows = await reads.listReviewRollupInputs(workspaceId, prIds);
       // ONE shared implementation of the per-agent-latest rule
       // (`modules/_shared/review-rollup.ts`), so the PR list and the PR brief
       // cannot drift apart. The SQL stays newest-first for the index; the
@@ -122,10 +101,7 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
       const reviewIds = latest.map((r) => r.id);
       const findingsByReview = new Map<string, { severity: string }[]>();
       if (reviewIds.length > 0) {
-        const findingRows = await container.db
-          .select({ reviewId: t.findings.reviewId, severity: t.findings.severity })
-          .from(t.findings)
-          .where(inArray(t.findings.reviewId, reviewIds));
+        const findingRows = await reads.listFindingSeverities(workspaceId, reviewIds);
         for (const fr of findingRows) {
           const arr = findingsByReview.get(fr.reviewId) ?? [];
           arr.push({ severity: fr.severity });
@@ -155,12 +131,8 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
         });
       }
 
-      const runRows = await container.db
-        .select({ prId: t.agentRuns.prId, costUsd: t.agentRuns.costUsd })
-        .from(t.agentRuns)
-        .where(and(eq(t.agentRuns.workspaceId, workspaceId), inArray(t.agentRuns.prId, prIds)));
+      const runRows = await reads.listRunCosts(workspaceId, prIds);
       for (const rr of runRows) {
-        if (rr.prId == null) continue;
         if (rr.costUsd != null) costByPr.set(rr.prId, (costByPr.get(rr.prId) ?? 0) + rr.costUsd);
         else if (!costByPr.has(rr.prId)) costByPr.set(rr.prId, null);
       }
@@ -208,7 +180,7 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
   // GET /repos/:id/pulls/page — the UI's list read: rows + sync status (Q2).
   app.get(
     '/repos/:id/pulls/page',
-    { schema: { params: IdParams } },
+    { schema: { params: IdParams, response: { 200: PrListPage } } },
     async (req): Promise<PrListPage> => {
       const { workspaceId } = await getContext(container, req);
       const repo = await loadRepo(workspaceId, req.params.id);
@@ -226,7 +198,7 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
   // single-flight (joins a running sync) (AC-57/58).
   app.post(
     '/repos/:id/pulls/sync',
-    { schema: { params: IdParams } },
+    { schema: { params: IdParams, response: { 200: PrSyncStartResult } } },
     async (req): Promise<PrSyncStartResult> => {
       const { workspaceId } = await getContext(container, req);
       const repo = await loadRepo(workspaceId, req.params.id);
@@ -327,12 +299,9 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
   // comments; POST creates one immediately. Keeps the tab in lock-step with
   // GitHub and avoids a stale local mirror.
   async function resolvePrAndRepo(id: string, workspaceId: string) {
-    const [pr] = await container.db
-      .select()
-      .from(t.pullRequests)
-      .where(and(eq(t.pullRequests.workspaceId, workspaceId), eq(t.pullRequests.id, id)));
-    if (!pr) throw new NotFoundError('Pull request not found');
-    const [repo] = await container.db.select().from(t.repos).where(eq(t.repos.id, pr.repoId));
+    const found = await reads.findPrWithRepo(workspaceId, id);
+    if (!found) throw new NotFoundError('Pull request not found');
+    const { pr, repo } = found;
     if (!repo) throw new NotFoundError('Repo not found');
     return { pr, repo };
   }

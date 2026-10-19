@@ -82,9 +82,12 @@ export function PrDetailHeader({
               {pr.status}
             </Badge>
             {pr.is_draft && (
-              <Badge bg="transparent" color="var(--text-muted)">
-                {tHost("draft")}
-              </Badge>
+              // Wrapper carries the e2e hook — the vendored Badge forwards no props.
+              <span data-testid="pr-draft-badge" style={s.draftBadgeWrap}>
+                <Badge bg="transparent" color="var(--text-muted)">
+                  {tHost("draft")}
+                </Badge>
+              </span>
             )}
           </div>
         </div>

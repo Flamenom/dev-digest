@@ -86,7 +86,7 @@ export function ConventionCard({
           label={evidenceLabel(convention)}
           snippet={convention.evidence_snippet}
           href={evidenceHostUrl(repo, convention)}
-          linkLabel={t("card.viewOn", { provider: hostLabelKey({ provider: repo?.provider ?? "github" }) })}
+          linkLabel={t("card.viewOn", { provider: hostLabelKey(repo) })}
         />
 
         <div style={s.confidenceRow}>

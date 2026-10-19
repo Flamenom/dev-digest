@@ -95,6 +95,10 @@ function fakeStore(open: number[] = [], missing: { id: string; number: number }[
     updateStatuses: vi.fn<PullRequestStore['updateStatuses']>(async (_s, st) => st.length),
     listMissingStats: vi.fn<PullRequestStore['listMissingStats']>(async (_s, limit) => missing.slice(0, limit)),
     replaceDetail: vi.fn<PullRequestStore['replaceDetail']>(async () => true),
+    getPersistedDetail: vi.fn<PullRequestStore['getPersistedDetail']>(async () => ({
+      files: [],
+      commits: [],
+    })),
   };
   return calls satisfies PullRequestStore;
 }
@@ -181,6 +185,11 @@ describe('PrListSyncService', () => {
     await expect(svc.syncRepo(githubRepo)).resolves.toBeUndefined();
     expect(store.updateDiffStats).not.toHaveBeenCalled();
     expect(log.warn).toHaveBeenCalledTimes(1);
+    // The host error reaches the logger as a redacted string, never the raw object.
+    expect(log.warn).toHaveBeenCalledWith(
+      { err: 'detail/diff must not be called', number: 1 },
+      'PR diff-stat backfill skipped',
+    );
   });
 
   it('a failing GitHub host does not affect a parallel GitLab repo sync (AC-27)', async () => {

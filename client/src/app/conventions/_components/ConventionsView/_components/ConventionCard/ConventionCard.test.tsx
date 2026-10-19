@@ -34,7 +34,13 @@ function convention(overrides: Partial<Convention> = {}): Convention {
   };
 }
 
-const REPO: EvidenceLinkRepo = { full_name: "acme/payments-api", default_branch: "main" };
+const REPO: EvidenceLinkRepo = {
+  full_name: "acme/payments-api",
+  default_branch: "main",
+  provider: "github",
+  host: "github.com",
+  web_url: "https://github.com/acme/payments-api",
+};
 const GITLAB_REPO: EvidenceLinkRepo = {
   full_name: "space-profit/platform/crm-frontend",
   default_branch: "main",

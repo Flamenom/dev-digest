@@ -2,16 +2,11 @@ import type { IntentConfidence, IntentDetail, IntentSource, StoredIntentDetail }
 import { MAX_EXTERNAL_URLS, MAX_REPO_DOCS } from './intent-constants.js';
 
 /**
- * Pure helpers for the intent classifier: source extraction from the PR body,
+ * Pure helpers for the intent classifier: source extraction from the PR body
+ * (the explicit issue link lives in `_shared/linked-issue.ts` — `extractIssueRef`),
  * hunk-header projection (diff bodies never leave the server), deterministic
  * confidence, and the stored-row → API-detail mapping.
  */
-
-/** Explicit issue link: `closes|fixes|resolves #N` (first match wins). */
-export function extractIssueRef(body: string | null | undefined): number | undefined {
-  const m = (body ?? '').match(/(?:closes|fixes|resolves)\s+#(\d+)/i);
-  return m?.[1] ? Number(m[1]) : undefined;
-}
 
 /** Repo-relative doc mentions: `specs/*.md` / `docs/*.md` paths (deduped, capped). */
 export function extractRepoDocPaths(body: string | null | undefined): string[] {

@@ -206,4 +206,31 @@ describe('PrSyncCoordinator', () => {
     expect(a?.state).toBe('failed');
     expect(b?.state).toBe('idle');
   });
+
+  it('a throwing describeError never leaves the repo stuck in flight', async () => {
+    const warns: unknown[] = [];
+    const c = new PrSyncCoordinator({
+      ttlMs: TTL,
+      backoffMs: TTL,
+      now: () => Date.now(),
+      status,
+      run: async () => {
+        throw new Error('host down');
+      },
+      describeError: () => {
+        throw new Error('describe exploded');
+      },
+      log: { warn: (obj: unknown) => void warns.push(obj) },
+    });
+    expect(c.manual(repo)).toBe('started');
+    const done = await c.awaitRunning(repo.id);
+    expect(done?.state).toBe('failed');
+    expect(done?.last_sync_error).toBe('PR sync failed');
+    expect(c.isRunning(repo.id)).toBe(false);
+    // The slot is free: the next manual refresh starts a new sync, not "joined".
+    expect(c.manual(repo)).toBe('started');
+    await c.awaitRunning(repo.id);
+    expect(c.isRunning(repo.id)).toBe(false);
+    expect(warns.length).toBeGreaterThan(0);
+  });
 });

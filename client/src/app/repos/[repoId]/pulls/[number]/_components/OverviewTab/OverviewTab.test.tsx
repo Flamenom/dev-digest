@@ -76,15 +76,17 @@ vi.mock("@/lib/api", async (importOriginal) => {
   };
 });
 
-// The repo-not-found guard reads the context — stub it instead of booting
-// RepoProvider. The page's link repo itself comes from GET /repos (routeGet).
+// The page reads its repo (host links) and the repo-not-found guard from the
+// context — stub it with the REPO DTO instead of booting RepoProvider.
+// (REPO is read lazily, at render time, so the hoisted factory may reference it.)
 vi.mock("@/lib/repo-context", () => ({
   useActiveRepo: () => ({
     repoId: REPO_ID,
     setRepoId: () => {},
-    repos: [{ id: REPO_ID, full_name: REPO_FULL_NAME }],
-    activeRepo: { id: REPO_ID, full_name: REPO_FULL_NAME },
+    repos: [REPO],
+    activeRepo: REPO,
     reposLoaded: true,
+    reposLoading: false,
   }),
   useRepoNotFound: () => false,
 }));

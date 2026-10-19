@@ -1,1 +1,1 @@
-export { DiffTab, DiffTab as default } from "./DiffTab";
+export { DiffTab, DiffTab as default, type DiffTabHost } from "./DiffTab";

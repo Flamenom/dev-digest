@@ -5,14 +5,13 @@ import {
   SettingsUpdate,
   ConnTestRequestHost,
   type ConnTestResultHost,
-  type GitLabTokenCheck,
   type SecretsStatusHost,
 } from '@devdigest/shared';
 import * as t from '../../db/schema.js';
 import { redactSecret } from '../../platform/redact.js';
 import { getContext } from '../_shared/context.js';
 import { GITHUB_PROVIDER, GITLAB_PROVIDER, SECRET_KEY_BY_PROVIDER } from './constants.js';
-import { rowsToSettings } from './helpers.js';
+import { gitlabCheckToResult, rowsToSettings } from './helpers.js';
 
 /**
  * F1 — settings module.
@@ -25,21 +24,6 @@ import { rowsToSettings } from './helpers.js';
  * The key is never echoed back: failure messages pass through `redactSecret`.
  */
 
-/** Translate a GitLab token check into the connection-test outcome (AC-2..AC-5). */
-function gitlabCheckToResult(check: GitLabTokenCheck): { ok: boolean; message: string } {
-  if (!check.ok) return { ok: false, message: `GitLab token is ${check.reason}` };
-  if (check.missingScopes.length > 0) {
-    return { ok: false, message: `Missing scopes: ${check.missingScopes.join(', ')}` };
-  }
-  const connected = `Connected as @${check.username}`;
-  if (check.scopes === null) {
-    return {
-      ok: true,
-      message: `${connected} (scope sufficiency is verified on first repo access)`,
-    };
-  }
-  return { ok: true, message: connected };
-}
 export default async function settingsRoutes(appBase: FastifyInstance) {
   const app = appBase.withTypeProvider<ZodTypeProvider>();
   const { container } = app;

@@ -17,7 +17,7 @@
  */
 
 import { readFile, writeFile } from 'node:fs/promises';
-import type { GitClient, RepoRef } from '@devdigest/shared';
+import type { HostGitClient, HostRepoRef } from '@devdigest/shared';
 import { NotFoundError, ValidationError } from '../../platform/errors.js';
 import { assertInsideClone, assertInsideCloneForWrite } from './path-guard.js';
 
@@ -44,8 +44,8 @@ async function asReadError(cloneRoot: string, relPath: string, err: unknown): Pr
  * repo-relative (as produced by discovery). Returns the file text (UTF-8).
  */
 export async function readDocument(
-  git: GitClient,
-  repoRef: RepoRef,
+  git: Pick<HostGitClient, 'clonePathFor'>,
+  repoRef: HostRepoRef,
   relPath: string,
 ): Promise<string> {
   const cloneRoot = git.clonePathFor(repoRef);
@@ -85,8 +85,8 @@ export async function readDocument(
  * never silently dropped.
  */
 export async function writeDocument(
-  git: GitClient,
-  repoRef: RepoRef,
+  git: Pick<HostGitClient, 'clonePathFor'>,
+  repoRef: HostRepoRef,
   relPath: string,
   text: string,
 ): Promise<void> {

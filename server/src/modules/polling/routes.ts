@@ -1,7 +1,5 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { and, eq } from 'drizzle-orm';
-import * as t from '../../db/schema.js';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
 import { ExternalServiceError, NotFoundError } from '../../platform/errors.js';
@@ -23,10 +21,7 @@ export default async function pollingRoutes(appBase: FastifyInstance) {
 
   app.post('/repos/:id/poll', { schema: { params: IdParams } }, async (req) => {
     const { workspaceId } = await getContext(container, req);
-    const [repo] = await container.db
-      .select()
-      .from(t.repos)
-      .where(and(eq(t.repos.workspaceId, workspaceId), eq(t.repos.id, req.params.id)));
+    const repo = await container.pullsReadRepo.findRepoForWorkspace(workspaceId, req.params.id);
     if (!repo) throw new NotFoundError('Repo not found');
 
     container.prSync.manual(repo);
@@ -39,10 +34,7 @@ export default async function pollingRoutes(appBase: FastifyInstance) {
     // not report a write count through the coordinator).
     const scope = { workspaceId, repoId: repo.id };
     const synced = (await container.pullRequestRepo.listOpenNumbers(scope)).length;
-    await container.db
-      .update(t.repos)
-      .set({ lastPolledAt: new Date() })
-      .where(eq(t.repos.id, repo.id));
+    await container.pullsReadRepo.markRepoPolled(workspaceId, repo.id, new Date());
 
     // NOTE: no review is triggered here — manual trigger only.
     return { synced, reviewTriggered: false };

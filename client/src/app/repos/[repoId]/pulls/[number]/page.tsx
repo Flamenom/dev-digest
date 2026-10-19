@@ -14,12 +14,12 @@ import { OverviewTab } from "./_components/OverviewTab";
 import { FindingsTab } from "./_components/FindingsTab";
 import { DiffTab } from "./_components/DiffTab";
 import RunTraceDrawer from "./_components/RunTraceDrawer";
-import { usePullDetail, usePulls, useQueryParam, useRepos, useSetQueryParams } from "@/lib/hooks";
+import { usePullDetail, usePulls, useQueryParam, useSetQueryParams } from "@/lib/hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { usePrReviews, useCancelRun, usePrActiveRuns, usePrRuns, useDeleteRun } from "@/lib/hooks/reviews";
-import { useRepoNotFound } from "@/lib/repo-context";
+import { useActiveRepo, useRepoNotFound } from "@/lib/repo-context";
 import { ApiError } from "@/lib/api";
-import { hostBlobUrl, hostLabelKey, hostPrUrl } from "@/lib/host-urls";
+import { hostBlobUrl, hostLabelKey, hostPrUrl, isReadOnlyHost } from "@/lib/host-urls";
 import type { FindingRecord } from "@devdigest/shared";
 
 export default function PRDetailPage() {
@@ -27,10 +27,10 @@ export default function PRDetailPage() {
   const { repoId, number } = params;
   // The repo DTO carries provider/host/web_url — every external link on this
   // page is built from it through `host-urls` (AC-36/37/38).
-  const { data: repos, isLoading: reposLoading } = useRepos();
-  const repo = repos?.find((r) => r.id === repoId) ?? null;
+  // Same source as the list page: the active repo is resolved from :repoId.
+  const { activeRepo: repo, reposLoading } = useActiveRepo();
   // GitLab accepts no posted comments in the MVP (server: `provider_read_only`).
-  const readOnly = repo?.provider === "gitlab";
+  const readOnly = isReadOnlyHost(repo);
   const repoNotFound = useRepoNotFound(repoId);
   // The route is keyed by PR number, but every PR API is keyed by the row's
   // uuid — resolve number → uuid via the (cached) pulls list before fetching.
@@ -147,7 +147,7 @@ export default function PRDetailPage() {
         tab={tab}
         findingsCount={findingsCount}
         hostUrl={repo ? hostPrUrl(repo, pr.number) : null}
-        provider={repo ? hostLabelKey(repo) : "github"}
+        provider={hostLabelKey(repo)}
         onSetTab={setTab}
         onRunStart={() => setTab("findings")}
         onRunsStarted={() => invalidateActiveRuns()}
@@ -204,9 +204,11 @@ export default function PRDetailPage() {
             filesCount={pr.files_count}
             files={pr.files}
             canComment={pr.status === "open"}
-            readOnly={readOnly}
-            provider={repo ? hostLabelKey(repo) : "github"}
-            filesOmittedByHost={pr.files_omitted_by_host ?? 0}
+            host={{
+              readOnly,
+              provider: hostLabelKey(repo),
+              filesOmittedByHost: pr.files_omitted_by_host ?? 0,
+            }}
             reviews={runs}
             onGoToFinding={goToFinding}
             fileTarget={fileTarget}

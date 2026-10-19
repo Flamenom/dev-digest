@@ -2,12 +2,12 @@ import { spawn } from 'node:child_process';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, relative, extname } from 'node:path';
 import type {
-  CodeIndex,
-  RepoRef,
+  HostCodeIndex,
+  HostRepoRef,
   CodeMatch,
   CodeSymbol,
   CodeReference,
-  GitClient,
+  HostGitClient,
 } from '@devdigest/shared';
 import { extractSymbols, extractReferences } from './extract.js';
 
@@ -40,14 +40,14 @@ async function resolveRg(): Promise<string | null> {
   return rgPathCache;
 }
 
-export class RipgrepCodeIndex implements CodeIndex {
-  constructor(private git: Pick<GitClient, 'clonePathFor'>) {}
+export class RipgrepCodeIndex implements HostCodeIndex {
+  constructor(private git: Pick<HostGitClient, 'clonePathFor'>) {}
 
-  private root(repo: RepoRef): string {
+  private root(repo: HostRepoRef): string {
     return this.git.clonePathFor(repo);
   }
 
-  async grep(repo: RepoRef, pattern: string): Promise<CodeMatch[]> {
+  async grep(repo: HostRepoRef, pattern: string): Promise<CodeMatch[]> {
     const root = this.root(repo);
     const rg = await resolveRg();
     if (rg) return this.grepWithRg(rg, root, pattern);
@@ -96,7 +96,7 @@ export class RipgrepCodeIndex implements CodeIndex {
   }
 
   /** Enhanced regex symbol extractor (functions, classes + methods, arrows, types). */
-  async symbols(repo: RepoRef): Promise<CodeSymbol[]> {
+  async symbols(repo: HostRepoRef): Promise<CodeSymbol[]> {
     const root = this.root(repo);
     const out: CodeSymbol[] = [];
     for (const file of await this.walk(root)) {
@@ -111,7 +111,7 @@ export class RipgrepCodeIndex implements CodeIndex {
   }
 
   /** Enhanced reference finder: call sites / `new` / member-calls / JSX usage. */
-  async references(repo: RepoRef, symbol: string): Promise<CodeReference[]> {
+  async references(repo: HostRepoRef, symbol: string): Promise<CodeReference[]> {
     const root = this.root(repo);
     const out: CodeReference[] = [];
     for (const file of await this.walk(root)) {

@@ -3,8 +3,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { mkdir, readFile, access, rm } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import type {
-  GitClient,
-  RepoRef,
+  HostGitClient,
   CloneOptions,
   UnifiedDiff,
   BlameLine,
@@ -12,10 +11,11 @@ import type {
   GitCredential,
   GitCredentialResolver,
   HostRepoRef,
+  FetchPullHeadOptions,
 } from '@devdigest/shared';
+import { PROVIDER_HOST, cloneRemoteUrl } from '@devdigest/shared';
 import { parseUnifiedDiff } from './diff-parser.js';
 import { redactSecret } from '../../platform/redact.js';
-import { PROVIDER_HOST, cloneRemoteUrl } from '../../modules/_shared/repo-ref.js';
 
 /**
  * Depth fetched by `sync()`. Deeper than the shallow clone (CLONE_DEPTH=1) so the
@@ -106,17 +106,27 @@ interface NetworkAuth {
   headerSuppressed: boolean;
 }
 
-/** Structural read of the host fields — the port still types plain `RepoRef`. */
-function toHostRef(repo: RepoRef): HostRepoRef {
-  const r = repo as RepoRef & Partial<HostRepoRef>;
-  const provider = 'provider' in r && r.provider === 'gitlab' ? 'gitlab' : 'github';
+/**
+ * Canonicalise a host ref: only `gitlab` is GitLab (anything else ⇒ github),
+ * the host is derived from the provider, and a missing `fullName` falls back to
+ * `owner/name`.
+ *
+ * Defence-in-depth, not a supported input path: `HostGitClient` types every
+ * repo parameter as a full `HostRepoRef` (function-typed properties, so the
+ * compiler rejects a plain `{ owner, name }`), and every production call site
+ * builds its ref with `hostRepoRef(row)`. The fallbacks only guard against an
+ * untyped caller (`as unknown as …` test fakes, or an unsound upcast to the
+ * legacy `GitClient`) so a malformed ref can never pick a wrong clone path,
+ * remote or credential host — keep them.
+ */
+function toHostRef(repo: HostRepoRef): HostRepoRef {
+  const provider = repo.provider === 'gitlab' ? 'gitlab' : 'github';
   return {
     owner: repo.owner,
     name: repo.name,
     provider,
     host: PROVIDER_HOST[provider],
-    fullName:
-      typeof r.fullName === 'string' && r.fullName ? r.fullName : `${repo.owner}/${repo.name}`,
+    fullName: repo.fullName || `${repo.owner}/${repo.name}`,
   };
 }
 
@@ -134,7 +144,7 @@ function basicValue(cred: GitCredential): string {
 }
 
 /**
- * GitClient over simple-git. GitHub repos clone to `<cloneDir>/<owner>/<repo>`,
+ * HostGitClient over simple-git. GitHub repos clone to `<cloneDir>/<owner>/<repo>`,
  * GitLab ones to `<cloneDir>/@gitlab.com/<ns…>/<project>`. We NEVER execute repo
  * code — only git ops.
  *
@@ -142,7 +152,7 @@ function basicValue(cred: GitCredential): string {
  * `http.https://<host>/.extraHeader` through GIT_CONFIG_* env — never in argv,
  * the remote URL or `.git/config`.
  */
-export class SimpleGitClient implements GitClient {
+export class SimpleGitClient implements HostGitClient {
   private readonly credentials?: GitCredentialResolver;
   private readonly gitFactory: GitFactory;
   private envConfigSupported?: Promise<boolean>;
@@ -163,7 +173,7 @@ export class SimpleGitClient implements GitClient {
     process.env.GCM_INTERACTIVE ??= 'never';
   }
 
-  clonePathFor(repo: RepoRef): string {
+  clonePathFor(repo: HostRepoRef): string {
     const ref = toHostRef(repo);
     const segments =
       ref.provider === 'gitlab'
@@ -178,7 +188,7 @@ export class SimpleGitClient implements GitClient {
     return path;
   }
 
-  private git(repo: RepoRef): SimpleGit {
+  private git(repo: HostRepoRef): SimpleGit {
     return this.gitFactory(this.clonePathFor(repo));
   }
 
@@ -268,7 +278,7 @@ export class SimpleGitClient implements GitClient {
     await local.remote(['set-url', 'origin', clean]);
   }
 
-  async clone(repo: RepoRef, url: string, opts?: CloneOptions): Promise<{ path: string }> {
+  async clone(repo: HostRepoRef, url: string, opts?: CloneOptions): Promise<{ path: string }> {
     const ref = toHostRef(repo);
     if (URL_USERINFO_RE.test(url)) {
       throw new Error(
@@ -301,7 +311,7 @@ export class SimpleGitClient implements GitClient {
    * work without access to the fork (AC-30). `opts.base` (GitLab) also fetches the
    * target branch at the same bounded depth so a merge-base is reachable locally.
    */
-  async fetchPullHead(repo: RepoRef, n: number, opts?: { base?: string }): Promise<void> {
+  async fetchPullHead(repo: HostRepoRef, n: number, opts?: FetchPullHeadOptions): Promise<void> {
     const ref = toHostRef(repo);
     const dir = this.clonePathFor(repo);
     await this.guard(null, () => this.ensureTokenlessOrigin(ref, dir));
@@ -336,7 +346,7 @@ export class SimpleGitClient implements GitClient {
     );
   }
 
-  async sync(repo: RepoRef, branch: string): Promise<{ head: string }> {
+  async sync(repo: HostRepoRef, branch: string): Promise<{ head: string }> {
     // Resync the read-only mirror to upstream. A bare `fetch` only moves
     // `origin/<branch>`, so we `reset --hard` to advance local HEAD + worktree —
     // safe here because we never commit to or run code from the clone.
@@ -362,11 +372,11 @@ export class SimpleGitClient implements GitClient {
     });
   }
 
-  async currentHead(repo: RepoRef): Promise<string> {
+  async currentHead(repo: HostRepoRef): Promise<string> {
     return (await this.git(repo).revparse(['HEAD'])).trim();
   }
 
-  async diff(repo: RepoRef, base: string, head: string): Promise<UnifiedDiff> {
+  async diff(repo: HostRepoRef, base: string, head: string): Promise<UnifiedDiff> {
     const raw = await this.git(repo).diff([`${base}...${head}`]);
     return parseUnifiedDiff(raw);
   }
@@ -377,7 +387,7 @@ export class SimpleGitClient implements GitClient {
    * intentional (commits reachable from `head` but not `base`), unlike the
    * three-dot symmetric form `diff()` uses for review diffs.
    */
-  async diffNameOnly(repo: RepoRef, base: string, head: string): Promise<string[]> {
+  async diffNameOnly(repo: HostRepoRef, base: string, head: string): Promise<string[]> {
     if (base === head) return [];
     const raw = await this.git(repo).raw(['diff', '--name-only', `${base}..${head}`]);
     return raw
@@ -386,12 +396,12 @@ export class SimpleGitClient implements GitClient {
       .filter((s) => s.length > 0);
   }
 
-  async blame(repo: RepoRef, path: string): Promise<BlameLine[]> {
+  async blame(repo: HostRepoRef, path: string): Promise<BlameLine[]> {
     const raw = await this.git(repo).raw(['blame', '--line-porcelain', path]);
     return parseBlamePorcelain(raw);
   }
 
-  async log(repo: RepoRef, path?: string): Promise<GitCommit[]> {
+  async log(repo: HostRepoRef, path?: string): Promise<GitCommit[]> {
     const log = await this.git(repo).log(path ? { file: path } : undefined);
     return log.all.map((c) => ({
       sha: c.hash,
@@ -401,7 +411,7 @@ export class SimpleGitClient implements GitClient {
     }));
   }
 
-  async readFile(repo: RepoRef, path: string): Promise<string> {
+  async readFile(repo: HostRepoRef, path: string): Promise<string> {
     return readFile(join(this.clonePathFor(repo), path), 'utf8');
   }
 }

@@ -1,7 +1,30 @@
-import { sql } from 'drizzle-orm';
-import { pgTable, uuid, text, timestamp, uniqueIndex, index, check } from 'drizzle-orm/pg-core';
+import { sql, type SQL } from 'drizzle-orm';
+import {
+  pgTable,
+  uuid,
+  text,
+  timestamp,
+  uniqueIndex,
+  index,
+  check,
+  type AnyPgColumn,
+} from 'drizzle-orm/pg-core';
 import { now } from './_shared';
 import { workspaces, users } from './core';
+
+/**
+ * Partial-index predicates of the two repo identity indexes (migration 0020).
+ * The SINGLE source for both the schema `uniqueIndex(...).where(...)` below and
+ * the `ON CONFLICT … WHERE …` arbiter in `RepoRepository.insert`, so the index
+ * and the conflict target cannot drift apart (a mismatch would make Postgres
+ * fail to infer the arbiter and raise instead of DO NOTHING).
+ */
+export const reposIdentityWhere = {
+  /** `repos_ws_provider_host_fullname_uq` — every non-GitLab provider. */
+  nonGitlab: (provider: AnyPgColumn): SQL => sql`${provider} <> 'gitlab'`,
+  /** `repos_gitlab_ws_host_lower_fullname_uq` — GitLab only. */
+  gitlab: (provider: AnyPgColumn): SQL => sql`${provider} = 'gitlab'`,
+} as const;
 
 export const repos = pgTable(
   'repos',
@@ -31,14 +54,24 @@ export const repos = pgTable(
     createdAt: now(),
   },
   (t) => ({
-    /** One row per (workspace, provider, host, full_name): the same path may exist on two hosts. */
-    uq: uniqueIndex('repos_ws_provider_host_fullname_uq').on(
-      t.workspaceId,
-      t.provider,
-      t.host,
-      t.fullName,
-    ),
+    /**
+     * Repo identity is provider-specific, so it is split into two DISJOINT partial
+     * unique indexes (migration 0020) — every insert has exactly one arbiter index,
+     * which keeps `ON CONFLICT … DO NOTHING` race-safe (see RepoRepository.insert):
+     *   - non-GitLab (GitHub): exact (workspace, provider, host, full_name);
+     *   - GitLab: case-insensitive on full_name — agrees with the app's
+     *     `lower(full_name)` dedupe lookup (gitlab.com paths are case-insensitive).
+     * The same path may exist on two hosts.
+     */
+    uq: uniqueIndex('repos_ws_provider_host_fullname_uq')
+      .on(t.workspaceId, t.provider, t.host, t.fullName)
+      .where(reposIdentityWhere.nonGitlab(t.provider)),
+    gitlabUq: uniqueIndex('repos_gitlab_ws_host_lower_fullname_uq')
+      .on(t.workspaceId, t.provider, t.host, sql`lower(${t.fullName})`)
+      .where(reposIdentityWhere.gitlab(t.provider)),
     providerCk: check('repos_provider_ck', sql`${t.provider} in ('github', 'gitlab')`),
+    /** Hosts are stored canonical (lower-case) so identity comparisons stay exact. */
+    hostLowerCk: check('repos_host_lower_ck', sql`${t.host} = lower(${t.host})`),
     wsIdx: index('repos_ws_idx').on(t.workspaceId),
   }),
 );

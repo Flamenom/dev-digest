@@ -1,7 +1,7 @@
 import type { RepoHost, RepoProvider, RepoSyncState, RepoWithHost } from '@devdigest/shared';
-import * as t from '../../db/schema.js';
 import { AppError } from '../../platform/errors.js';
 import { PROVIDER_HOST, repoWebUrl } from '../_shared/repo-ref.js';
+import type { RepoRecord } from './repository.js';
 import {
   ALLOWED_REPO_PROTOCOLS,
   GITHUB_NAME_REGEX,
@@ -208,7 +208,7 @@ export interface RepoDtoOptions {
   syncRunning?: boolean;
 }
 
-function syncStateOf(row: typeof t.repos.$inferSelect, opts: RepoDtoOptions): RepoSyncState {
+function syncStateOf(row: RepoRecord, opts: RepoDtoOptions): RepoSyncState {
   if (opts.syncRunning) return 'running';
   return row.lastSyncError ? 'failed' : 'idle';
 }
@@ -222,8 +222,8 @@ function webUrlOf(provider: RepoProvider, host: RepoHost, fullName: string): str
   }
 }
 
-/** Map a persisted repo row to the API `RepoWithHost` DTO (AC-36). */
-export function toRepoDto(row: typeof t.repos.$inferSelect, opts: RepoDtoOptions = {}): RepoWithHost {
+/** Map a persisted repo record to the API `RepoWithHost` DTO (AC-36). */
+export function toRepoDto(row: RepoRecord, opts: RepoDtoOptions = {}): RepoWithHost {
   const provider: RepoProvider = row.provider === 'gitlab' ? 'gitlab' : 'github';
   const host: RepoHost =
     row.host === 'github.com' || row.host === 'gitlab.com' ? row.host : PROVIDER_HOST[provider];
