@@ -130,7 +130,8 @@
     "drawerLoadError": "Could not load this document.",
     "serializesTitle": "Serializes as",
     "serializesHint": "How this skill contributes its documents to the assembled Project context block.",
-    "serializesEmpty": "No documents attached — this skill contributes nothing to the Project context block."
+    "serializesEmpty": "No documents attached — this skill contributes nothing to the Project context block.",
+    "readOnlyNotice": "Only admins can change attached documents."
   },
   "config": {
     "title": "Configuration",

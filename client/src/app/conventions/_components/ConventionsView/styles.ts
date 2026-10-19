@@ -72,4 +72,17 @@ export const s = {
     placeItems: "center",
     minHeight: "60vh",
   } satisfies CSSProperties,
+  /** Member empty state: the copy, then the inert CTA with its "Admins only" hint. */
+  gatedEmpty: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+  } satisfies CSSProperties,
+  /** An Admin-gated control stacked over its (Member-only) hint. */
+  gatedAction: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 4,
+  } satisfies CSSProperties,
 } as const;

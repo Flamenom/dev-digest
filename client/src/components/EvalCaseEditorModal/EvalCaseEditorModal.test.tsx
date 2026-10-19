@@ -3,6 +3,7 @@ import { render, screen, cleanup, fireEvent, within } from "@testing-library/rea
 import { NextIntlClientProvider } from "next-intl";
 import type { EvalCaseDraft, EvalCaseRecord } from "@devdigest/shared";
 import messages from "../../../messages/en/eval.json";
+import authMessages from "../../../messages/en/auth.json";
 
 /* The client test harness has no MSW and no QueryClientProvider, so the data
    layer is replaced wholesale by a mutable module-scope state object. */
@@ -85,6 +86,25 @@ vi.mock("@/lib/hooks/eval", () => ({
   useRunEvalCase: () => ({ mutate: runMutate, isPending: false }),
 }));
 
+/* Multi-user gating reads the session probe: mocked as the local-mode Admin
+   (every control enabled, as before); a test may flip `session` to a Member. */
+const session = vi.hoisted(() => ({
+  mode: "local" as "local" | "google",
+  role: "admin" as "admin" | "member",
+  userId: "u-admin",
+}));
+vi.mock("@/lib/hooks/session", () => ({
+  SESSION_QUERY_KEY: ["session"],
+  useSession: () => ({
+    data: {
+      mode: session.mode,
+      user: { id: session.userId, email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: session.role },
+      workspace: { id: "w1", name: "Team" },
+    },
+    isPending: false,
+  }),
+}));
+
 import { EvalCaseEditorModal } from "./EvalCaseEditorModal";
 
 const DIFF = [
@@ -147,7 +167,7 @@ afterEach(() => {
 function renderModal(props: Partial<React.ComponentProps<typeof EvalCaseEditorModal>> = {}) {
   const onClose = vi.fn();
   render(
-    <NextIntlClientProvider locale="en" messages={{ eval: messages }}>
+    <NextIntlClientProvider locale="en" messages={{ auth: authMessages, eval: messages }}>
       <EvalCaseEditorModal caseId="case-1" agentId="agent-1" onClose={onClose} {...props} />
     </NextIntlClientProvider>,
   );
@@ -376,5 +396,63 @@ describe("EvalCaseEditorModal", () => {
     renderModal({ caseId: null, sourceFindingId: "finding-7" });
     expect(screen.getByRole("dialog")).toHaveTextContent("Positive case");
     expect(screen.getByRole("dialog")).toHaveTextContent("MUST find the expected finding");
+  });
+});
+
+/* AC-30 UI half: an existing case is editable/deletable only by its creator or
+   an Admin; a legacy case (no recorded creator) is Admin-only. Running a case
+   stays a Member action everywhere. */
+describe("EvalCaseEditorModal — ownership gating (AC-30)", () => {
+  const asMember = (userId: string) => {
+    session.mode = "google";
+    session.role = "member";
+    session.userId = userId;
+  };
+  afterEach(() => {
+    session.mode = "local";
+    session.role = "admin";
+    session.userId = "u-admin";
+  });
+
+  it("Member on their own case: Save and Delete are offered and the creator is shown", () => {
+    asMember("u-a");
+    state.record = { ...CASE, created_by: { user_id: "u-a", name: "Ada" } } as EvalCaseRecord;
+    renderModal();
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(screen.getByText("Created by Ada")).toBeInTheDocument();
+    expect(screen.queryByText(/Only the case's creator or an admin/)).not.toBeInTheDocument();
+  });
+
+  it("Member on someone else's or a legacy case: read-only footer, but the case can still be run", () => {
+    asMember("u-a");
+    state.record = { ...CASE, created_by: { user_id: "u-b", name: "Bob" } } as EvalCaseRecord;
+    renderModal();
+
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Run on save")).not.toBeInTheDocument();
+    expect(screen.getByText(/Only the case's creator or an admin can edit or delete it/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run case" }));
+    expect(runMutate).toHaveBeenCalledTimes(1);
+    expect(updateMutate).not.toHaveBeenCalled();
+    cleanup();
+
+    // Legacy: no recorded creator → Admin-only, labelled "—".
+    state.record = { ...CASE, created_by: null } as EvalCaseRecord;
+    renderModal();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    expect(screen.getByText("—")).toBeInTheDocument();
+  });
+
+  it("Admin may edit and delete a legacy case", () => {
+    session.mode = "google";
+    state.record = { ...CASE, created_by: null } as EvalCaseRecord;
+    renderModal();
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
   });
 });

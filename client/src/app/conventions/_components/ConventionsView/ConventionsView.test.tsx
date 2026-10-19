@@ -3,6 +3,17 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import type { ConventionListResponse } from "@devdigest/shared";
 import messages from "../../../../../messages/en/conventions.json";
+import authMessages from "../../../../../messages/en/auth.json";
+
+// Multi-user gating: drive the session-derived role directly ("admin" =
+// today's behaviour, also what local mode resolves to).
+const perm = vi.hoisted(() => ({ role: "admin" as "admin" | "member" }));
+vi.mock("@/lib/permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/permissions")>();
+  const current = () =>
+    actual.buildPermissions({ mode: "google", role: perm.role, userId: "u1", isPending: false });
+  return { ...actual, useCan: current, useIsAdmin: () => current().isAdmin };
+});
 
 vi.mock("@/components/app-shell", () => ({
   AppShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -79,7 +90,7 @@ const POPULATED: ConventionListResponse = {
 
 function renderView() {
   render(
-    <NextIntlClientProvider locale="en" messages={{ conventions: messages }}>
+    <NextIntlClientProvider locale="en" messages={{ conventions: messages, auth: authMessages }}>
       <ConventionsView />
     </NextIntlClientProvider>,
   );
@@ -119,5 +130,47 @@ describe("ConventionsView", () => {
     queryState = { isLoading: false, isError: true, refetch };
     renderView();
     expect(screen.getByText("Could not load conventions.")).toBeInTheDocument();
+  });
+});
+
+describe("ConventionsView gating (AC-33)", () => {
+  afterEach(() => {
+    perm.role = "admin";
+  });
+
+  it("Member: Run extraction is aria-disabled with an 'Admins only' hint and does not extract", () => {
+    perm.role = "member";
+    queryState = { data: { conventions: [], stats: null }, isLoading: false, isError: false, refetch: vi.fn() };
+    renderView();
+    const run = screen.getByRole("button", { name: /Run extraction/ });
+    expect(run).toHaveAttribute("aria-disabled", "true");
+    expect(run).toHaveAccessibleDescription("Admins only");
+    fireEvent.click(run);
+    expect(extractMutate).not.toHaveBeenCalled();
+  });
+
+  it("Member: Re-scan, Deselect all and Create skill are aria-disabled and inert; the list stays readable", () => {
+    perm.role = "member";
+    queryState = { data: POPULATED, isLoading: false, isError: false, refetch: vi.fn() };
+    renderView();
+    for (const name of [/Re-scan/, /Deselect all/, /Create skill/]) {
+      const btn = screen.getByRole("button", { name });
+      expect(btn).toHaveAttribute("aria-disabled", "true");
+      expect(btn).toHaveAccessibleDescription("Admins only");
+      fireEvent.click(btn);
+    }
+    expect(extractMutate).not.toHaveBeenCalled();
+    expect(bulkMutate).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByText("Redis access goes through the singleton")).toBeInTheDocument();
+  });
+
+  it("Admin: the same controls are enabled with no hint", () => {
+    queryState = { data: POPULATED, isLoading: false, isError: false, refetch: vi.fn() };
+    renderView();
+    for (const name of [/Re-scan/, /Deselect all/, /Create skill/]) {
+      expect(screen.getByRole("button", { name })).not.toHaveAttribute("aria-disabled");
+    }
+    expect(screen.queryByText("Admins only")).not.toBeInTheDocument();
   });
 });

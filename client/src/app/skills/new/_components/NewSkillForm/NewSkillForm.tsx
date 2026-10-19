@@ -1,7 +1,8 @@
 /* NewSkillForm — /skills/new: a blank Config form (name, description with the
    directive-interface hint, type, body editor). On create → redirect to
    /skills/[id]. Manual skills keep the server defaults (source 'manual',
-   enabled true). */
+   enabled true). Creating is Admin-only (AC-33): a Member reaching this URL
+   sees the form with an aria-disabled Create + "Admins only" hint. */
 "use client";
 
 import React from "react";
@@ -11,6 +12,7 @@ import { Button, FormField, Icon, SelectInput, TextInput } from "@devdigest/ui";
 import type { SkillType } from "@devdigest/shared";
 import { useCreateSkill } from "@/lib/hooks/skills";
 import { useToast } from "@/lib/toast";
+import { AdminOnly } from "@/components/admin-gate";
 import { BodyEditor } from "../../../_components/BodyEditor";
 import { SKILL_TYPES } from "../../../_components/constants";
 import { slugify } from "../../../_components/helpers";
@@ -64,9 +66,19 @@ export function NewSkillForm() {
         />
       </FormField>
       <div style={s.actions}>
-        <Button kind="primary" icon="Check" onClick={submit} disabled={!canCreate || create.isPending}>
-          {create.isPending ? t("newSkill.creating") : t("newSkill.create")}
-        </Button>
+        <AdminOnly>
+          {(gate) => (
+            <Button
+              kind="primary"
+              icon="Check"
+              {...gate.controlProps}
+              onClick={gate.guard(submit)}
+              disabled={!canCreate || create.isPending}
+            >
+              {create.isPending ? t("newSkill.creating") : t("newSkill.create")}
+            </Button>
+          )}
+        </AdminOnly>
       </div>
     </div>
   );

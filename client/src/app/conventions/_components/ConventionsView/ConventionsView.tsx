@@ -2,7 +2,10 @@
    context. States: no-repo → skeletons → load error → empty (Run extraction
    CTA) → populated (scan meta, Deselect all, accepted count, Re-scan, Create
    skill, candidate cards). Extraction is a synchronous mutation — its
-   isPending drives the "Scanning…" affordances. */
+   isPending drives the "Scanning…" affordances.
+   Multi-user (AC-33): Run extraction / Re-scan, Deselect all (bulk) and
+   Create skill are aria-disabled + "Admins only" for a Member; local mode
+   resolves to Admin (unchanged). */
 "use client";
 
 import React from "react";
@@ -12,6 +15,8 @@ import { useActiveRepo } from "@/lib/repo-context";
 import { useBulkConventionStatus, useConventions, useExtractConventions } from "@/lib/hooks/conventions";
 import { useToast } from "@/lib/toast";
 import { AppShell } from "@/components/app-shell";
+import { AdminOnly } from "@/components/admin-gate";
+import { useCan } from "@/lib/permissions";
 import { ConventionCard } from "./_components/ConventionCard";
 import { CreateSkillModal } from "./_components/CreateSkillModal";
 import { relativeTime } from "./helpers";
@@ -25,6 +30,7 @@ export function ConventionsView() {
   const extract = useExtractConventions(repoId);
   const bulk = useBulkConventionStatus(repoId);
   const [modalOpen, setModalOpen] = React.useState(false);
+  const { isAdmin } = useCan();
 
   const repoName = activeRepo?.full_name ?? t("page.repoFallback");
   const conventions = query.data?.conventions ?? [];
@@ -64,14 +70,29 @@ export function ConventionsView() {
   } else if (conventions.length === 0) {
     content = (
       <div style={s.centered}>
-        <EmptyState
-          icon="ListChecks"
-          title={t("page.empty.title")}
-          body={t("page.empty.body")}
-          cta={extract.isPending ? t("page.scanning") : t("page.empty.cta")}
-          onCta={runExtraction}
-          ctaLoading={extract.isPending}
-        />
+        {isAdmin ? (
+          <EmptyState
+            icon="ListChecks"
+            title={t("page.empty.title")}
+            body={t("page.empty.body")}
+            cta={extract.isPending ? t("page.scanning") : t("page.empty.cta")}
+            onCta={runExtraction}
+            ctaLoading={extract.isPending}
+          />
+        ) : (
+          <div style={s.gatedEmpty}>
+            <EmptyState icon="ListChecks" title={t("page.empty.title")} body={t("page.empty.body")} />
+            <div style={s.gatedAction}>
+              <AdminOnly>
+                {(gate) => (
+                  <Button kind="secondary" icon="Plus" {...gate.controlProps} onClick={gate.guard()}>
+                    {t("page.empty.cta")}
+                  </Button>
+                )}
+              </AdminOnly>
+            </div>
+          </div>
+        )}
       </div>
     );
   } else {
@@ -99,32 +120,54 @@ export function ConventionsView() {
               )}
             </div>
           </div>
-          <Button kind="secondary" icon="RefreshCw" loading={extract.isPending} onClick={runExtraction}>
-            {extract.isPending ? t("page.scanning") : t("page.rescan")}
-          </Button>
+          <div style={s.gatedAction}>
+            <AdminOnly>
+              {(gate) => (
+                <Button
+                  kind="secondary"
+                  icon="RefreshCw"
+                  loading={extract.isPending}
+                  {...gate.controlProps}
+                  onClick={gate.guard(runExtraction)}
+                >
+                  {extract.isPending ? t("page.scanning") : t("page.rescan")}
+                </Button>
+              )}
+            </AdminOnly>
+          </div>
         </div>
 
         <div style={s.toolbar}>
-          <Button
-            kind="tertiary"
-            icon="X"
-            disabled={accepted.length === 0 || bulk.isPending}
-            onClick={() => bulk.mutate("pending")}
-          >
-            {t("page.deselectAll")}
-          </Button>
+          <AdminOnly>
+            {(gate) => (
+              <Button
+                kind="tertiary"
+                icon="X"
+                {...gate.controlProps}
+                disabled={accepted.length === 0 || bulk.isPending}
+                onClick={gate.guard(() => bulk.mutate("pending"))}
+              >
+                {t("page.deselectAll")}
+              </Button>
+            )}
+          </AdminOnly>
           <span style={s.acceptedCount}>
             {t("page.acceptedCount", { accepted: accepted.length, total: conventions.length })}
           </span>
           <div style={s.toolbarSpacer} />
-          <Button
-            kind="primary"
-            icon="Sparkles"
-            disabled={accepted.length === 0}
-            onClick={() => setModalOpen(true)}
-          >
-            {t("page.createSkill")}
-          </Button>
+          <AdminOnly>
+            {(gate) => (
+              <Button
+                kind="primary"
+                icon="Sparkles"
+                {...gate.controlProps}
+                disabled={accepted.length === 0}
+                onClick={gate.guard(() => setModalOpen(true))}
+              >
+                {t("page.createSkill")}
+              </Button>
+            )}
+          </AdminOnly>
         </div>
 
         <div style={s.list}>
@@ -133,7 +176,7 @@ export function ConventionsView() {
           ))}
         </div>
 
-        {modalOpen && activeRepo && (
+        {modalOpen && activeRepo && isAdmin && (
           <CreateSkillModal
             repoFullName={activeRepo.full_name}
             accepted={accepted}

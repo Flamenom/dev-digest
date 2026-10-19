@@ -9,7 +9,12 @@
      - JSON validity (AC-14) and the disabled Save,
      - the `must_find` hunk warnings (AC-13),
      - the empty-diff notice, the provenance state, the last-run strip.
-   The rules themselves live in `helpers.ts`, not in this body. */
+   The rules themselves live in `helpers.ts`, not in this body.
+
+   Multi-user (AC-30): an existing case is editable/deletable only by its
+   creator or an Admin (`canEditEvalCase`; a legacy case without a recorded
+   creator is Admin-only). Anyone else gets a read-only footer — Run stays
+   (eval runs are Member actions), Save / Run-on-save / Delete are not shown. */
 "use client";
 
 import React from "react";
@@ -26,7 +31,14 @@ import {
   TextInput,
   Toggle,
 } from "@devdigest/ui";
-import type { EvalCaseDraft, EvalCaseRecord, EvalRunResult } from "@devdigest/shared";
+import type {
+  EvalCaseDraft,
+  EvalCaseRecord,
+  EvalCaseRecordWithActor,
+  EvalRunResult,
+} from "@devdigest/shared";
+import { useCan } from "@/lib/permissions";
+import { ActorLabel } from "@/components/actor-label";
 import {
   useCreateEvalCase,
   useCreateEvalCaseFromFinding,
@@ -59,8 +71,8 @@ import {
 import { s } from "./styles";
 
 export interface CaseEditorFormProps {
-  /** The persisted case, or `null` for a brand-new one. */
-  record: EvalCaseRecord | null;
+  /** The persisted case, or `null` for a brand-new one. `created_by` drives AC-30. */
+  record: EvalCaseRecordWithActor | null;
   /**
    * Server-composed, UNSAVED draft (C24) when authoring from a finding. Mutually
    * exclusive with `record`: the container passes at most one.
@@ -93,6 +105,9 @@ export function CaseEditorForm({
   onSaved,
 }: CaseEditorFormProps) {
   const t = useTranslations("eval");
+  const { canEditEvalCase } = useCan();
+  // A new case is always the author's own; an existing one follows AC-30.
+  const editable = record == null || canEditEvalCase(record);
 
   // The owner, most authoritative first: a persisted case owns itself, a draft
   // carries the agent the finding's review ran under, and only a hand-authored
@@ -137,7 +152,7 @@ export function CaseEditorForm({
   const lastRun = record?.last_run ?? null;
 
   const saving = create.isPending || createFromFinding.isPending || update.isPending;
-  const canSave = parsed.ok && name.trim().length > 0 && !saving;
+  const canSave = editable && parsed.ok && name.trim().length > 0 && !saving;
 
   /** Drives the banner. An unparseable blob keeps the last known kind's frame
       rather than flipping the banner while the user is mid-edit. */
@@ -175,7 +190,7 @@ export function CaseEditorForm({
   const onSave = () => {
     // Save is disabled while either guard fails (AC-14); re-checked here so the
     // handler can narrow `parsed` and never posts an unvalidated blob.
-    if (!parsed.ok || name.trim().length === 0) return;
+    if (!editable || !parsed.ok || name.trim().length === 0) return;
     const draft = { name, diff, metaTitle, metaBody, expectedText };
     const done = (saved: EvalCaseRecord) => {
       onSaved?.(saved);
@@ -230,7 +245,7 @@ export function CaseEditorForm({
   };
 
   const onDelete = (force: boolean) => {
-    if (!record) return;
+    if (!record || !editable) return;
     remove.mutate(
       { caseId: record.id, agentId: ownerId, force },
       {
@@ -249,16 +264,23 @@ export function CaseEditorForm({
       <Button kind="tertiary" onClick={onClose}>
         {t("caseEditor.cancel")}
       </Button>
-      {record && (
+      {record && editable && (
         <Button kind="danger" icon="Trash" onClick={() => onDelete(false)}>
           {t("caseEditor.delete")}
         </Button>
       )}
+      {record && record.created_by !== undefined && (
+        <ActorLabel actor={record.created_by} verb="created" style={s.createdBy} />
+      )}
       <div style={s.footerSpacer} />
-      <label style={s.runOnSave}>
-        <Toggle on={runOnSave} onChange={setRunOnSave} size={14} />
-        {t("caseEditor.runOnSave")}
-      </label>
+      {editable ? (
+        <label style={s.runOnSave}>
+          <Toggle on={runOnSave} onChange={setRunOnSave} size={14} />
+          {t("caseEditor.runOnSave")}
+        </label>
+      ) : (
+        <span style={s.readOnlyNotice}>{t("caseEditor.readOnlyNotice")}</span>
+      )}
       <Button
         kind="secondary"
         icon="Play"
@@ -268,9 +290,11 @@ export function CaseEditorForm({
       >
         {running ? t("caseEditor.running") : t("caseEditor.runCase")}
       </Button>
-      <Button kind="primary" icon="Check" disabled={!canSave} loading={saving} onClick={onSave}>
-        {saving ? t("caseEditor.saving") : t("caseEditor.save")}
-      </Button>
+      {editable && (
+        <Button kind="primary" icon="Check" disabled={!canSave} loading={saving} onClick={onSave}>
+          {saving ? t("caseEditor.saving") : t("caseEditor.save")}
+        </Button>
+      )}
     </div>
   );
   return (
@@ -476,7 +500,7 @@ export function CaseEditorForm({
               <Button kind="tertiary" onClick={() => setPendingRunCount(null)}>
                 {t("caseEditor.cancel")}
               </Button>
-              <Button kind="danger" icon="Trash" onClick={() => onDelete(true)}>
+              <Button kind="danger" icon="Trash" onClick={() => onDelete(true)} disabled={!editable}>
                 {t("caseEditor.delete")}
               </Button>
             </div>

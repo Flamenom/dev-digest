@@ -14,6 +14,13 @@ export const s = {
   } satisfies CSSProperties,
   filterBox: { marginLeft: "auto", width: 220 } satisfies CSSProperties,
   caption: { fontSize: 13, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.5 } satisfies CSSProperties,
+  /** Member view: why the list is read-only. */
+  readOnlyNotice: {
+    fontSize: 13,
+    color: "var(--text-secondary)",
+    marginTop: -8,
+    marginBottom: 16,
+  } satisfies CSSProperties,
   list: { listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 } satisfies CSSProperties,
   row: {
     display: "flex",

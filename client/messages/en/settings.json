@@ -20,7 +20,9 @@
     "testing": "Testing…",
     "testFailed": "Test failed",
     "configured": "Configured",
-    "notSet": "Not set"
+    "notSet": "Not set",
+    "needsReentry": "Needs re-entry",
+    "readOnlyBody": "Status of the provider keys configured for this workspace."
   },
   "models": {
     "title": "Feature Models",
@@ -28,7 +30,8 @@
     "usingDefault": "default",
     "search": "Search models…",
     "liveNote": "Prices are pulled live from OpenRouter — USD per 1M input/output tokens.",
-    "noKeyNote": "Add an OpenRouter API key under API Keys to load the model list and prices."
+    "noKeyNote": "Add an OpenRouter API key under API Keys to load the model list and prices.",
+    "readOnlyValueLabel": "{label} model"
   },
   "workspace": {
     "title": "Workspace",
@@ -123,5 +126,70 @@
     "exportFailed": "Export failed",
     "importSuccess": "Imported {agents} agents, {skills} skills",
     "importFailed": "Import failed — check the bundle JSON"
+  },
+  "members": {
+    "navLabel": "Members",
+    "title": "Members",
+    "body": "Everyone who has signed in to this workspace. Members appear on their first sign-in.",
+    "noAdmin": "No admin — set the admin allowlist and sign in",
+    "you": "you",
+    "colMember": "Member",
+    "colRole": "Role",
+    "colStatus": "Status",
+    "colJoined": "Joined",
+    "colLastSignIn": "Last sign-in",
+    "colActions": "Actions",
+    "statusActive": "Active",
+    "statusDeactivated": "Deactivated",
+    "never": "Never",
+    "roleFor": "Role for {name}",
+    "deactivate": "Deactivate",
+    "reactivate": "Reactivate",
+    "deactivateLabel": "Deactivate {name}",
+    "reactivateLabel": "Reactivate {name}",
+    "loading": "Loading members…",
+    "loadFailed": "Could not load the member list.",
+    "empty": "No members yet.",
+    "errors": {
+      "last_admin": "This change would leave the workspace without an active Admin.",
+      "generic": "Could not update the member. Try again."
+    }
+  },
+  "apiTokens": {
+    "navLabel": "API tokens",
+    "title": "API tokens",
+    "body": "Personal tokens for the DevDigest MCP server. A token acts as you, with your current role.",
+    "nameLabel": "Token name",
+    "namePlaceholder": "e.g. Laptop MCP",
+    "expiryLabel": "Expires in (days)",
+    "expiryHint": "1–365 days. Default 90.",
+    "create": "Create token",
+    "creating": "Creating…",
+    "nameInvalid": "Enter a name of 1–64 characters.",
+    "expiryInvalid": "Enter a whole number of days from 1 to 365.",
+    "createdTitle": "Copy your new token now",
+    "createdBody": "This is the only time the token is shown. Store it somewhere safe — it can’t be retrieved later.",
+    "tokenValueLabel": "New API token value",
+    "copy": "Copy",
+    "copied": "Copied",
+    "done": "Done",
+    "listTitle": "Your tokens",
+    "colName": "Name",
+    "colPrefix": "Prefix",
+    "colCreated": "Created",
+    "colLastUsed": "Last used",
+    "colExpires": "Expires",
+    "colActions": "Actions",
+    "never": "Never",
+    "revoke": "Revoke",
+    "revokeLabel": "Revoke token {name}",
+    "empty": "No API tokens yet.",
+    "loading": "Loading tokens…",
+    "loadFailed": "Could not load your tokens.",
+    "errors": {
+      "token_limit": "You already have 10 active tokens. Revoke one before creating another.",
+      "create": "Could not create the token. Try again.",
+      "revoke": "Could not revoke the token. Try again."
+    }
   }
 }

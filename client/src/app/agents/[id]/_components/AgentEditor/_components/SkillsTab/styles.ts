@@ -6,6 +6,8 @@ export const s = {
   header: { display: "flex", alignItems: "center", gap: 12, marginBottom: 8 } satisfies CSSProperties,
   h2: { fontSize: 18, fontWeight: 700 } satisfies CSSProperties,
   filterBox: { marginLeft: "auto", width: 220 } satisfies CSSProperties,
+  /** Visible "Admins only" note above the read-only list (Member). */
+  readOnlyHint: { fontSize: 12, color: "var(--text-muted)", marginBottom: 8 } satisfies CSSProperties,
   caption: { fontSize: 13, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.5 } satisfies CSSProperties,
   list: { listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 } satisfies CSSProperties,
   row: {

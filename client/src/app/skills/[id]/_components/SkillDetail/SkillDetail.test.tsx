@@ -3,6 +3,17 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import type { Skill } from "@devdigest/shared";
 import messages from "../../../../../../messages/en/skills.json";
+import authMessages from "../../../../../../messages/en/auth.json";
+
+// Multi-user gating: drive the session-derived role directly ("admin" =
+// today's behaviour, also what local mode resolves to).
+const perm = vi.hoisted(() => ({ role: "admin" as "admin" | "member" }));
+vi.mock("@/lib/permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/permissions")>();
+  const current = () =>
+    actual.buildPermissions({ mode: "google", role: perm.role, userId: "u1", isPending: false });
+  return { ...actual, useCan: current, useIsAdmin: () => current().isAdmin };
+});
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
@@ -56,7 +67,7 @@ const SKILL: Skill = {
 
 function renderDetail(tab = "config") {
   return render(
-    <NextIntlClientProvider locale="en" messages={{ skills: messages }}>
+    <NextIntlClientProvider locale="en" messages={{ skills: messages, auth: authMessages }}>
       <SkillDetail skill={SKILL} tab={tab} onTab={() => {}} />
     </NextIntlClientProvider>,
   );
@@ -109,5 +120,52 @@ describe("SkillDetail Config tab", () => {
     const [vars] = updateMutate.mock.calls[0]!;
     expect(vars.patch).not.toHaveProperty("note");
     expect(vars.patch.name).toBe("branch-coverage-rubric-v2");
+  });
+});
+
+describe("SkillDetail gating + attribution (AC-33, AC-47/48)", () => {
+  afterEach(() => {
+    perm.role = "admin";
+  });
+
+  it("Member: Save is aria-disabled with an 'Admins only' hint and does nothing; Delete is hidden", () => {
+    perm.role = "member";
+    renderDetail();
+
+    const save = screen.getByRole("button", { name: /^Save$/ });
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).toHaveAccessibleDescription("Admins only");
+    fireEvent.change(screen.getByLabelText("Skill body"), { target: { value: "changed" } });
+    fireEvent.click(save);
+    expect(updateMutate).not.toHaveBeenCalled();
+    expect(screen.queryByPlaceholderText("e.g. Tightened the boundary-value checklist")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Delete/ })).not.toBeInTheDocument();
+  });
+
+  it("Admin: Save enabled, Delete shown; header names the last updater when the server sends it", () => {
+    render(
+      <NextIntlClientProvider locale="en" messages={{ skills: messages, auth: authMessages }}>
+        <SkillDetail
+          skill={{ ...SKILL, updated_by: { user_id: "u2", name: "Ann" } }}
+          tab="config"
+          onTab={() => {}}
+        />
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByRole("button", { name: /^Save$/ })).not.toHaveAttribute("aria-disabled");
+    expect(screen.getByRole("button", { name: /Delete/ })).toBeInTheDocument();
+    expect(screen.getByText(/Ann/)).toBeInTheDocument();
+
+    // Legacy row (null actor) → "—"; field absent (old server) → no label at all.
+    cleanup();
+    render(
+      <NextIntlClientProvider locale="en" messages={{ skills: messages, auth: authMessages }}>
+        <SkillDetail skill={{ ...SKILL, updated_by: null }} tab="config" onTab={() => {}} />
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByText("—")).toBeInTheDocument();
+    cleanup();
+    renderDetail();
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
   });
 });

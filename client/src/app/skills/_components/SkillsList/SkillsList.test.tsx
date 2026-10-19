@@ -3,6 +3,17 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import type { Skill } from "@devdigest/shared";
 import messages from "../../../../../messages/en/skills.json";
+import authMessages from "../../../../../messages/en/auth.json";
+
+// Multi-user gating: drive the session-derived role directly ("admin" =
+// today's behaviour, also what local mode resolves to).
+const perm = vi.hoisted(() => ({ role: "admin" as "admin" | "member" }));
+vi.mock("@/lib/permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/permissions")>();
+  const current = () =>
+    actual.buildPermissions({ mode: "google", role: perm.role, userId: "u1", isPending: false });
+  return { ...actual, useCan: current, useIsAdmin: () => current().isAdmin };
+});
 
 const push = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -53,7 +64,7 @@ afterEach(cleanup);
 
 function renderList() {
   return render(
-    <NextIntlClientProvider locale="en" messages={{ skills: messages }}>
+    <NextIntlClientProvider locale="en" messages={{ skills: messages, auth: authMessages }}>
       <SkillsList />
     </NextIntlClientProvider>,
   );
@@ -87,5 +98,35 @@ describe("SkillsList", () => {
     fireEvent.change(input, { target: { value: "rubric" } });
     expect(screen.getByText("branch-coverage-rubric")).toBeInTheDocument();
     expect(screen.queryByText("mock-overuse-gate")).not.toBeInTheDocument();
+  });
+});
+
+describe("SkillsList gating (AC-33)", () => {
+  afterEach(() => {
+    perm.role = "admin";
+  });
+
+  it("Member: Add Skill is aria-disabled with an 'Admins only' hint, opens no menu, and the enabled toggles are gone", () => {
+    perm.role = "member";
+    renderList();
+
+    const add = screen.getByRole("button", { name: /Add Skill/i });
+    expect(add).toHaveAttribute("aria-disabled", "true");
+    expect(add).toHaveAccessibleDescription("Admins only");
+    fireEvent.click(add);
+    expect(screen.queryByText("Create manually")).not.toBeInTheDocument();
+    expect(push).not.toHaveBeenCalledWith("/skills/new");
+
+    expect(screen.queryAllByRole("switch")).toHaveLength(0);
+    // The list itself stays readable.
+    expect(screen.getByText("branch-coverage-rubric")).toBeInTheDocument();
+  });
+
+  it("Admin: Add Skill is enabled with no hint and the toggles are shown", () => {
+    renderList();
+    const add = screen.getByRole("button", { name: /Add Skill/i });
+    expect(add).not.toHaveAttribute("aria-disabled");
+    expect(screen.queryByText("Admins only")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("switch")).toHaveLength(2);
   });
 });

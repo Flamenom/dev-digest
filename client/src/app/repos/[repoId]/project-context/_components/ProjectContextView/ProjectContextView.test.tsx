@@ -3,6 +3,17 @@ import { render, screen, cleanup, fireEvent, within } from "@testing-library/rea
 import { NextIntlClientProvider } from "next-intl";
 import type { DiscoveredDocument, DiscoverySummary, DocumentContent } from "@devdigest/shared";
 import messages from "../../../../../../../messages/en/projectContext.json";
+import authMessages from "../../../../../../../messages/en/auth.json";
+
+// Multi-user gating: drive the session-derived role directly ("admin" =
+// today's behaviour, also what local mode resolves to).
+const perm = vi.hoisted(() => ({ role: "admin" as "admin" | "member" }));
+vi.mock("@/lib/permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/permissions")>();
+  const current = () =>
+    actual.buildPermissions({ mode: "google", role: perm.role, userId: "u1", isPending: false });
+  return { ...actual, useCan: current, useIsAdmin: () => current().isAdmin };
+});
 
 vi.mock("@/components/app-shell", () => ({
   AppShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -65,7 +76,7 @@ const SUMMARY: DiscoverySummary = {
 
 function renderView() {
   render(
-    <NextIntlClientProvider locale="en" messages={{ projectContext: messages }}>
+    <NextIntlClientProvider locale="en" messages={{ projectContext: messages, auth: authMessages }}>
       <ProjectContextView repoId="r1" />
     </NextIntlClientProvider>,
   );
@@ -197,5 +208,50 @@ describe("ProjectContextView", () => {
       path: "docs/adr/one.md",
       text: "# ADR One (edited)",
     });
+  });
+});
+
+describe("ProjectContextView gating (AC-33)", () => {
+  afterEach(() => {
+    perm.role = "admin";
+  });
+
+  it("Member: read-only Preview — Edit is aria-disabled with an 'Admins only' hint and never opens the editor", () => {
+    perm.role = "member";
+    queryState = {
+      data: { documents: DOCUMENTS, summary: SUMMARY },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    };
+    docState = {
+      data: { path: "specs/2026-06/project-context.md", text: "# Spec" },
+      isLoading: false,
+      isError: false,
+    };
+    renderView();
+
+    const pane = screen.getByRole("region", { name: "specs/2026-06/project-context.md" });
+    const edit = within(pane).getByRole("button", { name: "Edit" });
+    expect(edit).toHaveAttribute("aria-disabled", "true");
+    expect(edit).toHaveAccessibleDescription("Admins only");
+    fireEvent.click(edit);
+    expect(edit).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByLabelText("Raw markdown")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Spec" })).toBeInTheDocument();
+  });
+
+  it("Admin: Edit is enabled with no hint", () => {
+    queryState = {
+      data: { documents: DOCUMENTS, summary: SUMMARY },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    };
+    docState = { data: { path: "specs/2026-06/project-context.md", text: "# Spec" }, isLoading: false, isError: false };
+    renderView();
+    expect(screen.getByRole("button", { name: "Edit" })).not.toHaveAttribute("aria-disabled");
+    expect(screen.queryByText("Admins only")).not.toBeInTheDocument();
   });
 });

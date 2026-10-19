@@ -4,6 +4,17 @@ import { NextIntlClientProvider } from "next-intl";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { DiscoveredDocument, DiscoverySummary, Repo, Skill } from "@devdigest/shared";
 import messages from "../../../../../../../../messages/en/skills.json";
+import authMessages from "../../../../../../../../messages/en/auth.json";
+
+// Multi-user gating: drive the session-derived role directly ("admin" =
+// today's behaviour, also what local mode resolves to).
+const perm = vi.hoisted(() => ({ role: "admin" as "admin" | "member" }));
+vi.mock("@/lib/permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/permissions")>();
+  const current = () =>
+    actual.buildPermissions({ mode: "google", role: perm.role, userId: "u1", isPending: false });
+  return { ...actual, useCan: current, useIsAdmin: () => current().isAdmin };
+});
 
 // ContextTab talks to the API through lib/api only — mock it wholesale.
 vi.mock("@/lib/api", () => ({
@@ -72,7 +83,7 @@ function renderTab(skill: Skill = SKILL) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <NextIntlClientProvider locale="en" messages={{ skills: messages }}>
+      <NextIntlClientProvider locale="en" messages={{ skills: messages, auth: authMessages }}>
         <ContextTab skill={skill} />
       </NextIntlClientProvider>
     </QueryClientProvider>,
@@ -166,5 +177,23 @@ describe("ContextTab", () => {
       "true",
     );
     expect(api.put).not.toHaveBeenCalled();
+  });
+});
+
+describe("ContextTab gating (AC-33)", () => {
+  afterEach(() => {
+    perm.role = "admin";
+  });
+
+  it("Member: the list is read-only — notice shown, toggling sends no PUT, no move buttons; Preview still works", async () => {
+    perm.role = "member";
+    renderTab();
+    const rows = await screen.findAllByRole("listitem");
+    expect(screen.getByText("Only admins can change attached documents.")).toBeInTheDocument();
+
+    fireEvent.click(within(rowFor(rows, "perf.md")).getByRole("checkbox"));
+    expect(api.put).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Move auth.md up" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Preview auth.md" })).toBeInTheDocument();
   });
 });

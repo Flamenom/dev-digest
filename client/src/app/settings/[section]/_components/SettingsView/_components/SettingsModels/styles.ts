@@ -22,5 +22,17 @@ export const s = {
     color: "var(--text-muted)",
     lineHeight: 1.5,
   } satisfies CSSProperties,
+  /** Member view: the current model in an inert, input-like box. */
+  readOnlyValue: {
+    padding: "10px 12px",
+    borderRadius: 7,
+    border: "1px solid var(--border-strong)",
+    background: "var(--bg-elevated)",
+    fontSize: 14,
+    color: "var(--text-secondary)",
+    opacity: 0.75,
+    cursor: "not-allowed",
+  } satisfies CSSProperties,
+  readOnlyHint: { fontSize: 12, color: "var(--text-muted)", marginBottom: 16 } satisfies CSSProperties,
   noteIcon: { flexShrink: 0, marginTop: 1 } satisfies CSSProperties,
 } as const;

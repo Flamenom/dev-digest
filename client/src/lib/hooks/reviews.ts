@@ -192,7 +192,9 @@ export function useRunEvents(runIds: string[]) {
     let open = ids.length;
 
     for (const runId of ids) {
-      const es = new EventSource(`${API_BASE}/runs/${runId}/events`);
+      const es = new EventSource(`${API_BASE}/runs/${runId}/events`, {
+        withCredentials: true, // session cookie (AC-54); SSE is GET-only, no CSRF header
+      });
       const onMsg = (ev: MessageEvent) => {
         try {
           const parsed = JSON.parse(ev.data) as RunEvent;

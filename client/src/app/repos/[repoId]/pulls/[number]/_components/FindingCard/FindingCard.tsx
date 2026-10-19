@@ -7,7 +7,12 @@
    props (`evalCaseLink` / `onOpenEvalCase`) — FindingsPanel owns the query and
    the editor modal, the same way it owns `useFindingAction` (§7). Clicking
    creates nothing: the case is written by the editor's Save, which is why the
-   created state can only come from the loaded R2 payload. */
+   created state can only come from the loaded R2 payload.
+
+   Attribution (AC-46/AC-48): when the payload carries `acted_by`, the latest
+   judgement reads "Accepted by / Dismissed by <name>" ("Local user" for the
+   seeded user, "—" when unknown). Accept/Dismiss and "Turn into eval case"
+   stay enabled for every role (UI gating table). */
 "use client";
 
 import React from "react";
@@ -23,9 +28,10 @@ import {
   type Severity,
   type Category,
 } from "@devdigest/ui";
-import type { EvalCaseLink, FindingRecord, FindingActionKind } from "@devdigest/shared";
+import type { EvalCaseLink, FindingRecordWithActor, FindingActionKind } from "@devdigest/shared";
+import { ActorLabel } from "@/components/actor-label";
 import { SEV_COLOR, SEV_COLOR_FALLBACK } from "./constants";
-import { fileHrefFor, lineLabel } from "./helpers";
+import { fileHrefFor, latestJudgement, lineLabel } from "./helpers";
 import { useFindingHost } from "./host-context";
 import { ReadOnlyActions } from "./_components/ReadOnlyActions";
 import { s } from "./styles";
@@ -41,7 +47,8 @@ export function FindingCard({
   evalCaseLink,
   onOpenEvalCase,
 }: {
-  f: FindingRecord;
+  /** `acted_by` (optional) names who made the latest accept/dismiss (AC-46). */
+  f: FindingRecordWithActor;
   focused?: boolean;
   defaultExpanded?: boolean;
   onAction?: (action: FindingActionKind, reply?: string) => void;
@@ -67,6 +74,7 @@ export function FindingCard({
   // A case records a judgement, so an unjudged finding cannot become one
   // (the server independently answers 409 `finding_not_judged`) — AC-7.
   const judged = accepted || dismissed;
+  const judgement = latestJudgement(f);
 
   return (
     <div data-finding-id={f.id} style={s.card(!!focused, sevColor, muted)}>
@@ -86,6 +94,9 @@ export function FindingCard({
               {f.file}:{lineLabel(f)}
             </MonoLink>
             <ConfidenceNum value={f.confidence} />
+            {judgement && f.acted_by !== undefined && (
+              <ActorLabel actor={f.acted_by} verb={judgement} style={s.actorLabel} />
+            )}
           </div>
         </div>
         <Icon.ChevronDown size={16} style={s.chevron(expanded)} />

@@ -1,9 +1,23 @@
 /* api.ts — typed fetch client for the F1 Fastify engine (localhost:3001).
    All hooks build on `apiFetch`. Errors are normalized to ApiError so the
-   error-UX taxonomy (toast/inline/full-screen) can branch on status. */
+   error-UX taxonomy (toast/inline/full-screen) can branch on status.
 
+   Multi-user server mode: every request is credentialed (the session cookie
+   travels same-site) and every state-changing request carries the fixed CSRF
+   header (AC-50). Both are inert in local mode — the API ignores them. */
+
+import { CSRF_HEADER } from "@devdigest/shared";
+
+/** API origin. Dev default `http://localhost:3001`; the production build sets `/api`. */
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:3001";
+
+/** Methods that never change state — no CSRF header needed. */
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+function isStateChanging(method: string | undefined): boolean {
+  return !SAFE_METHODS.has((method ?? "GET").toUpperCase());
+}
 
 export class ApiError extends Error {
   status: number;
@@ -23,6 +37,9 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   try {
     res = await fetch(`${API_BASE}${path}`, {
       ...init,
+      // Send the session cookie (google mode). Same-site deployment, so this
+      // never leaks it to a third party.
+      credentials: "include",
       headers: {
         // Only declare a JSON body when one is actually sent — otherwise a
         // body-less POST/PUT (e.g. tour generate, refresh, reindex) trips
@@ -33,6 +50,8 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
           ? { "content-type": "application/json" }
           : {}),
         ...(init?.headers ?? {}),
+        // Last, so a caller's headers can't drop it on a mutation.
+        ...(isStateChanging(init?.method) ? { [CSRF_HEADER]: "1" } : {}),
       },
     });
   } catch (e) {

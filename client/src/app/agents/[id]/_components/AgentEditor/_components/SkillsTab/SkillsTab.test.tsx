@@ -4,16 +4,40 @@ import { NextIntlClientProvider } from "next-intl";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, AgentSkillLink, Skill } from "@devdigest/shared";
 import messages from "../../../../../../../../messages/en/agents.json";
+import authMessages from "../../../../../../../../messages/en/auth.json";
 
 // SkillsTab talks to the API through lib/api only — mock it wholesale.
 vi.mock("@/lib/api", () => ({
   api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn() },
 }));
 
+/* Multi-user gating reads the session probe: mocked as the local-mode Admin
+   (every control enabled, as before); a test may flip `session` to a Member. */
+const session = vi.hoisted(() => ({
+  mode: "local" as "local" | "google",
+  role: "admin" as "admin" | "member",
+  userId: "u-admin",
+}));
+vi.mock("@/lib/hooks/session", () => ({
+  SESSION_QUERY_KEY: ["session"],
+  useSession: () => ({
+    data: {
+      mode: session.mode,
+      user: { id: session.userId, email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: session.role },
+      workspace: { id: "w1", name: "Team" },
+    },
+    isPending: false,
+  }),
+}));
+
 import { api } from "@/lib/api";
 import { SkillsTab } from "./SkillsTab";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  session.mode = "local";
+  session.role = "admin";
+});
 
 const AGENT: Agent = {
   id: "ag1",
@@ -75,7 +99,7 @@ function renderTab() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <NextIntlClientProvider locale="en" messages={{ agents: messages }}>
+      <NextIntlClientProvider locale="en" messages={{ auth: authMessages, agents: messages }}>
         <SkillsTab agent={AGENT} />
       </NextIntlClientProvider>
     </QueryClientProvider>,
@@ -132,5 +156,23 @@ describe("SkillsTab", () => {
     const deltaRow = rows.find((r) => within(r).queryByText("delta-skill"))!;
     expect(deltaRow).toHaveStyle({ opacity: "0.55" });
     expect(within(deltaRow).getByText("disabled")).toBeInTheDocument();
+  });
+});
+
+/* AC-33: attaching skills is Admin-only — a Member sees the linked set read-only
+   with the visible "Admins only" hint, and toggling posts nothing. */
+describe("SkillsTab — role gating (AC-33)", () => {
+  it("Member: read-only list with the 'Admins only' hint; clicking a checkbox posts nothing", async () => {
+    session.mode = "google";
+    session.role = "member";
+    renderTab();
+    const rows = await screen.findAllByRole("listitem");
+    expect(rowNames(rows)).toEqual(["gamma-skill", "alpha-skill", "beta-skill", "delta-skill"]);
+    expect(screen.getByText("Admins only")).toBeVisible();
+
+    const betaRow = rows.find((r) => within(r).queryByText("beta-skill"))!;
+    fireEvent.click(within(betaRow).getByRole("checkbox"));
+    expect(api.post).not.toHaveBeenCalled();
+    expect(rows[0]).toHaveAttribute("draggable", "false");
   });
 });

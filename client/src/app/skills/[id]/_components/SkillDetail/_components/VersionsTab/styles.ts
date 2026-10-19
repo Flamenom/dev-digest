@@ -19,6 +19,7 @@ export const s = {
     overflow: "hidden",
     textOverflow: "ellipsis",
   } satisfies CSSProperties,
+  author: { fontSize: 12, color: "var(--text-secondary)", flexShrink: 0 } satisfies CSSProperties,
   date: { fontSize: 12, color: "var(--text-muted)", flexShrink: 0 } satisfies CSSProperties,
   empty: { fontSize: 13, color: "var(--text-muted)", padding: 16 } satisfies CSSProperties,
   diffBody: { padding: "14px 0", overflow: "auto" } satisfies CSSProperties,

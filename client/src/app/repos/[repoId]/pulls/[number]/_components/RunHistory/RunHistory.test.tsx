@@ -8,12 +8,14 @@ import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import type { RunSummary } from "@devdigest/shared";
+import type { RunSummaryWithActor } from "@devdigest/shared";
 import messages from "../../../../../../../../messages/en/prReview.json";
+import authMessages from "../../../../../../../../messages/en/auth.json";
 import { RunHistory } from "./RunHistory";
 
 afterEach(cleanup);
 
-function run(o: Partial<RunSummary>): RunSummary {
+function run(o: Partial<RunSummaryWithActor>): RunSummaryWithActor {
   return {
     run_id: "run-1",
     agent_id: "a1",
@@ -80,5 +82,26 @@ describe("RunHistory — outcome badge", () => {
   it("a running run reads 'running'", () => {
     renderRuns([run({ status: "running", score: null, blockers: null })]);
     expect(screen.getByText("running")).toBeInTheDocument();
+  });
+});
+
+describe("RunHistory — initiator label (AC-45, AC-48)", () => {
+  it("shows 'Run by <name>', 'Run by Local user' for the seeded user and '—' when unknown", () => {
+    const runs: RunSummaryWithActor[] = [
+      run({ run_id: "a", ran_at: "2026-06-11T18:44:34.000Z", started_by: { user_id: "uA", name: "Alice" } }),
+      run({ run_id: "b", ran_at: "2026-06-11T17:44:34.000Z", started_by: { user_id: "sys", name: "System", is_system: true } }),
+      run({ run_id: "c", ran_at: "2026-06-11T16:44:34.000Z", started_by: null }),
+      run({ run_id: "d", ran_at: "2026-06-11T15:44:34.000Z" }), // older server: no key → no label
+    ];
+    render(
+      <NextIntlClientProvider locale="en" messages={{ prReview: messages, auth: authMessages }}>
+        <RunHistory runs={runs} onOpenTrace={() => {}} />
+      </NextIntlClientProvider>,
+    );
+    expect(screen.getByText("Run by Alice")).toBeInTheDocument();
+    expect(screen.getByText("Run by Local user")).toBeInTheDocument();
+    // "—" also appears as a placeholder elsewhere in a row; the actor label keeps
+    // its full text in `title`, which identifies it.
+    expect(screen.getAllByTitle("—")).toHaveLength(1);
   });
 });

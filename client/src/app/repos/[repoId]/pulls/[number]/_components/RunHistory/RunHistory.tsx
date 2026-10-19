@@ -3,7 +3,8 @@
 import React from "react";
 import { useTranslations } from "next-intl";
 import { Badge, Icon, CircularScore, type IconName } from "@devdigest/ui";
-import type { RunSummary, PrCommit, FindingRecord } from "@devdigest/shared";
+import type { RunSummary, RunSummaryWithActor, PrCommit, FindingRecord } from "@devdigest/shared";
+import { ActorLabel } from "@/components/actor-label";
 import { RunCostBadge } from "../../../_components/RunCostBadge";
 import {
   FindingsHoverCard,
@@ -21,6 +22,12 @@ import {
  * run that found blockers reads "rejected" (red), never a green "done". Outcome
  * is derived from the denormalized blocker/finding counts on the run row, so it
  * matches the CI gate (deterministic) rather than the model's verdict.
+ *
+ * Multi-user attribution (AC-45/AC-48): a run carrying `started_by` shows
+ * "Run by <name>" ("Run by Local user" for the seeded user, "—" when the
+ * initiator is unknown). Gating is decided by the container (AC-33): it passes
+ * `onDelete` only to Admins, and `canCancelRun` limits the per-run Cancel to
+ * runs the current user may cancel (own runs for a Member, any for an Admin).
  */
 
 type Outcome = { key: string; color: string; bg: string; icon: IconName };
@@ -80,7 +87,7 @@ const commitRowStyle: React.CSSProperties = {
 };
 
 type TimelineItem =
-  | { kind: "run"; ts: number; run: RunSummary }
+  | { kind: "run"; ts: number; run: RunSummaryWithActor }
   | { kind: "commit"; ts: number; commit: PrCommit };
 
 /** Epoch ms for sorting; unparseable / missing timestamps sort last. */
@@ -97,8 +104,11 @@ export function RunHistory({
   onOpenTrace,
   onGoToReview,
   onDelete,
+  onCancel,
+  canCancelRun,
+  cancelPending = false,
 }: {
-  runs: RunSummary[];
+  runs: RunSummaryWithActor[];
   commits?: PrCommit[];
   /** run_id → the run's persisted findings, for the per-severity breakdown + hover card. */
   findingsByRun?: Map<string, FindingRecord[]>;
@@ -106,7 +116,13 @@ export function RunHistory({
   onOpenTrace: (runId: string) => void;
   /** Jump to this run's inline review accordion below (clicking the agent name). */
   onGoToReview?: (runId: string) => void;
+  /** Delete a settled run — pass it only when the user may (Admin-only). */
   onDelete?: (runId: string) => void;
+  /** Cancel a running run; shown per running row when `canCancelRun` allows it. */
+  onCancel?: (runId: string) => void;
+  /** Ownership rule for Cancel (`useCan().canCancelRun`). Absent → no per-run Cancel. */
+  canCancelRun?: (run: RunSummaryWithActor) => boolean;
+  cancelPending?: boolean;
 }) {
   const t = useTranslations("prReview");
   if (runs.length === 0 && commits.length === 0) return null;
@@ -190,6 +206,11 @@ export function RunHistory({
                   {r.provider}/{r.model}
                 </span>
               </div>
+              {r.started_by !== undefined && (
+                <div style={{ fontSize: 12, color: "var(--text-muted)", minWidth: 0 }}>
+                  <ActorLabel actor={r.started_by} verb="run" />
+                </div>
+              )}
               {r.status === "failed" && r.error && (
                 <div
                   style={{ fontSize: 12, color: "var(--crit)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
@@ -253,6 +274,18 @@ export function RunHistory({
             >
               <Icon.FileText size={13} />
             </button>
+            {onCancel && r.status === "running" && canCancelRun?.(r) && (
+              <button
+                type="button"
+                title={t("timeline.cancelRun")}
+                aria-label={t("timeline.cancelRun")}
+                disabled={cancelPending}
+                onClick={() => onCancel(r.run_id)}
+                style={iconBtnStyle}
+              >
+                <Icon.X size={13} />
+              </button>
+            )}
             {onDelete && r.status !== "running" && (
               <span
                 role="button"

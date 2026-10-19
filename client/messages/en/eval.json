@@ -117,6 +117,7 @@
     "sourceFinding": "Created from a judged finding.",
     "sourceFindingGone": "The source finding no longer exists — this case is kept as it was created.",
     "runOnSave": "Run on save",
+    "readOnlyNotice": "Only the case's creator or an admin can edit or delete it.",
     "lastRunPassed": "Last run passed",
     "lastRunFailed": "Last run failed",
     "resultSummary": "recall {recall}% · precision {precision}% · citation {citation}% · {duration}s",

@@ -19,6 +19,7 @@ import type { Agent, DiscoveredDocument } from "@devdigest/shared";
 import { useRepos } from "@/lib/hooks/core";
 import { useDocument, useProjectContext, useSetAgentDocs } from "@/lib/hooks/projectContext";
 import { rootDirOf } from "@/lib/root-dir";
+import { useCan } from "@/lib/permissions";
 import {
   attachedTokensOf,
   fileNameOf,
@@ -36,9 +37,15 @@ import { s } from "./styles";
     insights) injected into this agent's runs. Mirrors the SkillsTab membership
     model: every change PUTs the FULL ordered path set to
     PUT /agents/:id/attached-docs. Attach state is keyed by path, never by
-    visible row, so filtering can never change it (AC-12). */
+    visible row, so filtering can never change it (AC-12).
+    Attaching docs is Admin-only (AC-33): a Member sees the attached set, its
+    order and the previews read-only, with the "Admins only" hint. */
 export function ContextTab({ agent }: { agent: Agent }) {
   const t = useTranslations("agents");
+  const tAuth = useTranslations("auth");
+  const { isAdmin, isPending: sessionPending } = useCan();
+  // Inert until the session resolves (fail closed); the hint only once we know.
+  const readOnly = !isAdmin;
   const reposQ = useRepos();
   const repos = reposQ.data ?? [];
   // R-7 default: discover against the workspace's first repo unless the user picks another.
@@ -64,13 +71,14 @@ export function ContextTab({ agent }: { agent: Agent }) {
   const attachedTokens = attachedTokensOf(documents, attachedPaths);
 
   const persist = (paths: string[]) => {
-    if (setDocs.isPending) return;
+    if (readOnly || setDocs.isPending) return;
     setDocs.mutate({ paths });
   };
   const toggle = (path: string, on: boolean) => persist(togglePath(attachedPaths, path, on));
   const move = (path: string, delta: -1 | 1) => persist(moveBy(attachedPaths, path, delta));
 
   const startDrag = (e: React.DragEvent, path: string) => {
+    if (readOnly) return;
     // dataTransfer is absent in jsdom — guard every access.
     e.dataTransfer?.setData?.("text/plain", path);
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
@@ -168,6 +176,7 @@ export function ContextTab({ agent }: { agent: Agent }) {
         {" · "}
         {t("context.untrustedNote")}
       </p>
+      {readOnly && !sessionPending && <p style={s.readOnlyHint}>{tAuth("gate.adminsOnly")}</p>}
       <p style={s.caption}>{t("context.orderHint")}</p>
       {!cloneAvailable ? (
         <EmptyState
@@ -193,11 +202,11 @@ export function ContextTab({ agent }: { agent: Agent }) {
                 key={doc.path}
                 doc={doc}
                 attached={attached}
-                draggable={attached && !filtering && !setDocs.isPending}
+                draggable={!readOnly && attached && !filtering && !setDocs.isPending}
                 dragging={dragPath === doc.path}
-                canMoveUp={at > 0}
-                canMoveDown={at >= 0 && at < attachedPaths.length - 1}
-                onToggle={(on) => toggle(doc.path, on)}
+                canMoveUp={!readOnly && at > 0}
+                canMoveDown={!readOnly && at >= 0 && at < attachedPaths.length - 1}
+                onToggle={readOnly ? undefined : (on) => toggle(doc.path, on)}
                 onMoveUp={() => move(doc.path, -1)}
                 onMoveDown={() => move(doc.path, 1)}
                 onPreview={() => setPreviewPath(doc.path)}
@@ -214,7 +223,7 @@ export function ContextTab({ agent }: { agent: Agent }) {
           repoId={repoId}
           doc={previewDoc}
           attached={attachedPaths.includes(previewDoc.path)}
-          onToggle={(on) => toggle(previewDoc.path, on)}
+          onToggle={readOnly ? undefined : (on) => toggle(previewDoc.path, on)}
           onClose={() => setPreviewPath(null)}
         />
       )}
@@ -257,7 +266,8 @@ function DocRow({
   dragging: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
-  onToggle: (on: boolean) => void;
+  /** Absent = read-only (Member): the checkbox shows the state but does nothing. */
+  onToggle?: (on: boolean) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onPreview: () => void;
@@ -327,7 +337,8 @@ function PreviewDrawer({
   repoId: string;
   doc: DiscoveredDocument;
   attached: boolean;
-  onToggle: (on: boolean) => void;
+  /** Absent = read-only (Member). */
+  onToggle?: (on: boolean) => void;
   onClose: () => void;
 }) {
   const t = useTranslations("agents");

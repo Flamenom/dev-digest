@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import type { EvalCaseLink, FindingRecord } from "@devdigest/shared";
 import messages from "../../../../../../../../messages/en/prReview.json";
+import authMessages from "../../../../../../../../messages/en/auth.json";
 import { FindingCard } from "./FindingCard";
 import prHost from "../../../../../../../../messages/en/prHost.json";
 import { FindingHostProvider } from "./host-context";
@@ -193,5 +194,43 @@ describe("FindingCard on a host", () => {
     );
     expect(screen.queryByRole("button", { name: "Copy finding" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Post comment" })).not.toBeInTheDocument();
+  });
+});
+
+describe("FindingCard — judgement attribution (AC-46, AC-48)", () => {
+  function renderCard(f: React.ComponentProps<typeof FindingCard>["f"]) {
+    return render(
+      <NextIntlClientProvider locale="en" messages={{ prReview: messages, auth: authMessages }}>
+        <FindingCard f={f} onAction={() => {}} />
+      </NextIntlClientProvider>,
+    );
+  }
+
+  it("shows who made the latest judgement: 'Dismissed by B' after A accepted, 'Local user' / '—' for legacy actors", () => {
+    renderCard({
+      ...FINDING,
+      accepted_at: "2026-06-11T10:00:00.000Z",
+      dismissed_at: "2026-06-11T11:00:00.000Z",
+      acted_by: { user_id: "uB", name: "B" },
+    });
+    expect(screen.getByText("Dismissed by B")).toBeInTheDocument();
+    expect(screen.queryByText(/Accepted by/)).not.toBeInTheDocument();
+    cleanup();
+
+    renderCard({
+      ...FINDING,
+      accepted_at: "2026-06-11T10:00:00.000Z",
+      acted_by: { user_id: "sys", name: "System", is_system: true },
+    });
+    expect(screen.getByText("Accepted by Local user")).toBeInTheDocument();
+    cleanup();
+
+    renderCard({ ...FINDING, dismissed_at: "2026-06-11T10:00:00.000Z", acted_by: null });
+    expect(screen.getByTitle("—")).toBeInTheDocument();
+    cleanup();
+
+    // Unjudged finding: no attribution even if the payload carries the key.
+    renderCard({ ...FINDING, acted_by: null });
+    expect(screen.queryByTitle("—")).not.toBeInTheDocument();
   });
 });

@@ -5,7 +5,10 @@
    markdown with Save via useSaveDocument. Save success/failure is announced
    through an aria-live region, and the resync-clobber warning is shown for
    every doc (no cheap tracked-file detection exists — AC-34). The parent keys
-   this component by path so Preview/Edit + draft state reset per document. */
+   this component by path so Preview/Edit + draft state reset per document.
+   Multi-user (AC-33): editing is Admin-only — a Member gets the read-only
+   Preview with the Edit toggle aria-disabled + "Admins only"; the edit body
+   and Save are never reachable. Local mode resolves to Admin (unchanged). */
 "use client";
 
 import React from "react";
@@ -13,6 +16,8 @@ import { useTranslations } from "next-intl";
 import { Button, Icon, Markdown, Skeleton, Textarea } from "@devdigest/ui";
 import type { DiscoveredDocument } from "@devdigest/shared";
 import { useDocument, useSaveDocument } from "@/lib/hooks/projectContext";
+import { useCan } from "@/lib/permissions";
+import { AdminOnly } from "@/components/admin-gate";
 import { splitPath } from "../../helpers";
 import { s } from "./styles";
 
@@ -20,7 +25,10 @@ export function DocumentPane({ repoId, doc }: { repoId: string; doc: DiscoveredD
   const t = useTranslations("projectContext");
   const docQ = useDocument(repoId, doc.path);
   const save = useSaveDocument(repoId);
-  const [mode, setMode] = React.useState<"preview" | "edit">("preview");
+  const { isAdmin } = useCan();
+  const [modeState, setMode] = React.useState<"preview" | "edit">("preview");
+  // Derived: a Member (or a session demoted mid-edit) is always in Preview.
+  const mode = isAdmin ? modeState : "preview";
   // Draft is null until the user types — the displayed text derives from the
   // fetched document until then (derive, don't store).
   const [draft, setDraft] = React.useState<string | null>(null);
@@ -67,16 +75,21 @@ export function DocumentPane({ repoId, doc }: { repoId: string; doc: DiscoveredD
           >
             {t("drawer.previewTab")}
           </Button>
-          <Button
-            kind="tertiary"
-            size="sm"
-            icon="Edit"
-            active={mode === "edit"}
-            aria-pressed={mode === "edit"}
-            onClick={() => setMode("edit")}
-          >
-            {t("drawer.editTab")}
-          </Button>
+          <AdminOnly>
+            {(gate) => (
+              <Button
+                kind="tertiary"
+                size="sm"
+                icon="Edit"
+                active={mode === "edit"}
+                aria-pressed={mode === "edit"}
+                {...gate.controlProps}
+                onClick={gate.guard(() => setMode("edit"))}
+              >
+                {t("drawer.editTab")}
+              </Button>
+            )}
+          </AdminOnly>
         </div>
         <span style={s.usedBy}>
           <Icon.Users size={13} />

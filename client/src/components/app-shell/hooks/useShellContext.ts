@@ -8,19 +8,33 @@ import { type ShellContext } from "@devdigest/ui";
 import { useTheme } from "../../../lib/theme";
 import { useActiveRepo } from "../../../lib/repo-context";
 import { usePulls, useDeleteRepo } from "../../../lib/hooks";
+import { useCan } from "../../../lib/permissions";
 import { activeKeyFor, toShellRepo } from "../helpers";
 
 interface ShellContextOptions {
   onOpenCommandPalette: () => void;
+  /** Top-bar identity slot (google mode only; undefined keeps today's shell). */
+  userMenu?: React.ReactNode;
 }
 
 /**
  * Assembles the `ShellContext` consumed by AppFrame: active nav key, the repo
  * list/active repo (mapped to the shell shape), theme, PR count, and the repo
  * selection / add / removal actions.
+ *
+ * Role gating (AC-33, UX only — the server enforces): a Member gets no
+ * "remove repo" action (hidden; also hidden until the session resolves, fail
+ * closed) and an inert "Add repository…" carrying the visible "Admins only"
+ * reason. Local mode resolves to Admin, so nothing changes there.
  */
-export function useShellContext({ onOpenCommandPalette }: ShellContextOptions): ShellContext {
+export function useShellContext({
+  onOpenCommandPalette,
+  userMenu,
+}: ShellContextOptions): ShellContext {
   const t = useTranslations("shell");
+  const tAuth = useTranslations("auth");
+  const { isAdmin, role } = useCan();
+  const isMember = role === "member";
   const pathname = usePathname() ?? "/";
   const router = useRouter();
   const { theme, toggle } = useTheme();
@@ -68,8 +82,10 @@ export function useShellContext({ onOpenCommandPalette }: ShellContextOptions): 
       onToggleTheme: toggle,
       onOpenCommandPalette,
       onSelectRepo,
-      onAddRepo,
-      onRemoveRepo,
+      onAddRepo: isMember ? undefined : onAddRepo,
+      onRemoveRepo: isAdmin ? onRemoveRepo : undefined,
+      addRepoDisabledReason: isMember ? tAuth("gate.adminsOnly") : undefined,
+      userMenu,
       // Sidebar badge = PRs that still NEED review, not the total PR count.
       // 0 → undefined so the badge hides entirely when nothing needs review.
       prCount: pulls?.filter((p) => p.status === "needs_review").length || undefined,
@@ -86,6 +102,10 @@ export function useShellContext({ onOpenCommandPalette }: ShellContextOptions): 
       onAddRepo,
       onRemoveRepo,
       pulls,
+      isAdmin,
+      isMember,
+      tAuth,
+      userMenu,
     ],
   );
 }

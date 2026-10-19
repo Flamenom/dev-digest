@@ -2,7 +2,10 @@
    (inline-editable), evidence snippet with `path:lines` and a host ↗ link
    to the evidence lines, confidence bar,
    Accept / Reject actions (FindingCard's accept/dismiss idiom: active state on
-   the buttons, 0.6-opacity muting for rejected cards). */
+   the buttons, 0.6-opacity muting for rejected cards).
+   Multi-user (AC-33): Accept / Reject are aria-disabled with one shared
+   "Admins only" hint for a Member, and the inline rule edit is not offered
+   (IconBtn cannot carry aria-disabled). Local mode resolves to Admin. */
 "use client";
 
 import React from "react";
@@ -11,6 +14,8 @@ import { Badge, Button, IconBtn, ProgressBar, TextInput } from "@devdigest/ui";
 import type { Convention } from "@devdigest/shared";
 import { hostLabelKey } from "@/lib/host-urls";
 import { useUpdateConvention } from "@/lib/hooks/conventions";
+import { useCan } from "@/lib/permissions";
+import { AdminOnly } from "@/components/admin-gate";
 import { CATEGORY_COLORS } from "../../constants";
 import { evidenceHostUrl, evidenceLabel, type EvidenceLinkRepo } from "../../helpers";
 import { SnippetBlock } from "../SnippetBlock";
@@ -28,6 +33,7 @@ export function ConventionCard({
 }) {
   const t = useTranslations("conventions");
   const update = useUpdateConvention(repoId);
+  const { isAdmin } = useCan();
   const [editing, setEditing] = React.useState(false);
   const [draftRule, setDraftRule] = React.useState(convention.rule);
 
@@ -57,7 +63,7 @@ export function ConventionCard({
       <div style={s.main}>
         <div style={s.titleRow}>
           <Badge color={CATEGORY_COLORS[convention.category]}>{convention.category}</Badge>
-          {editing ? (
+          {editing && isAdmin ? (
             <div style={s.editRow}>
               <TextInput value={draftRule} onChange={setDraftRule} />
               <Button kind="primary" size="sm" icon="Check" onClick={saveRule}>
@@ -77,7 +83,7 @@ export function ConventionCard({
           ) : (
             <>
               <span style={s.title(rejected)}>{convention.rule}</span>
-              <IconBtn icon="Edit" label={t("card.edit")} onClick={() => setEditing(true)} />
+              {isAdmin && <IconBtn icon="Edit" label={t("card.edit")} onClick={() => setEditing(true)} />}
             </>
           )}
         </div>
@@ -100,19 +106,34 @@ export function ConventionCard({
         </div>
       </div>
 
+      {/* One AdminOnly gate for both buttons: a single visible hint, both
+          controls described by it. */}
       <div style={s.actions}>
-        <Button
-          kind={accepted ? "primary" : "secondary"}
-          icon="Check"
-          active={accepted}
-          loading={update.isPending}
-          onClick={() => setStatus("accepted")}
-        >
-          {accepted ? t("card.accepted") : t("card.accept")}
-        </Button>
-        <Button kind="ghost" icon="X" active={rejected} onClick={() => setStatus("rejected")}>
-          {rejected ? t("card.rejected") : t("card.reject")}
-        </Button>
+        <AdminOnly>
+          {(gate) => (
+            <>
+              <Button
+                kind={accepted ? "primary" : "secondary"}
+                icon="Check"
+                active={accepted}
+                loading={update.isPending}
+                {...gate.controlProps}
+                onClick={gate.guard(() => setStatus("accepted"))}
+              >
+                {accepted ? t("card.accepted") : t("card.accept")}
+              </Button>
+              <Button
+                kind="ghost"
+                icon="X"
+                active={rejected}
+                {...gate.controlProps}
+                onClick={gate.guard(() => setStatus("rejected"))}
+              >
+                {rejected ? t("card.rejected") : t("card.reject")}
+              </Button>
+            </>
+          )}
+        </AdminOnly>
       </div>
     </div>
   );

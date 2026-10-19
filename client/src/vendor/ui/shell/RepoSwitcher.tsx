@@ -15,7 +15,11 @@ export function RepoSwitcher({ ctx }: { ctx: ShellContext }) {
         : {}),
     })),
     ...(ctx.repos && ctx.repos.length ? [{ divider: true }] : []),
-    { label: "Add repository…", icon: "Plus", muted: true, onClick: () => ctx.onAddRepo?.() },
+    ctx.addRepoDisabledReason
+      ? // Inert for this user: the visible reason is part of the item's
+        // accessible name, and picking it does nothing.
+        { label: "Add repository…", icon: "Plus", muted: true, hint: ctx.addRepoDisabledReason }
+      : { label: "Add repository…", icon: "Plus", muted: true, onClick: () => ctx.onAddRepo?.() },
   ];
   return (
     <Dropdown

@@ -43,8 +43,15 @@ import type {
   PullDetailOptions,
   PullDetailResult,
   PullStateInfo,
+  IdentityProvider,
+  AuthorizationUrlInput,
+  CodeExchangeInput,
+  CodeExchangeResult,
+  VerifyIdTokenInput,
+  VerifiedIdentity,
 } from '@devdigest/shared';
 import { parseUnifiedDiff } from './git/diff-parser.js';
+import { AuthFlowError } from '../platform/auth-errors.js';
 
 /**
  * Deterministic MOCK adapters for tests/dev — NO real network. Each mirrors the
@@ -537,4 +544,114 @@ export class MockSecretsProvider implements SecretsProvider {
   async get(key: SecretKey): Promise<string | undefined> {
     return this.secrets[key as string];
   }
+}
+
+// ---------- Mock identity provider (Google OIDC stand-in) ----------
+/**
+ * `idp_down` — `exchangeCode` throws `auth_idp_unavailable` (AC-15).
+ * `bad_token` — `verifyIdToken` throws `auth_token_invalid` (AC-8).
+ */
+export type MockIdpFailure = 'idp_down' | 'bad_token';
+
+export type MockIdpCall =
+  | { kind: 'authorizationUrl'; input: AuthorizationUrlInput }
+  | { kind: 'exchangeCode'; input: CodeExchangeInput }
+  | { kind: 'verifyIdToken'; input: VerifyIdTokenInput };
+
+export interface MockIdentityProviderOptions {
+  /** Default identity returned for any code without a scripted one. */
+  identity?: Partial<VerifiedIdentity>;
+  failure?: MockIdpFailure | null;
+  /**
+   * When true (default), `verifyIdToken` rejects a nonce that was never issued
+   * through `authorizationUrl` — mirrors Google echoing the request nonce.
+   * Set false to call the callback flow without a prior `authorizationUrl`.
+   */
+  enforceNonce?: boolean;
+}
+
+export const MOCK_IDP_AUTHORIZE_URL = 'https://idp.mock.invalid/authorize';
+const MOCK_ID_TOKEN_PREFIX = 'mock-id-token.';
+
+export const DEFAULT_MOCK_IDENTITY: VerifiedIdentity = {
+  subject: 'google-sub-1',
+  email: 'alice@onlytraf.com',
+  emailVerified: true,
+  hostedDomain: 'onlytraf.com',
+  name: 'Alice Example',
+  avatarUrl: null,
+};
+
+/**
+ * Scriptable, network-free `IdentityProvider`. The "ID token" returned by
+ * `exchangeCode` is `mock-id-token.<code>`; `verifyIdToken` maps it back to the
+ * identity scripted for that code (`scriptCode`) or the default identity.
+ * Every call is recorded in `calls`.
+ */
+export class MockIdentityProvider implements IdentityProvider {
+  readonly calls: MockIdpCall[] = [];
+  private identity: VerifiedIdentity;
+  private failure: MockIdpFailure | null;
+  private readonly enforceNonce: boolean;
+  private readonly byCode = new Map<string, VerifiedIdentity>();
+  private readonly issuedNonces = new Set<string>();
+
+  constructor(options: MockIdentityProviderOptions = {}) {
+    this.identity = { ...DEFAULT_MOCK_IDENTITY, ...options.identity };
+    this.failure = options.failure ?? null;
+    this.enforceNonce = options.enforceNonce ?? true;
+  }
+
+  /** Replace (merge into the default) the identity returned for unscripted codes. */
+  setIdentity(identity: Partial<VerifiedIdentity>): this {
+    this.identity = { ...DEFAULT_MOCK_IDENTITY, ...identity };
+    return this;
+  }
+
+  /** Script the identity returned for one authorization code. */
+  scriptCode(code: string, identity: Partial<VerifiedIdentity>): this {
+    this.byCode.set(code, { ...DEFAULT_MOCK_IDENTITY, ...identity });
+    return this;
+  }
+
+  /** Set (or clear with `null`) the failure mode. */
+  fail(mode: MockIdpFailure | null): this {
+    this.failure = mode;
+    return this;
+  }
+
+  callsOf<K extends MockIdpCall['kind']>(kind: K): Extract<MockIdpCall, { kind: K }>[] {
+    return this.calls.filter((c): c is Extract<MockIdpCall, { kind: K }> => c.kind === kind);
+  }
+
+  readonly authorizationUrl = (input: AuthorizationUrlInput): string => {
+    this.calls.push({ kind: 'authorizationUrl', input: { ...input } });
+    this.issuedNonces.add(input.nonce);
+    const url = new URL(MOCK_IDP_AUTHORIZE_URL);
+    url.searchParams.set('state', input.state);
+    url.searchParams.set('nonce', input.nonce);
+    url.searchParams.set('code_challenge', input.codeChallenge);
+    url.searchParams.set('code_challenge_method', 'S256');
+    return url.toString();
+  };
+
+  readonly exchangeCode = async (input: CodeExchangeInput): Promise<CodeExchangeResult> => {
+    this.calls.push({ kind: 'exchangeCode', input: { ...input } });
+    if (this.failure === 'idp_down') throw new AuthFlowError('auth_idp_unavailable');
+    return { idToken: MOCK_ID_TOKEN_PREFIX + input.code };
+  };
+
+  readonly verifyIdToken = async (input: VerifyIdTokenInput): Promise<VerifiedIdentity> => {
+    this.calls.push({ kind: 'verifyIdToken', input: { ...input } });
+    if (this.failure === 'idp_down') throw new AuthFlowError('auth_idp_unavailable');
+    if (this.failure === 'bad_token') throw new AuthFlowError('auth_token_invalid');
+    if (!input.idToken.startsWith(MOCK_ID_TOKEN_PREFIX)) {
+      throw new AuthFlowError('auth_token_invalid');
+    }
+    if (this.enforceNonce && !this.issuedNonces.has(input.nonce)) {
+      throw new AuthFlowError('auth_token_invalid');
+    }
+    const code = input.idToken.slice(MOCK_ID_TOKEN_PREFIX.length);
+    return { ...(this.byCode.get(code) ?? this.identity) };
+  };
 }

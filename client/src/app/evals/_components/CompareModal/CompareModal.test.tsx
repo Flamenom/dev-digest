@@ -4,6 +4,7 @@ import { NextIntlClientProvider } from "next-intl";
 import { Modal } from "@devdigest/ui";
 import type { EvalBatchRecord, EvalCompare, EvalPromoteResult } from "@devdigest/shared";
 import evalMessages from "../../../../../messages/en/eval.json";
+import authMessages from "../../../../../messages/en/auth.json";
 
 /* The client test harness has no MSW and no QueryClientProvider: the hooks are
    module-mocked and driven from this mutable state object. Every reference to
@@ -34,6 +35,25 @@ vi.mock("@/lib/hooks/eval", () => ({
 const toastSuccess = vi.fn();
 vi.mock("@/lib/toast", () => ({
   useToast: () => ({ success: toastSuccess, error: vi.fn(), info: vi.fn() }),
+}));
+
+/* Multi-user gating reads the session probe: mocked as the local-mode Admin
+   (every control enabled, as before); a test may flip `session` to a Member. */
+const session = vi.hoisted(() => ({
+  mode: "local" as "local" | "google",
+  role: "admin" as "admin" | "member",
+  userId: "u-admin",
+}));
+vi.mock("@/lib/hooks/session", () => ({
+  SESSION_QUERY_KEY: ["session"],
+  useSession: () => ({
+    data: {
+      mode: session.mode,
+      user: { id: session.userId, email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: session.role },
+      workspace: { id: "w1", name: "Team" },
+    },
+    isPending: false,
+  }),
 }));
 
 import { CompareModal, type CompareModalProps } from "./CompareModal";
@@ -98,7 +118,7 @@ function compareFixture(overrides: Partial<EvalCompare> = {}): EvalCompare {
 function renderModal(props: Partial<CompareModalProps> = {}) {
   const onClose = props.onClose ?? vi.fn();
   render(
-    <NextIntlClientProvider locale="en" messages={{ eval: evalMessages }}>
+    <NextIntlClientProvider locale="en" messages={{ auth: authMessages, eval: evalMessages }}>
       <CompareModal
         baseBatchId="b-base"
         headBatchId="b-head"
@@ -222,7 +242,7 @@ describe("CompareModal dialog behaviour (AC-45)", () => {
     const closeUnderlying = vi.fn();
     const onClose = vi.fn();
     render(
-      <NextIntlClientProvider locale="en" messages={{ eval: evalMessages }}>
+      <NextIntlClientProvider locale="en" messages={{ auth: authMessages, eval: evalMessages }}>
         <Modal title="Underlying dialog" onClose={closeUnderlying} />
         <CompareModal
           baseBatchId="b-base"
@@ -281,6 +301,23 @@ describe("CompareModal promote", () => {
     fireEvent.click(screen.getByRole("button", { name: "Promote v7" }));
 
     expect(toastSuccess).toHaveBeenCalledWith("v7 is already the active configuration.");
+  });
+
+  it("Member: Promote is aria-disabled with an 'Admins only' description and never confirms (AC-33)", () => {
+    session.mode = "google";
+    session.role = "member";
+    try {
+      renderModal();
+      const promote = screen.getByRole("button", { name: "Promote v7" });
+      expect(promote).toHaveAttribute("aria-disabled", "true");
+      expect(promote).toHaveAccessibleDescription("Admins only");
+      fireEvent.click(promote);
+      expect(screen.queryByText(/this creates v10/)).not.toBeInTheDocument();
+      expect(promoteMutate).not.toHaveBeenCalled();
+    } finally {
+      session.mode = "local";
+      session.role = "admin";
+    }
   });
 
   it("offers no promote action when the base batch has no recorded version", () => {

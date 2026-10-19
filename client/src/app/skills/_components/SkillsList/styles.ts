@@ -17,6 +17,13 @@ export const s = {
     padding: "16px 16px 10px",
   } satisfies CSSProperties,
   h1: { fontSize: 18, fontWeight: 700, flex: 1 } satisfies CSSProperties,
+  /** Member view: the inert "Add Skill" button stacked over its "Admins only" hint. */
+  gatedAction: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-end",
+    gap: 4,
+  } satisfies CSSProperties,
   search: {
     display: "flex",
     alignItems: "center",
