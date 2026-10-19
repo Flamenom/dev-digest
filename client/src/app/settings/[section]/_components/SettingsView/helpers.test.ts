@@ -4,9 +4,9 @@ import { formatDate, visibleSections } from "./helpers";
 const t = (key: string) => `t:${key}`;
 
 describe("visibleSections", () => {
-  it("adds Members in every mode and API tokens only in google mode", () => {
-    expect(visibleSections("local", t).map((s) => s.key)).toEqual(["api-keys", "models", "members"]);
-    expect(visibleSections(null, t).map((s) => s.key)).toEqual(["api-keys", "models", "members"]);
+  it("keeps local mode as today and adds Members + API tokens only in google mode", () => {
+    expect(visibleSections("local", t).map((s) => s.key)).toEqual(["api-keys", "models"]);
+    expect(visibleSections(null, t).map((s) => s.key)).toEqual(["api-keys", "models"]);
     expect(visibleSections("google", t)).toEqual([
       { key: "api-keys", label: "API Keys" },
       { key: "models", label: "Feature Models" },

@@ -5,11 +5,17 @@ import { type DropdownItemDef } from "./types";
 function DropdownItem({ it, onClose }: { it: DropdownItemDef; onClose: () => void }) {
   const [h, setH] = React.useState(false);
   const I = it.icon ? Icon[it.icon] : null;
+  const reasonId = React.useId();
+  const reason = it.disabled ? it.disabledReason : undefined;
   return (
     <button
+      // `aria-disabled` (not `disabled`) keeps the item focusable so the reason is discoverable.
+      aria-disabled={it.disabled ? true : undefined}
+      aria-describedby={reason ? reasonId : undefined}
       onMouseEnter={() => setH(true)}
       onMouseLeave={() => setH(false)}
       onClick={() => {
+        if (it.disabled) return;
         it.onClick?.();
         onClose();
       }}
@@ -26,12 +32,17 @@ function DropdownItem({ it, onClose }: { it: DropdownItemDef; onClose: () => voi
         fontSize: 14,
         fontWeight: 500,
         textAlign: "left",
-        cursor: "pointer",
+        cursor: it.disabled ? "not-allowed" : "pointer",
       }}
     >
       {I && <I size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />}
       <span style={{ flex: 1 }}>{it.label}</span>
       {it.hint && <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{it.hint}</span>}
+      {reason && (
+        <span id={reasonId} style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          {reason}
+        </span>
+      )}
       {it.onRemove && (
         <span
           role="button"

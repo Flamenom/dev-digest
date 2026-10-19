@@ -18,6 +18,6 @@ export interface ExtraSectionSpec {
 }
 
 export const EXTRA_SECTIONS: readonly ExtraSectionSpec[] = [
-  { key: SECTION_MEMBERS, labelKey: "members.navLabel", googleOnly: false },
+  { key: SECTION_MEMBERS, labelKey: "members.navLabel", googleOnly: true },
   { key: SECTION_API_TOKENS, labelKey: "apiTokens.navLabel", googleOnly: true },
 ];

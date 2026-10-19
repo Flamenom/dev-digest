@@ -30,6 +30,9 @@ export function useCreateApiToken() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateApiTokenInput) => api.post<ApiTokenCreated>("/tokens", input),
+    // The created value is shown once; don't retain it in the mutation cache
+    // after the observer unmounts.
+    gcTime: 0,
     onSuccess: () => void qc.invalidateQueries({ queryKey: API_TOKENS_QUERY_KEY }),
   });
 }

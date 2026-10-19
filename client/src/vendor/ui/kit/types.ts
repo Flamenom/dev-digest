@@ -13,4 +13,8 @@ export interface DropdownItemDef {
   onRemove?: () => void;
   /** Accessible label/tooltip for the trailing remove action. */
   removeLabel?: string;
+  /** Inert item: stays focusable, exposed as `aria-disabled`, ignores activation. */
+  disabled?: boolean;
+  /** Visible reason shown for a disabled item; linked via `aria-describedby`. */
+  disabledReason?: string;
 }

@@ -105,7 +105,10 @@ describe("AppShell identity + repo gating", () => {
     // Admin keeps both repo actions.
     await openRepoSwitcher();
     expect(screen.getByRole("button", { name: "Remove acme/api" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Add repository…" }));
+    const adminAdd = screen.getByRole("button", { name: "Add repository…" });
+    expect(adminAdd).not.toHaveAttribute("aria-disabled");
+    expect(adminAdd).not.toHaveAttribute("aria-describedby");
+    fireEvent.click(adminAdd);
     expect(router.push).toHaveBeenCalledWith("/onboarding");
 
     fireEvent.click(within(identity).getByRole("button", { name: authMessages.user.signOut }));
@@ -127,8 +130,14 @@ describe("AppShell identity + repo gating", () => {
     expect(screen.queryByRole("button", { name: "Remove acme/api" })).not.toBeInTheDocument();
     const add = screen.getByRole("button", { name: /Add repository/ });
     expect(add).toHaveAccessibleName(`Add repository… ${authMessages.gate.adminsOnly}`);
+    expect(add).toHaveAttribute("aria-disabled", "true");
+    expect(add).toHaveAccessibleDescription(authMessages.gate.adminsOnly);
+    expect(add).not.toBeDisabled(); // stays focusable
+    add.focus();
+    expect(add).toHaveFocus();
     fireEvent.click(add);
     expect(router.push).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /Add repository/ })).toBeInTheDocument(); // menu stays open
   });
 
   it("local mode: no identity block and no Sign out; repo actions unchanged", async () => {
@@ -141,6 +150,8 @@ describe("AppShell identity + repo gating", () => {
     );
     expect(screen.queryByRole("group", { name: /Local user/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: authMessages.user.signOut })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add repository…" })).toBeInTheDocument();
+    const localAdd = screen.getByRole("button", { name: "Add repository…" });
+    expect(localAdd).not.toHaveAttribute("aria-disabled");
+    expect(localAdd).not.toHaveAttribute("aria-describedby");
   });
 });

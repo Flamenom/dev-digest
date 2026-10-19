@@ -1,6 +1,6 @@
 /* Settings — left sub-nav + sections. API Keys (OpenRouter + GitHub PAT, with
-   Test connection), Feature Models, Members and (google mode only) personal
-   API tokens. Section is deep-linked at /settings/:section. Members see API
+   Test connection), Feature Models and (google mode only) Members and
+   personal API tokens. Section is deep-linked at /settings/:section. Members see API
    Keys and Models read-only (AC-33). */
 "use client";
 
