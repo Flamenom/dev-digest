@@ -13,7 +13,12 @@ import {
   apiError,
   type FetchRouter,
 } from "@/test/render-with-providers";
-import { GitLabTokenNotice, GITLAB_TOKEN_NOTICE_ID } from "@/components/gitlab-token-notice";
+import {
+  GitLabTokenNoticeRegion,
+  GITLAB_TOKEN_NOTICE_ID,
+  GITLAB_TOKEN_NOTICE_REGION_TEST_ID,
+} from "@/components/gitlab-token-notice";
+import type { BlockingGitLabHealth } from "../gitlab-token";
 import { useGitLabTokenHealth } from "./gitlab-health";
 import { useCreatePrComment } from "./reviews";
 import { useSecretsStatus, useTestConnection } from "./core";
@@ -54,7 +59,7 @@ function Probe({ repo }: { repo: RepoWithHost }) {
     <>
       <p>{isSuccess ? "status loaded" : "status pending"}</p>
       <p>blocking: {blocking ?? "none"}</p>
-      {blocking && <GitLabTokenNotice id={GITLAB_TOKEN_NOTICE_ID} health={blocking} />}
+      <GitLabTokenNoticeRegion health={blocking} />
       <button onClick={() => comment.mutate({ path: "a.ts", line: 1, body: "hi" })}>Post</button>
       {comment.isError && <p role="alert">{comment.error.message}</p>}
       <button onClick={() => test.mutate({ provider: "gitlab", key: "glpat-x" })}>Test</button>
@@ -67,21 +72,34 @@ const statusCalls = (router: FetchRouter) =>
   router.calls.filter((c) => c.method === "GET" && c.path === "/settings/secrets-status").length;
 
 describe("useGitLabTokenHealth(repo)", () => {
-  it.each<[string, RepoWithHost, Health, string]>([
-    ["GitLab repo + insufficient_scope", GITLAB_REPO, "insufficient_scope", "insufficient_scope"],
-    ["GitLab repo + invalid", GITLAB_REPO, "invalid", "invalid"],
-    ["GitLab repo + ok", GITLAB_REPO, "ok", "none"],
-    ["GitLab repo + unchecked", GITLAB_REPO, "unchecked", "none"],
-    ["GitLab repo + no token", GITLAB_REPO, null, "none"],
-    ["GitHub repo + a bad GitLab token", GITHUB_REPO, "insufficient_scope", "none"],
-  ])("%s → blocking: %s", async (_label, repo, health, expected) => {
-    renderWithProviders(<Probe repo={repo} />, {
-      routes: { "GET /settings/secrets-status": status(health) },
-    });
-    await screen.findByText("status loaded");
-    expect(screen.getByText(`blocking: ${expected}`)).toBeInTheDocument();
-    if (expected === "none") expect(screen.queryByRole("note")).not.toBeInTheDocument();
-    else expect(screen.getByRole("note")).toHaveAttribute("id", GITLAB_TOKEN_NOTICE_ID);
+  it.each<BlockingGitLabHealth>(["insufficient_scope", "invalid"])(
+    "GitLab repo + %s token → the notice is shown",
+    async (health) => {
+      renderWithProviders(<Probe repo={GITLAB_REPO} />, {
+        routes: { "GET /settings/secrets-status": status(health) },
+      });
+      await screen.findByText("status loaded");
+      expect(screen.getByText(`blocking: ${health}`)).toBeInTheDocument();
+      expect(screen.getByRole("note")).toHaveAttribute("id", GITLAB_TOKEN_NOTICE_ID);
+    },
+  );
+
+  it("no notice when nothing is blocked: a healthy, unchecked or missing GitLab token, or a GitHub repo", async () => {
+    const nonBlocking: Array<[RepoWithHost, Health]> = [
+      [GITLAB_REPO, "ok"],
+      [GITLAB_REPO, "unchecked"],
+      [GITLAB_REPO, null],
+      [GITHUB_REPO, "insufficient_scope"],
+    ];
+    for (const [repo, health] of nonBlocking) {
+      renderWithProviders(<Probe repo={repo} />, {
+        routes: { "GET /settings/secrets-status": status(health) },
+      });
+      await screen.findByText("status loaded");
+      expect(screen.getByText("blocking: none")).toBeInTheDocument();
+      expect(screen.queryByRole("note")).not.toBeInTheDocument();
+      cleanup();
+    }
   });
 });
 
@@ -98,6 +116,11 @@ describe("GitLab token health refresh after a write", () => {
     });
     await screen.findByText("status loaded");
     expect(statusCalls(router)).toBe(1);
+    // The polite live region is mounted (empty) BEFORE anything is blocked, so
+    // the notice inserted into it later is announced.
+    const region = screen.getByTestId(GITLAB_TOKEN_NOTICE_REGION_TEST_ID);
+    expect(region).toHaveAttribute("aria-live", "polite");
+    expect(region).toBeEmptyDOMElement();
 
     // A non-token failure: shown inline, token health is NOT re-read.
     await user.click(screen.getByRole("button", { name: "Post" }));
@@ -111,6 +134,9 @@ describe("GitLab token health refresh after a write", () => {
     await user.click(screen.getByRole("button", { name: "Post" }));
     expect(await screen.findByRole("note")).toHaveTextContent(SCOPE_TEXT);
     expect(statusCalls(router)).toBe(2);
+    // Same region element (not remounted) now holds the notice.
+    expect(screen.getByTestId(GITLAB_TOKEN_NOTICE_REGION_TEST_ID)).toBe(region);
+    expect(region).toContainElement(screen.getByRole("note"));
     expect(screen.getByText("blocking: insufficient_scope")).toBeInTheDocument();
   });
 

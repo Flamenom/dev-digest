@@ -21,7 +21,7 @@ import { useActiveRepo, useRepoNotFound } from "@/lib/repo-context";
 import { ApiError } from "@/lib/api";
 import { hostBlobUrl, hostLabelKey, hostPrUrl } from "@/lib/host-urls";
 import { useGitLabTokenHealth } from "@/lib/hooks/gitlab-health";
-import { GitLabTokenNotice, GITLAB_TOKEN_NOTICE_ID } from "@/components/gitlab-token-notice";
+import { GitLabTokenNoticeRegion, GITLAB_TOKEN_NOTICE_ID } from "@/components/gitlab-token-notice";
 import type { FindingRecord } from "@devdigest/shared";
 import { s } from "./styles";
 
@@ -147,11 +147,7 @@ export default function PRDetailPage() {
 
   return (
     <AppShell crumb={crumb}>
-      {tokenNoticeHealth && (
-        <div style={s.tokenNoticeWrap}>
-          <GitLabTokenNotice id={GITLAB_TOKEN_NOTICE_ID} health={tokenNoticeHealth} />
-        </div>
-      )}
+      <GitLabTokenNoticeRegion health={tokenNoticeHealth} wrapStyle={s.tokenNoticeWrap} />
       <PrDetailHeader
         pr={pr}
         prId={prId}

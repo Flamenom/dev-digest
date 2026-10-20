@@ -8,7 +8,7 @@ import { api, API_BASE, ApiError } from "../api";
 import { notify } from "../toast";
 import { errorChannelMeta } from "../query-meta";
 import type { HostComment, HostCommentPostInput } from "../types";
-import { GITLAB_TOKEN_HEALTH_ERROR_CODES } from "./gitlab-health";
+import { isGitLabTokenHealthErrorCode } from "../gitlab-token";
 import type {
   FindingActionKind,
   ReviewRecord,
@@ -118,7 +118,7 @@ export function useCreatePrComment(prId: string | null | undefined) {
     onError: (err) => {
       // The server re-checked the GitLab token — refresh its health so the
       // token notice shows on the next render (AC-25).
-      if (err instanceof ApiError && err.code && GITLAB_TOKEN_HEALTH_ERROR_CODES.has(err.code)) {
+      if (err instanceof ApiError && isGitLabTokenHealthErrorCode(err.code)) {
         qc.invalidateQueries({ queryKey: ["secrets-status"] });
       }
     },

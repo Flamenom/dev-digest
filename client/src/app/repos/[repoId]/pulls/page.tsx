@@ -19,7 +19,7 @@ import { RepoNotFound } from "@/components/repo-not-found";
 import { usePullsSync, useQueryParam, useDebouncedQueryParam } from "@/lib/hooks";
 import { useGitLabTokenHealth } from "@/lib/hooks/gitlab-health";
 import { useActiveRepo, useRepoNotFound } from "@/lib/repo-context";
-import { GitLabTokenNotice, GITLAB_TOKEN_NOTICE_ID } from "@/components/gitlab-token-notice";
+import { GitLabTokenNoticeRegion } from "@/components/gitlab-token-notice";
 import { ApiError } from "@/lib/api";
 import { COLUMN_KEYS, SKELETON_ROWS } from "./constants";
 import { filterAndSortPulls, countPulls } from "./helpers";
@@ -94,11 +94,7 @@ export default function PullsPage() {
         </div>
       </div>
 
-      {tokenNoticeHealth && (
-        <div style={s.tokenNoticeWrap}>
-          <GitLabTokenNotice id={GITLAB_TOKEN_NOTICE_ID} health={tokenNoticeHealth} />
-        </div>
-      )}
+      <GitLabTokenNoticeRegion health={tokenNoticeHealth} wrapStyle={s.tokenNoticeWrap} />
 
       <div style={s.tableCard}>
         <FilterBar

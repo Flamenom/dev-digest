@@ -206,6 +206,9 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
       bodyLimit: COMMENT_BODY_LIMIT_BYTES,
       // AC-14: the blank-body rule lives ONLY in the `HostCommentInput` refine.
       // The handler sees the schema failure first and picks its status.
+      // Consequence: the auth preHandler sees an UNVALIDATED body — never give
+      // this route a body-dependent policy predicate (e.g. `sessionOnly`) in
+      // platform/auth/route-policy.ts without moving validation back.
       attachValidation: true,
     },
     async (req): Promise<HostComment> => {
