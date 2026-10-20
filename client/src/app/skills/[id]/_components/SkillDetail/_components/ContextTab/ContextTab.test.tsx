@@ -1,42 +1,12 @@
-import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, within, cleanup, fireEvent, waitFor } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { DiscoveredDocument, DiscoverySummary, Repo, Skill } from "@devdigest/shared";
-import messages from "../../../../../../../../messages/en/skills.json";
-import authMessages from "../../../../../../../../messages/en/auth.json";
-
-// Multi-user gating: drive the session-derived role directly ("admin" =
-// today's behaviour, also what local mode resolves to).
-const perm = vi.hoisted(() => ({ role: "admin" as "admin" | "member" }));
-vi.mock("@/lib/permissions", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/permissions")>();
-  const current = () =>
-    actual.buildPermissions({ mode: "google", role: perm.role, userId: "u1", isPending: false });
-  return { ...actual, useCan: current, useIsAdmin: () => current().isAdmin };
-});
-
-// ContextTab talks to the API through lib/api only — mock it wholesale.
-vi.mock("@/lib/api", () => ({
-  api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn() },
-}));
-
-import { api } from "@/lib/api";
+import { describe, it, expect } from "vitest";
+import { screen, within, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { DiscoveredDocument, DiscoverySummary, Skill } from "@devdigest/shared";
+import { useSkill } from "@/lib/hooks/skills";
+import { renderWithProviders, testRepo, type RouteRequest } from "@/test/render-with-providers";
 import { ContextTab } from "./ContextTab";
 
-afterEach(cleanup);
-
-const REPO: Repo = {
-  id: "r1",
-  workspace_id: "ws1",
-  owner: "acme",
-  name: "api",
-  full_name: "acme/api",
-  default_branch: "main",
-  clone_path: "/clones/acme/api",
-  last_polled_at: null,
-  created_by: null,
-};
+const REPO = testRepo({ name: "api", full_name: "acme/api", clone_path: "/clones/acme/api" });
 
 const DOCS: DiscoveredDocument[] = [
   { path: "specs/auth.md", bucket: "specs", estimated_tokens: 120 },
@@ -66,41 +36,60 @@ const SKILL: Skill = {
   attached_doc_paths: ["docs/guide/setup.md", "specs/auth.md"],
 };
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  (api.get as Mock).mockImplementation((path: string) => {
-    if (path === "/repos") return Promise.resolve([REPO]);
-    if (path === "/repos/r1/project-context")
-      return Promise.resolve({ documents: DOCS, summary: SUMMARY });
-    return Promise.reject(new Error(`unexpected GET ${path}`));
-  });
-  (api.put as Mock).mockImplementation((_path: string, body: { paths: string[] }) =>
-    Promise.resolve({ ...SKILL, attached_doc_paths: body.paths }),
-  );
-});
-
-function renderTab(skill: Skill = SKILL) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <NextIntlClientProvider locale="en" messages={{ skills: messages, auth: authMessages }}>
-        <ContextTab skill={skill} />
-      </NextIntlClientProvider>
-    </QueryClientProvider>,
-  );
+/** Renders the tab from the real skill query, as SkillDetail does — so a saved
+    attach/reorder shows up once the skill re-reads. */
+function SkillContextFromApi() {
+  const { data } = useSkill("sk1");
+  return data ? <ContextTab skill={data} /> : null;
 }
 
-const rowFor = (rows: HTMLElement[], name: string) =>
-  rows.find((r) => within(r).queryByText(name))!;
+function renderTab(session: "admin" | "member" = "admin") {
+  let skill = SKILL;
+  return renderWithProviders(<SkillContextFromApi />, {
+    session,
+    routes: {
+      "GET /repos": [REPO],
+      "GET /repos/r1/project-context": { documents: DOCS, summary: SUMMARY },
+      "GET /skills/sk1": () => skill,
+      "GET /repos/r1/project-context/document": (req: RouteRequest) => ({
+        path: req.query.get("path"),
+        text: `Body of ${req.query.get("path")}`,
+      }),
+      "PUT /skills/sk1/attached-docs": (req: RouteRequest) => {
+        skill = { ...skill, attached_doc_paths: (req.body as { paths: string[] }).paths };
+        return skill;
+      },
+    },
+  });
+}
+
+/** The file names of the rows, in display order. */
+const rowNames = () =>
+  screen.getAllByRole("listitem").map((row) => {
+    const name = DOCS.map((d) => d.path.split("/").pop() ?? d.path).find((n) => within(row).queryByText(n));
+    return name ?? "?";
+  });
+
+function rowFor(name: string): HTMLElement {
+  const row = screen.getAllByRole("listitem").find((r) => within(r).queryByText(name));
+  if (!row) throw new Error(`no row for ${name}`);
+  return row;
+}
+
+/** Wait until the session resolved to Admin (checkboxes live). */
+async function findLiveCheckbox(name: string) {
+  await screen.findAllByRole("listitem");
+  const box = within(rowFor(name)).getByRole("checkbox");
+  await waitFor(() => expect(box).not.toHaveAttribute("aria-disabled"));
+  return box;
+}
 
 describe("ContextTab", () => {
   it("renders attached-first rows, the attached count, the inheritance note, and the serializes-as path list", async () => {
     renderTab();
-    const rows = await screen.findAllByRole("listitem");
+    await screen.findAllByRole("listitem");
     // Attached first (in attached order), then the rest in discovery order.
-    expect(within(rows[0]!).getByText("setup.md")).toBeInTheDocument();
-    expect(within(rows[1]!).getByText("auth.md")).toBeInTheDocument();
-    expect(within(rows[2]!).getByText("perf.md")).toBeInTheDocument();
+    expect(rowNames()).toEqual(["setup.md", "auth.md", "perf.md", "arch.md"]);
 
     expect(screen.getByText("2 attached")).toBeInTheDocument();
     expect(
@@ -109,12 +98,13 @@ describe("ContextTab", () => {
 
     // Row anatomy: root-dir badge (text label) + per-row token count + full path
     // + preview affordance.
-    expect(within(rows[1]!).getByText("specs")).toBeInTheDocument();
-    expect(within(rows[1]!).getByText("specs/auth.md")).toBeInTheDocument();
-    expect(within(rows[1]!).getByText("~120 tokens")).toBeInTheDocument();
+    const authRow = rowFor("auth.md");
+    expect(within(authRow).getByText("specs")).toBeInTheDocument();
+    expect(within(authRow).getByText("specs/auth.md")).toBeInTheDocument();
+    expect(within(authRow).getByText("~120 tokens")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Preview auth.md" })).toBeInTheDocument();
     // server/notes/arch.md → badge "server" (root dir), NOT its bucket "docs".
-    const archRow = rowFor(rows, "arch.md");
+    const archRow = rowFor("arch.md");
     expect(within(archRow).getByText("server")).toBeInTheDocument();
     expect(within(archRow).queryByText("docs")).not.toBeInTheDocument();
     expect(within(archRow).getByText("~60 tokens")).toBeInTheDocument();
@@ -125,75 +115,79 @@ describe("ContextTab", () => {
     expect(pre.textContent).toContain("- specs/auth.md");
   });
 
-  it("attaching a document PUTs the full ordered path set with the new path appended", async () => {
-    renderTab();
-    const rows = await screen.findAllByRole("listitem");
-    fireEvent.click(within(rowFor(rows, "perf.md")).getByRole("checkbox"));
-    await waitFor(() =>
-      expect(api.put).toHaveBeenCalledWith("/skills/sk1/attached-docs", {
-        paths: ["docs/guide/setup.md", "specs/auth.md", "insights/perf.md"],
-      }),
-    );
+  it("attaching a document appends it to the ordered attached set", async () => {
+    const user = userEvent.setup();
+    const { router } = renderTab();
+    await user.click(await findLiveCheckbox("perf.md"));
+    expect(await screen.findByText("3 attached")).toBeInTheDocument();
+    expect(rowNames().slice(0, 3)).toEqual(["setup.md", "auth.md", "perf.md"]);
+    expect(router.calls.find((c) => c.method === "PUT")?.body).toEqual({
+      paths: ["docs/guide/setup.md", "specs/auth.md", "insights/perf.md"],
+    });
   });
 
-  it("detaching a document PUTs the full ordered path set without it", async () => {
+  it("detaching a document drops it from the attached set", async () => {
+    const user = userEvent.setup();
     renderTab();
-    const rows = await screen.findAllByRole("listitem");
-    fireEvent.click(within(rowFor(rows, "setup.md")).getByRole("checkbox"));
-    await waitFor(() =>
-      expect(api.put).toHaveBeenCalledWith("/skills/sk1/attached-docs", {
-        paths: ["specs/auth.md"],
-      }),
-    );
+    await user.click(await findLiveCheckbox("setup.md"));
+    expect(await screen.findByText("1 attached")).toBeInTheDocument();
+    expect(within(rowFor("setup.md")).getByRole("checkbox")).toHaveAttribute("aria-checked", "false");
   });
 
-  it("keyboard reorder (move up) PUTs the reordered path set", async () => {
+  it("keyboard reorder (move up) moves the document first", async () => {
+    const user = userEvent.setup();
     renderTab();
-    await screen.findAllByRole("listitem");
-    fireEvent.click(screen.getByRole("button", { name: "Move auth.md up" }));
-    await waitFor(() =>
-      expect(api.put).toHaveBeenCalledWith("/skills/sk1/attached-docs", {
-        paths: ["specs/auth.md", "docs/guide/setup.md"],
-      }),
-    );
+    await findLiveCheckbox("auth.md");
+    await user.click(screen.getByRole("button", { name: "Move auth.md up" }));
+    await waitFor(() => expect(rowNames().slice(0, 2)).toEqual(["auth.md", "setup.md"]));
   });
 
   it("search narrows the list by filename/path without changing attach state", async () => {
-    renderTab();
+    const user = userEvent.setup();
+    const { router } = renderTab();
     await screen.findAllByRole("listitem");
     const search = screen.getByPlaceholderText("Search documents…");
 
-    fireEvent.change(search, { target: { value: "perf" } });
-    let rows = screen.getAllByRole("listitem");
-    expect(rows).toHaveLength(1);
-    expect(within(rows[0]!).getByText("perf.md")).toBeInTheDocument();
+    await user.type(search, "perf");
+    expect(rowNames()).toEqual(["perf.md"]);
 
-    fireEvent.change(search, { target: { value: "" } });
-    rows = screen.getAllByRole("listitem");
-    expect(rows).toHaveLength(4);
-    // Toggles set before filtering remain set; no persistence call happened.
-    expect(within(rowFor(rows, "setup.md")).getByRole("checkbox")).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
-    expect(api.put).not.toHaveBeenCalled();
+    await user.clear(search);
+    expect(screen.getAllByRole("listitem")).toHaveLength(4);
+    // Toggles set before filtering remain set; nothing was persisted.
+    expect(within(rowFor("setup.md")).getByRole("checkbox")).toHaveAttribute("aria-checked", "true");
+    expect(router.calls.some((c) => c.method === "PUT")).toBe(false);
   });
 });
 
 describe("ContextTab gating (AC-33)", () => {
-  afterEach(() => {
-    perm.role = "admin";
-  });
+  it("Member: read-only — notice shown, checkboxes and move buttons aria-disabled and inert; Preview still works", async () => {
+    const user = userEvent.setup();
+    const { router } = renderTab("member");
+    await screen.findAllByRole("listitem");
+    const notice = "Only admins can change attached documents.";
+    // Shown once the session resolves to Member (suppressed while pending).
+    expect(await screen.findByText(notice)).toBeInTheDocument();
 
-  it("Member: the list is read-only — notice shown, toggling sends no PUT, no move buttons; Preview still works", async () => {
-    perm.role = "member";
-    renderTab();
-    const rows = await screen.findAllByRole("listitem");
-    expect(screen.getByText("Only admins can change attached documents.")).toBeInTheDocument();
+    const perf = within(rowFor("perf.md")).getByRole("checkbox");
+    expect(perf).toHaveAttribute("aria-disabled", "true");
+    expect(perf).toHaveAccessibleDescription(notice);
+    await user.click(perf);
 
-    fireEvent.click(within(rowFor(rows, "perf.md")).getByRole("checkbox"));
-    expect(api.put).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Move auth.md up" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Preview auth.md" })).toBeInTheDocument();
+    const moveUp = screen.getByRole("button", { name: "Move auth.md up" });
+    expect(moveUp).toHaveAttribute("aria-disabled", "true");
+    expect(moveUp).toHaveAccessibleDescription(notice);
+    await user.click(moveUp);
+
+    // Sync point: Preview is allowed for a Member and does its own round trip.
+    // By the time its body is on screen, any PUT the gated clicks had started
+    // has been recorded and its re-read rendered.
+    const preview = screen.getByRole("button", { name: "Preview auth.md" });
+    expect(preview).not.toHaveAttribute("aria-disabled");
+    await user.click(preview);
+    expect(await screen.findByText("Body of specs/auth.md")).toBeInTheDocument();
+
+    expect(within(rowFor("perf.md")).getByRole("checkbox")).toHaveAttribute("aria-checked", "false");
+    expect(rowNames().slice(0, 2)).toEqual(["setup.md", "auth.md"]);
+    expect(router.calls.some((c) => c.method === "PUT")).toBe(false);
   });
 });

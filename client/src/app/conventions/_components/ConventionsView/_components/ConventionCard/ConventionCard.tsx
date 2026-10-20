@@ -3,9 +3,9 @@
    to the evidence lines, confidence bar,
    Accept / Reject actions (FindingCard's accept/dismiss idiom: active state on
    the buttons, 0.6-opacity muting for rejected cards).
-   Multi-user (AC-33): Accept / Reject are aria-disabled with one shared
-   "Admins only" hint for a Member, and the inline rule edit is not offered
-   (IconBtn cannot carry aria-disabled). Local mode resolves to Admin. */
+   Multi-user (AC-33): Accept / Reject and the rule-edit IconBtn are
+   aria-disabled for a Member; Accept / Reject share one visible "Admins only"
+   hint. Local mode resolves to Admin. */
 "use client";
 
 import React from "react";
@@ -14,7 +14,7 @@ import { Badge, Button, IconBtn, ProgressBar, TextInput } from "@devdigest/ui";
 import type { Convention } from "@devdigest/shared";
 import { hostLabelKey } from "@/lib/host-urls";
 import { useUpdateConvention } from "@/lib/hooks/conventions";
-import { useCan } from "@/lib/permissions";
+import { useCan } from "@/lib/hooks/permissions";
 import { AdminOnly } from "@/components/admin-gate";
 import { CATEGORY_COLORS } from "../../constants";
 import { evidenceHostUrl, evidenceLabel, type EvidenceLinkRepo } from "../../helpers";
@@ -83,7 +83,12 @@ export function ConventionCard({
           ) : (
             <>
               <span style={s.title(rejected)}>{convention.rule}</span>
-              {isAdmin && <IconBtn icon="Edit" label={t("card.edit")} onClick={() => setEditing(true)} />}
+              <IconBtn
+                icon="Edit"
+                label={t("card.edit")}
+                onClick={() => setEditing(true)}
+                aria-disabled={!isAdmin}
+              />
             </>
           )}
         </div>

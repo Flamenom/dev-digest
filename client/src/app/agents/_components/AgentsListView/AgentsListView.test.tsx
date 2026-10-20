@@ -1,49 +1,19 @@
-import React from "react";
-import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
-import type { AgentListItem } from "@devdigest/shared";
-import messages from "../../../../../messages/en/agents.json";
-import authMessages from "../../../../../messages/en/auth.json";
+import { describe, it, expect, vi } from "vitest";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { Agent, AgentListItem } from "@devdigest/shared";
+import { renderWithProviders, type RouteRequest } from "@/test/render-with-providers";
+import { RoleProbe, findRole } from "@/test/role-probe";
+import { AgentsListView } from "./AgentsListView";
 
 /* AC-33 (Agents row of the UI gating table): creating an agent is Admin-only —
    a Member gets "Add Agent" focusable but aria-disabled with the visible
-   "Admins only" hint, no menu, and no per-card toggle/delete. */
-
-const state: { agents: AgentListItem[] } = { agents: [] };
+   "Admins only" hint, no menu, an aria-disabled per-card toggle and no delete. */
 
 vi.mock("next/navigation", () => ({
+  usePathname: () => "/agents",
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
 }));
-
-vi.mock("@/components/app-shell", () => ({
-  AppShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-}));
-
-vi.mock("@/lib/hooks/agents", () => ({
-  useAgents: () => ({ data: state.agents, isLoading: false, isError: false, refetch: vi.fn() }),
-  useUpdateAgent: () => ({ mutate: vi.fn(), isPending: false }),
-  useDeleteAgent: () => ({ mutate: vi.fn(), isPending: false }),
-  useCreateAgent: () => ({ mutate: vi.fn(), isPending: false }),
-}));
-
-const session = vi.hoisted(() => ({
-  mode: "local" as "local" | "google",
-  role: "admin" as "admin" | "member",
-}));
-vi.mock("@/lib/hooks/session", () => ({
-  SESSION_QUERY_KEY: ["session"],
-  useSession: () => ({
-    data: {
-      mode: session.mode,
-      user: { id: "u1", email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: session.role },
-      workspace: { id: "w1", name: "Team" },
-    },
-    isPending: false,
-  }),
-}));
-
-import { AgentsListView } from "./AgentsListView";
 
 const AGENT: AgentListItem = {
   id: "ag1",
@@ -62,60 +32,74 @@ const AGENT: AgentListItem = {
   skill_count: 2,
 };
 
-afterEach(() => {
-  cleanup();
-  state.agents = [];
-  session.mode = "local";
-  session.role = "admin";
-});
-
-function renderView() {
-  render(
-    <NextIntlClientProvider locale="en" messages={{ auth: authMessages, agents: messages }}>
-      <AgentsListView />
-    </NextIntlClientProvider>,
-  );
+/** In-memory agents API: PUT applies the patch, the list re-reads it. */
+function agentsApi(initial: AgentListItem[]) {
+  let agents = initial;
+  return {
+    "GET /agents": () => agents,
+    "PUT /agents/:id": (req: RouteRequest) => {
+      const patch = req.body as Partial<Agent>;
+      agents = agents.map((a) => (a.id === req.params.id ? { ...a, ...patch } : a));
+      return agents.find((a) => a.id === req.params.id);
+    },
+  };
 }
 
 describe("AgentsListView — role gating (AC-33)", () => {
-  it("Member: Add Agent is aria-disabled with an 'Admins only' description and opens no menu", () => {
-    session.mode = "google";
-    session.role = "member";
-    state.agents = [AGENT];
-    renderView();
+  it("Member: Add Agent is aria-disabled with an 'Admins only' description and opens no menu", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<AgentsListView />, { session: "member", routes: agentsApi([AGENT]) });
 
-    const add = screen.getByRole("button", { name: "Add Agent" });
+    expect(await screen.findByText("Security Reviewer")).toBeInTheDocument();
+    const add = await screen.findByRole("button", { name: "Add Agent", description: "Admins only" });
     expect(add).toHaveAttribute("aria-disabled", "true");
-    expect(add).toHaveAccessibleDescription("Admins only");
     add.focus();
     expect(add).toHaveFocus();
-    fireEvent.click(add);
+    await user.click(add);
     expect(screen.queryByText("Create from scratch")).not.toBeInTheDocument();
 
-    // The card is readable, but its toggle and Delete are not offered.
-    expect(screen.getByText("Security Reviewer")).toBeInTheDocument();
-    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    // The card is readable; its toggle is shown inert and Delete is not offered.
+    const toggle = screen.getByRole("switch", { name: "Security Reviewer enabled" });
+    expect(toggle).toHaveAttribute("aria-disabled", "true");
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
     expect(screen.queryByRole("button", { name: "Delete agent" })).not.toBeInTheDocument();
   });
 
-  it("Member with no agents: the empty state offers no create CTA", () => {
-    session.mode = "google";
-    session.role = "member";
-    renderView();
+  it("Member with no agents: the empty state offers no create CTA", async () => {
+    renderWithProviders(
+      <>
+        <RoleProbe />
+        <AgentsListView />
+      </>,
+      { session: "member", routes: agentsApi([]) },
+    );
 
+    // Fail-closed while the session is pending: wait for the resolved Member
+    // role (not just the data) before asserting the CTA is absent.
+    await findRole("member");
+    expect(await screen.findByText("No agents yet")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Create your first agent" })).not.toBeInTheDocument();
   });
 
-  it("Admin (local mode): Add Agent opens the create menu; toggle and Delete are shown", () => {
-    state.agents = [AGENT];
-    renderView();
+  it("Admin: Add Agent opens the create menu; the toggle flips the agent and Delete is shown", async () => {
+    const user = userEvent.setup();
+    const { router } = renderWithProviders(<AgentsListView />, { session: "admin", routes: agentsApi([AGENT]) });
 
+    expect(await screen.findByRole("button", { name: "Delete agent" })).toBeInTheDocument();
     const add = screen.getByRole("button", { name: "Add Agent" });
     expect(add).not.toHaveAttribute("aria-disabled");
     expect(screen.queryByText("Admins only")).not.toBeInTheDocument();
-    fireEvent.click(add);
+    await user.click(add);
     expect(screen.getByText("Create from scratch")).toBeInTheDocument();
-    expect(screen.getByRole("switch")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Delete agent" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("switch", { name: "Security Reviewer enabled" }));
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Security Reviewer enabled" })).toHaveAttribute(
+        "aria-checked",
+        "false",
+      ),
+    );
+    expect(router.calls.find((c) => c.method === "PUT")?.body).toEqual({ enabled: false });
   });
 });

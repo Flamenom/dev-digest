@@ -35,9 +35,10 @@ describe("ActorLabel", () => {
     expect(screen.getAllByText("—")).toHaveLength(2);
     expect(screen.getByText("Run by Local user")).toBeInTheDocument();
     expect(screen.getByText("Dismissed by Bob")).toBeInTheDocument();
-    const evil = screen.getByText("<img src=x onerror=alert(1)>Eve");
-    expect(evil.querySelector("img")).toBeNull();
-    expect(document.querySelector("img")).toBeNull();
+    // The name is text, so no image element (of any role) was created from it.
+    expect(screen.getByText("<img src=x onerror=alert(1)>Eve")).toBeInTheDocument();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(screen.queryByRole("presentation")).not.toBeInTheDocument();
   });
 });
 
@@ -56,15 +57,11 @@ describe("ActorAvatar", () => {
       expect(isSafeAvatarUrl(bad)).toBe(false);
     }
 
-    const { container, rerender } = render(
-      <ActorAvatar name="Ann Lee" url="https://lh3.googleusercontent.com/a/x" />,
-    );
-    expect(container.querySelector("img")).toHaveAttribute(
-      "src",
-      "https://lh3.googleusercontent.com/a/x",
-    );
+    // The photo is decorative (`alt=""` → role "presentation"); the name is rendered as text beside it.
+    const { rerender } = render(<ActorAvatar name="Ann Lee" url="https://lh3.googleusercontent.com/a/x" />);
+    expect(screen.getByRole("presentation")).toHaveAttribute("src", "https://lh3.googleusercontent.com/a/x");
     rerender(<ActorAvatar name="Ann Lee" url="https://evil.test/x.png" />);
-    expect(container.querySelector("img")).toBeNull();
+    expect(screen.queryByRole("presentation")).not.toBeInTheDocument();
     expect(screen.getByText("AL")).toBeInTheDocument();
   });
 });

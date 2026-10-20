@@ -12,7 +12,10 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['test/**/*.test.ts', 'src/**/*.test.ts'],
-    // Testcontainers integration tests can be slow to spin up Postgres.
+    // One shared Postgres for all *.it.test.ts files, started lazily on the
+    // first DB request (hermetic-only runs never touch Docker); each fixture is
+    // a fresh database cloned from a migrated template. See test/global-setup.ts.
+    globalSetup: ['./test/global-setup.ts'],
     testTimeout: 120_000,
     hookTimeout: 120_000,
   },

@@ -6,6 +6,7 @@
 
 import { useQuery, useMutation, useQueryClient, queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
+import { errorChannelMeta } from "../query-meta";
 import type { SecretsStatusDetailed } from "@devdigest/shared";
 import type {
   Settings,
@@ -45,6 +46,8 @@ export function useTestConnection() {
       const body = typeof input === "string" ? { provider: input } : input;
       return api.post<ConnTestResultHost>("/settings/test-connection", body);
     },
+    // The key row shows the result (or the failure) inline under its input.
+    ...errorChannelMeta("local"),
     // Saving/validating a provider key can change which models resolve — drop the
     // cached (possibly empty) model lists so the agent picker refetches, and
     // refresh the "Configured / Not set" key-status badges.
@@ -82,6 +85,8 @@ export function useAddRepo() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (url: string) => api.post<RepoWithHost>("/repos", { url }),
+    // AddRepoView shows the failure inline under the URL field.
+    ...errorChannelMeta("local"),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["repos"] }),
   });
 }

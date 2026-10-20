@@ -133,13 +133,39 @@ export class SecretStoreRepository implements SecretStore<SecretsTx> {
   };
 
   /**
-   * Replace many rows all-or-nothing (rotation re-encrypt). Joins `tx` when
-   * given; otherwise opens its own transaction so a partial rewrite is impossible.
+   * Replace many rows all-or-nothing (rotation re-encrypt) in ONE multi-row
+   * `INSERT … ON CONFLICT (workspace_id, key_name) DO UPDATE` — a single
+   * statement is atomic on its own, so no transaction is opened; it joins `tx`
+   * when given. Every record is validated before SQL. Two records for the same
+   * `(workspace, key)` are refused up front (Postgres would raise "cannot
+   * affect row a second time"). Rows go in sorted by (workspace, key) so
+   * concurrent batches lock conflicting rows in the same order.
    */
   replaceMany = async (records: readonly EncryptedSecretWrite[], tx?: SecretsTx): Promise<void> => {
     records.forEach(assertWritable);
-    if (!tx) return this.transaction((own) => this.replaceMany(records, own));
-    for (const record of records) await this.upsert(record, tx);
+    if (records.length === 0) return;
+    const slot = (r: EncryptedSecretWrite) => `${r.workspaceId}\u0000${r.keyName}`;
+    const seen = new Set<string>();
+    for (const r of records) {
+      if (seen.has(slot(r))) throw new Error(`encrypted secret batch: ${r.keyName} appears more than once`);
+      seen.add(slot(r));
+    }
+    const values = [...records]
+      .sort((a, b) => (slot(a) < slot(b) ? -1 : slot(a) > slot(b) ? 1 : 0))
+      .map(toValues);
+    await this.exec(tx)
+      .insert(t.encryptedSecrets)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [t.encryptedSecrets.workspaceId, t.encryptedSecrets.keyName],
+        set: {
+          ciphertext: sql`excluded.ciphertext`,
+          nonce: sql`excluded.nonce`,
+          keyId: sql`excluded.key_id`,
+          updatedBy: sql`excluded.updated_by`,
+          updatedAt: sql`now()`,
+        },
+      });
   };
 
   transaction = <T>(fn: (tx: SecretsTx) => Promise<T>): Promise<T> => this.db.transaction(fn);

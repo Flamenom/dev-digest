@@ -47,3 +47,16 @@ export async function withActors<T extends object, K extends string>(
     return { ...dto, ...refs };
   });
 }
+
+/**
+ * The single element of a one-element batch result (the `presentX(record)`
+ * conveniences over the batch enrichers, which map 1:1). Throws — instead of a
+ * `!` assertion — if that contract is ever broken, naming the caller.
+ */
+export function onlyResult<T>(results: readonly T[], what: string): T {
+  const [first] = results;
+  if (results.length !== 1 || first === undefined) {
+    throw new Error(`${what}: expected exactly one result, got ${results.length}`);
+  }
+  return first;
+}

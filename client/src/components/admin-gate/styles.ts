@@ -8,9 +8,10 @@ export const s = {
     color: "var(--text-muted)",
     whiteSpace: "nowrap",
   } satisfies CSSProperties,
-  /** Visual "disabled" look for an aria-disabled (still focusable) control. */
-  inertControl: {
-    opacity: 0.6,
-    cursor: "not-allowed",
+  /** Block-level "Admins only" reason above a read-only list (AdminHint). */
+  blockHint: {
+    fontSize: 12,
+    color: "var(--text-muted)",
+    marginBottom: 8,
   } satisfies CSSProperties,
 };

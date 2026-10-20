@@ -3,7 +3,16 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
-import type { Agent, AgentListItem, AgentSkillLink, ModelInfo, Provider, ReviewStrategy, Skill } from "@devdigest/shared";
+import type {
+  Agent,
+  AgentListItem,
+  AgentSkillLink,
+  AgentWithActors,
+  ModelInfo,
+  Provider,
+  ReviewStrategy,
+  Skill,
+} from "@devdigest/shared";
 
 export function useAgents() {
   return useQuery({
@@ -15,7 +24,8 @@ export function useAgents() {
 export function useAgent(id: string | null | undefined) {
   return useQuery({
     queryKey: ["agent", id],
-    queryFn: () => api.get<Agent>(`/agents/${id}`),
+    // The server attaches `created_by` / `updated_by` (absent on pre-multi-user payloads).
+    queryFn: () => api.get<AgentWithActors>(`/agents/${id}`),
     enabled: !!id,
   });
 }
@@ -61,7 +71,7 @@ export interface UpdateAgentInput {
 export function useUpdateAgent() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, patch }: UpdateAgentInput) => api.put<Agent>(`/agents/${id}`, patch),
+    mutationFn: ({ id, patch }: UpdateAgentInput) => api.put<AgentWithActors>(`/agents/${id}`, patch),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["agents"] });
       qc.setQueryData(["agent", data.id], data);

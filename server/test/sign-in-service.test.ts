@@ -157,10 +157,13 @@ class FakeRepo implements SignInRepository {
         expiresAt: new Date(input.now.getTime() + OAUTH_FLOW_TTL_MS),
       });
     },
-    consume: async (stateHash: string, now: Date) => {
+    // Mirrors the SQL: `DELETE … WHERE state_hash = $1 AND binding_hash = $2` —
+    // a wrong binding matches (and deletes) nothing.
+    consume: async (stateHash: string, bindingHash: string, now: Date) => {
       const flow = this.state.flows.get(stateHash);
+      if (!flow || flow.bindingHash !== bindingHash) return undefined;
       this.state.flows.delete(stateHash);
-      if (!flow || flow.expiresAt.getTime() <= now.getTime()) return undefined;
+      if (flow.expiresAt.getTime() <= now.getTime()) return undefined;
       return flow;
     },
   };
@@ -302,25 +305,22 @@ describe('SignInService.start (AC-7, AC-16)', () => {
 });
 
 describe('SignInService.callback — state (AC-7)', () => {
-  it('rejects missing, mismatched-binding, reused and expired state with no session', async () => {
+  it('rejects missing, mismatched-binding, reused and expired state; a wrong binding leaves the flow usable', async () => {
     // missing
     await expectFlowError(service.callback({ code: 'c', bindingValue: 'b' }), 'auth_state_invalid');
 
-    // mismatched binding (another browser)
+    // mismatched binding (another browser) — and a missing one
     let flow = await begin();
     await expectFlowError(
       service.callback({ code: 'c', state: flow.state, bindingValue: 'someone-else' }),
       'auth_state_invalid',
     );
-    // the flow was consumed by the failed attempt — the right browser can't reuse it
-    await expectFlowError(
-      service.callback({ code: 'c', state: flow.state, bindingValue: flow.bindingValue }),
-      'auth_state_invalid',
-    );
-
-    // reused after a success
-    flow = await begin();
+    await expectFlowError(service.callback({ code: 'c', state: flow.state }), 'auth_state_invalid');
+    // G3: neither burned the victim's in-flight flow — the right browser still signs in…
+    expect(repo.state.flows.size).toBe(1);
     await service.callback({ code: 'c', state: flow.state, bindingValue: flow.bindingValue });
+
+    // …exactly once: reused after a success
     await expectFlowError(
       service.callback({ code: 'c', state: flow.state, bindingValue: flow.bindingValue }),
       'auth_state_invalid',

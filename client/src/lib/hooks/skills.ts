@@ -7,6 +7,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, upload } from "../api";
+import { errorChannelMeta, type ErrorChannelOptions } from "../query-meta";
 import type {
   Skill,
   SkillType,
@@ -66,10 +67,12 @@ export interface CreateSkillInput {
   evidence_files?: string[];
 }
 
-export function useCreateSkill() {
+/** `errorChannel: "local"` when the caller renders the failure inline (CreateSkillModal). */
+export function useCreateSkill({ errorChannel = "global" }: ErrorChannelOptions = {}) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateSkillInput) => api.post<Skill>("/skills", input),
+    ...errorChannelMeta(errorChannel),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["skills"] });
       qc.invalidateQueries({ queryKey: ["skills-usage"] });
@@ -158,5 +161,7 @@ export function useRestoreSkillVersion() {
 export function useImportSkillPreview() {
   return useMutation({
     mutationFn: (file: File) => upload<SkillImportPreview>("/skills/import", file),
+    // ImportSkillModal shows "import failed" inline in its drop zone.
+    ...errorChannelMeta("local"),
   });
 }

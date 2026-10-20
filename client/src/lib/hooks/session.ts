@@ -5,7 +5,7 @@
    out in google mode. It is read ONCE per page load (`staleTime: Infinity`)
    and re-read only on explicit invalidation — a 403 authz error (AC-34) or a
    role change on the Members screen. Role/permission helpers live in
-   `lib/permissions.ts` (`useCan`). */
+   `hooks/permissions.ts` (`useCan`). */
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";

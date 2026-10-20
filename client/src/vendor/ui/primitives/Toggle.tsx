@@ -1,19 +1,35 @@
 import React from "react";
+import { INERT_STYLE, isAriaDisabled, type AriaDisabledProps } from "./aria-disabled";
 
 export function Toggle({
   on,
   onChange,
   size = 18,
+  label,
+  style,
+  ...aria
 }: {
   on: boolean;
   onChange: (v: boolean) => void;
   size?: number;
-}) {
+  /** Accessible name of the switch (when no visible `<label>` wraps it). */
+  label?: string;
+} & AriaDisabledProps) {
+  const inert = isAriaDisabled(aria["aria-disabled"]);
   return (
     <button
-      onClick={() => onChange(!on)}
+      {...aria}
+      aria-disabled={inert || undefined}
+      onClick={(e) => {
+        if (inert) {
+          e.preventDefault();
+          return;
+        }
+        onChange(!on);
+      }}
       role="switch"
       aria-checked={on}
+      aria-label={label}
       style={{
         width: size * 1.85,
         height: size + 4,
@@ -23,6 +39,8 @@ export function Toggle({
         background: on ? "var(--accent)" : "var(--border-strong)",
         transition: "background .15s",
         position: "relative",
+        ...(inert ? INERT_STYLE : {}),
+        ...style,
       }}
     >
       <span

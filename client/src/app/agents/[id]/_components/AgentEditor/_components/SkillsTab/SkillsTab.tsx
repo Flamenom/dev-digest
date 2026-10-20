@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl";
 import { Badge, Checkbox, Chip, EmptyState, ErrorState, Skeleton, TextInput } from "@devdigest/ui";
 import type { Agent, Skill } from "@devdigest/shared";
 import { useAgentSkills, useSetAgentSkills, useWorkspaceSkills } from "@/lib/hooks/agents";
-import { useCan } from "@/lib/permissions";
+import { AdminHint, useAdminHint } from "@/components/admin-gate";
 import { linkedIdsOf, matchesFilter, moveTo, orderRows, toggleLinked } from "./helpers";
 import { s } from "./styles";
 
@@ -14,13 +14,13 @@ const DRAG_HANDLE_GLYPH = "≡";
 /** Skills tab — link/unlink and order the agent's skills (membership model).
     Every change posts the FULL ordered set to POST /agents/:id/skills.
     Attaching skills is Admin-only (AC-33): a Member sees the linked set and
-    order read-only (no toggling, no dragging) with the "Admins only" hint. */
+    order read-only (checkboxes aria-disabled and described by the visible
+    "Admins only" hint, no dragging). */
 export function SkillsTab({ agent }: { agent: Agent }) {
   const t = useTranslations("agents");
-  const tAuth = useTranslations("auth");
-  const { isAdmin, isPending: sessionPending } = useCan();
   // Inert until the session resolves (fail closed); the hint only once we know.
-  const readOnly = !isAdmin;
+  const adminHint = useAdminHint();
+  const { readOnly, describedBy } = adminHint;
   const skillsQ = useWorkspaceSkills();
   const linksQ = useAgentSkills(agent.id);
   const setSkills = useSetAgentSkills(agent.id);
@@ -113,7 +113,7 @@ export function SkillsTab({ agent }: { agent: Agent }) {
           />
         </div>
       </div>
-      {readOnly && !sessionPending && <p style={s.readOnlyHint}>{tAuth("gate.adminsOnly")}</p>}
+      <AdminHint hint={adminHint} />
       <p style={s.caption}>{t("skills.orderHint")}</p>
       {visible.length === 0 ? (
         <div style={s.noMatches}>{t("skills.noMatches")}</div>
@@ -126,7 +126,9 @@ export function SkillsTab({ agent }: { agent: Agent }) {
               linked={displayIds.includes(sk.id)}
               draggable={!readOnly && displayIds.includes(sk.id) && !filtering && !setSkills.isPending}
               dragging={dragId === sk.id}
-              onToggle={readOnly ? undefined : (on) => toggle(sk.id, on)}
+              onToggle={(on) => toggle(sk.id, on)}
+              readOnly={readOnly}
+              describedBy={describedBy}
               onDragStart={(e) => startDrag(e, sk.id)}
               onDragOver={(e) => dragOverRow(e, sk.id)}
               onDragEnd={endDrag}
@@ -146,6 +148,8 @@ function SkillRow({
   draggable,
   dragging,
   onToggle,
+  readOnly,
+  describedBy,
   onDragStart,
   onDragOver,
   onDragEnd,
@@ -155,8 +159,11 @@ function SkillRow({
   linked: boolean;
   draggable: boolean;
   dragging: boolean;
-  /** Absent = read-only (Member): the checkbox shows the state but does nothing. */
-  onToggle?: (on: boolean) => void;
+  onToggle: (on: boolean) => void;
+  /** Member: the checkbox shows the state, is aria-disabled and does nothing. */
+  readOnly: boolean;
+  /** Id of the visible "Admins only" reason. */
+  describedBy?: string;
   onDragStart: (e: React.DragEvent) => void;
   onDragOver: (e: React.DragEvent) => void;
   onDragEnd: () => void;
@@ -179,7 +186,12 @@ function SkillRow({
       ) : (
         <span style={s.handlePlaceholder} aria-hidden />
       )}
-      <Checkbox checked={linked} onChange={onToggle} />
+      <Checkbox
+        checked={linked}
+        onChange={onToggle}
+        aria-disabled={readOnly}
+        aria-describedby={describedBy}
+      />
       <span className="mono" style={s.name}>
         {skill.name}
       </span>

@@ -1,32 +1,12 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
-import type { Convention } from "@devdigest/shared";
-import messages from "../../../../../../../messages/en/conventions.json";
-import authMessages from "../../../../../../../messages/en/auth.json";
-
-// Multi-user gating: drive the session-derived role directly ("admin" =
-// today's behaviour, also what local mode resolves to).
-const perm = vi.hoisted(() => ({ role: "admin" as "admin" | "member" }));
-vi.mock("@/lib/permissions", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/permissions")>();
-  const current = () =>
-    actual.buildPermissions({ mode: "google", role: perm.role, userId: "u1", isPending: false });
-  return { ...actual, useCan: current, useIsAdmin: () => current().isAdmin };
-});
-
-const updateMutate = vi.fn();
-vi.mock("@/lib/hooks/conventions", () => ({
-  useUpdateConvention: () => ({ mutate: updateMutate, isPending: false }),
-}));
-
+import React from "react";
+import { describe, it, expect } from "vitest";
+import { screen, cleanup, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { Convention, ConventionListResponse } from "@devdigest/shared";
+import { useConventions } from "@/lib/hooks/conventions";
+import { renderWithProviders, type RouteRequest } from "@/test/render-with-providers";
 import { ConventionCard } from "./ConventionCard";
 import type { EvidenceLinkRepo } from "../../helpers";
-
-afterEach(() => {
-  cleanup();
-  updateMutate.mockClear();
-});
 
 function convention(overrides: Partial<Convention> = {}): Convention {
   return {
@@ -60,27 +40,66 @@ const GITLAB_REPO: EvidenceLinkRepo = {
   web_url: "https://gitlab.com/space-profit/platform/crm-frontend",
 };
 
-function renderCard(c: Convention, repo: EvidenceLinkRepo | null = REPO) {
-  render(
-    <NextIntlClientProvider locale="en" messages={{ conventions: messages, auth: authMessages }}>
-      <ConventionCard convention={c} repoId="r1" repo={repo} />
-    </NextIntlClientProvider>,
+/** Renders the card from the real conventions query, as the page does — so a
+    mutation's effect is visible once the list re-reads. "Re-read" forces a
+    fresh server read and counts it, so a test can await a read issued AFTER
+    an interaction (a sync point that reflects any write that interaction made). */
+function CardFromApi({ repo }: { repo: EvidenceLinkRepo | null }) {
+  const { data, refetch } = useConventions("r1");
+  const [reads, setReads] = React.useState(0);
+  const first = data?.conventions[0];
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          void refetch().then(() => setReads((n) => n + 1));
+        }}
+      >
+        Re-read
+      </button>
+      <output aria-label="server reads">{reads}</output>
+      {first ? <ConventionCard convention={first} repoId="r1" repo={repo} /> : null}
+    </>
   );
 }
 
+/** In-memory conventions API: PATCH applies the patch, the list re-reads it. */
+function conventionsApi(initial: Convention) {
+  let current = initial;
+  return {
+    "GET /repos/r1/conventions": (): ConventionListResponse => ({ conventions: [current], stats: null }),
+    "PATCH /conventions/:id": (req: RouteRequest) => {
+      current = { ...current, ...(req.body as Partial<Convention>) };
+      return current;
+    },
+  };
+}
+
+function renderCard(c: Convention, repo: EvidenceLinkRepo | null = REPO, session: "admin" | "member" = "admin") {
+  return renderWithProviders(<CardFromApi repo={repo} />, { session, routes: conventionsApi(c) });
+}
+
+/** Wait until the session resolved to Admin (the card's controls are live). */
+async function findLiveAccept() {
+  const accept = await screen.findByRole("button", { name: /Accept/ });
+  await waitFor(() => expect(accept).not.toHaveAttribute("aria-disabled"));
+  return accept;
+}
+
 describe("ConventionCard", () => {
-  it("renders rule, category, evidence label, snippet and confidence", () => {
+  it("renders rule, category, evidence label, snippet and confidence", async () => {
     renderCard(convention());
-    expect(screen.getByText("Always use async/await instead of .then() chains")).toBeInTheDocument();
+    expect(await screen.findByText("Always use async/await instead of .then() chains")).toBeInTheDocument();
     expect(screen.getByText("error-handling")).toBeInTheDocument();
     expect(screen.getByText("src/api/users.ts:23-31")).toBeInTheDocument();
     expect(screen.getByText("const user = await db.users.find(id);")).toBeInTheDocument();
     expect(screen.getByText("91%")).toBeInTheDocument();
   });
 
-  it("links the evidence to GitHub with line anchors; no repo -> no link", () => {
+  it("links the evidence to GitHub with line anchors; no repo -> no link", async () => {
     renderCard(convention());
-    const link = screen.getByRole("link", { name: "View on GitHub" });
+    const link = await screen.findByRole("link", { name: "View on GitHub" });
     expect(link).toHaveAttribute(
       "href",
       "https://github.com/acme/payments-api/blob/main/src/api/users.ts#L23-L31",
@@ -89,19 +108,20 @@ describe("ConventionCard", () => {
 
     cleanup();
     renderCard(convention({ evidence_start_line: null, evidence_end_line: null }));
-    expect(screen.getByRole("link", { name: /GitHub/ })).toHaveAttribute(
+    expect(await screen.findByRole("link", { name: /GitHub/ })).toHaveAttribute(
       "href",
       "https://github.com/acme/payments-api/blob/main/src/api/users.ts",
     );
 
     cleanup();
     renderCard(convention(), null);
+    expect(await screen.findByText("src/api/users.ts:23-31")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /GitHub/ })).not.toBeInTheDocument();
   });
 
-  it("labels and links GitLab evidence as View on GitLab", () => {
+  it("labels and links GitLab evidence as View on GitLab", async () => {
     renderCard(convention({ evidence_start_line: 3, evidence_end_line: 5 }), GITLAB_REPO);
-    const link = screen.getByRole("link", { name: "View on GitLab" });
+    const link = await screen.findByRole("link", { name: "View on GitLab" });
     expect(link).toHaveAttribute(
       "href",
       "https://gitlab.com/space-profit/platform/crm-frontend/-/blob/main/src/api/users.ts#L3-5",
@@ -109,69 +129,78 @@ describe("ConventionCard", () => {
     expect(screen.queryByRole("link", { name: /GitHub/ })).not.toBeInTheDocument();
   });
 
-  it("Accept fires a status mutation; clicking the active state toggles back to pending", () => {
-    renderCard(convention());
-    fireEvent.click(screen.getByText("Accept"));
-    expect(updateMutate).toHaveBeenCalledWith({ id: "c1", patch: { status: "accepted" } });
+  it("Accept marks the convention accepted; clicking the active state toggles back to pending", async () => {
+    const user = userEvent.setup();
+    const { router } = renderCard(convention());
+    await user.click(await findLiveAccept());
+    expect(await screen.findByRole("button", { name: "Accepted" })).toBeInTheDocument();
+    expect(router.calls.find((c) => c.method === "PATCH")?.body).toEqual({ status: "accepted" });
 
-    cleanup();
-    updateMutate.mockClear();
-    renderCard(convention({ status: "accepted" }));
-    fireEvent.click(screen.getByText("Accepted"));
-    expect(updateMutate).toHaveBeenCalledWith({ id: "c1", patch: { status: "pending" } });
+    await user.click(screen.getByRole("button", { name: "Accepted" }));
+    expect(await screen.findByRole("button", { name: "Accept" })).toBeInTheDocument();
   });
 
-  it("Reject fires a rejected mutation", () => {
+  it("Reject marks the convention rejected", async () => {
+    const user = userEvent.setup();
     renderCard(convention());
-    fireEvent.click(screen.getByText("Reject"));
-    expect(updateMutate).toHaveBeenCalledWith({ id: "c1", patch: { status: "rejected" } });
+    await findLiveAccept();
+    await user.click(screen.getByRole("button", { name: "Reject" }));
+    expect(await screen.findByRole("button", { name: "Rejected" })).toBeInTheDocument();
   });
 
-  it("inline edit saves a trimmed rule patch", () => {
-    renderCard(convention());
-    fireEvent.click(screen.getByLabelText("Edit rule"));
+  it("inline edit saves a trimmed rule", async () => {
+    const user = userEvent.setup();
+    const { router } = renderCard(convention());
+    await findLiveAccept();
+    await user.click(screen.getByRole("button", { name: "Edit rule" }));
     const input = screen.getByDisplayValue("Always use async/await instead of .then() chains");
-    fireEvent.change(input, { target: { value: "  Prefer async/await  " } });
-    fireEvent.click(screen.getByText("Save"));
-    expect(updateMutate).toHaveBeenCalledWith({ id: "c1", patch: { rule: "Prefer async/await" } });
+    await user.clear(input);
+    await user.type(input, "  Prefer async/await  ");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Prefer async/await")).toBeInTheDocument();
+    expect(router.calls.find((c) => c.method === "PATCH")?.body).toEqual({ rule: "Prefer async/await" });
   });
 
-  it("cancel restores the original rule without mutating", () => {
-    renderCard(convention());
-    fireEvent.click(screen.getByLabelText("Edit rule"));
+  it("cancel restores the original rule without saving", async () => {
+    const user = userEvent.setup();
+    const { router } = renderCard(convention());
+    await findLiveAccept();
+    await user.click(screen.getByRole("button", { name: "Edit rule" }));
     const input = screen.getByDisplayValue("Always use async/await instead of .then() chains");
-    fireEvent.change(input, { target: { value: "changed" } });
-    fireEvent.click(screen.getByText("Cancel"));
-    expect(updateMutate).not.toHaveBeenCalled();
+    await user.clear(input);
+    await user.type(input, "changed");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.getByText("Always use async/await instead of .then() chains")).toBeInTheDocument();
+
+    // Sync point: a later write that must be the FIRST PATCH — had Cancel saved,
+    // its rule PATCH would already be recorded ahead of this one.
+    await user.click(screen.getByRole("button", { name: "Reject" }));
+    expect(await screen.findByRole("button", { name: "Rejected" })).toBeInTheDocument();
+    expect(screen.getByText("Always use async/await instead of .then() chains")).toBeInTheDocument();
+    expect(router.calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ status: "rejected" }]);
   });
 });
 
 describe("ConventionCard gating (AC-33)", () => {
-  afterEach(() => {
-    perm.role = "admin";
-  });
-
-  it("Member: Accept / Reject are aria-disabled, described by one 'Admins only' hint, inert; no rule edit", () => {
-    perm.role = "member";
-    renderCard(convention());
-    const accept = screen.getByRole("button", { name: /Accept/ });
+  it("Member: Accept / Reject / Edit rule are aria-disabled and inert; one 'Admins only' hint", async () => {
+    const user = userEvent.setup();
+    const { router } = renderCard(convention(), REPO, "member");
+    const accept = await screen.findByRole("button", { name: /Accept/, description: "Admins only" });
     const reject = screen.getByRole("button", { name: /Reject/ });
-    for (const btn of [accept, reject]) {
+    expect(reject).toHaveAccessibleDescription("Admins only");
+    const edit = screen.getByRole("button", { name: "Edit rule" });
+    for (const btn of [accept, reject, edit]) {
       expect(btn).toHaveAttribute("aria-disabled", "true");
-      expect(btn).toHaveAccessibleDescription("Admins only");
-      fireEvent.click(btn);
+      await user.click(btn);
     }
+    // Sync point: a fresh server read issued after the clicks — any PATCH they
+    // had sent is applied server-side and would show in the re-read card.
+    await user.click(screen.getByRole("button", { name: "Re-read" }));
+    expect(await screen.findByRole("status", { name: "server reads" })).toHaveTextContent("1");
     expect(screen.getAllByText("Admins only")).toHaveLength(1);
-    expect(updateMutate).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Edit rule" })).not.toBeInTheDocument();
-  });
-
-  it("Admin: Accept fires the status PATCH", () => {
-    renderCard(convention());
-    const accept = screen.getByRole("button", { name: /Accept/ });
-    expect(accept).not.toHaveAttribute("aria-disabled");
-    fireEvent.click(accept);
-    expect(updateMutate).toHaveBeenCalledWith({ id: "c1", patch: { status: "accepted" } });
+    // Nothing changed: no edit field opened, the status stayed, nothing was sent.
+    expect(screen.queryByDisplayValue("Always use async/await instead of .then() chains")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Accept" })).toBeInTheDocument();
+    expect(router.calls.some((c) => c.method === "PATCH")).toBe(false);
   });
 });

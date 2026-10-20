@@ -1,61 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
+import { describe, it, expect, vi } from "vitest";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { Modal } from "@devdigest/ui";
-import type { EvalBatchRecord, EvalCompare, EvalPromoteResult } from "@devdigest/shared";
+import type { Agent, EvalBatchRecord, EvalCompare, EvalPromoteResult } from "@devdigest/shared";
 import evalMessages from "../../../../../messages/en/eval.json";
-import authMessages from "../../../../../messages/en/auth.json";
-
-/* The client test harness has no MSW and no QueryClientProvider: the hooks are
-   module-mocked and driven from this mutable state object. Every reference to
-   `state` lives inside the returned hook bodies, which only run at render time,
-   so the factory never touches it before it is initialised. */
-const state: {
-  compare: { data: EvalCompare | undefined; isLoading: boolean; isError: boolean; error: unknown };
-  promoteResult: EvalPromoteResult;
-  promotePending: boolean;
-} = {
-  compare: { data: undefined, isLoading: false, isError: false, error: null },
-  promoteResult: {} as EvalPromoteResult,
-  promotePending: false,
-};
-
-const promoteMutate = vi.fn(
-  (
-    _vars: { agentId: string; version: number },
-    opts?: { onSuccess?: (r: EvalPromoteResult) => void },
-  ) => opts?.onSuccess?.(state.promoteResult),
-);
-
-vi.mock("@/lib/hooks/eval", () => ({
-  useEvalCompare: () => state.compare,
-  usePromoteAgentVersion: () => ({ mutate: promoteMutate, isPending: state.promotePending }),
-}));
-
-const toastSuccess = vi.fn();
-vi.mock("@/lib/toast", () => ({
-  useToast: () => ({ success: toastSuccess, error: vi.fn(), info: vi.fn() }),
-}));
-
-/* Multi-user gating reads the session probe: mocked as the local-mode Admin
-   (every control enabled, as before); a test may flip `session` to a Member. */
-const session = vi.hoisted(() => ({
-  mode: "local" as "local" | "google",
-  role: "admin" as "admin" | "member",
-  userId: "u-admin",
-}));
-vi.mock("@/lib/hooks/session", () => ({
-  SESSION_QUERY_KEY: ["session"],
-  useSession: () => ({
-    data: {
-      mode: session.mode,
-      user: { id: session.userId, email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: session.role },
-      workspace: { id: "w1", name: "Team" },
-    },
-    isPending: false,
-  }),
-}));
-
+import { renderWithProviders, type Routes } from "@/test/render-with-providers";
 import { CompareModal, type CompareModalProps } from "./CompareModal";
 
 /* ------------------------------------------------------------- fixtures -- */
@@ -115,48 +64,70 @@ function compareFixture(overrides: Partial<EvalCompare> = {}): EvalCompare {
   };
 }
 
-function renderModal(props: Partial<CompareModalProps> = {}) {
-  const onClose = props.onClose ?? vi.fn();
-  render(
-    <NextIntlClientProvider locale="en" messages={{ auth: authMessages, eval: evalMessages }}>
-      <CompareModal
-        baseBatchId="b-base"
-        headBatchId="b-head"
-        agentId="a-1"
-        currentVersion={9}
-        {...props}
-        onClose={onClose}
-      />
-    </NextIntlClientProvider>,
-  );
-  return onClose;
+const AGENT: Agent = {
+  id: "a-1",
+  name: "Security Reviewer",
+  description: "",
+  provider: "openai",
+  model: "gpt-4.1",
+  system_prompt: "You are a security reviewer.",
+  output_schema: null,
+  strategy: "single-pass",
+  ci_fail_on: "critical",
+  repo_intel: true,
+  enabled: true,
+  version: 10,
+  attached_doc_paths: [],
+};
+
+function promoted(overrides: Partial<EvalPromoteResult> = {}): EvalPromoteResult {
+  return { agent: AGENT, promoted_from_version: 7, new_version: 10, changed: true, ...overrides };
 }
 
-beforeEach(() => {
-  state.compare = { data: compareFixture(), isLoading: false, isError: false, error: null };
-  state.promoteResult = {
-    agent: {} as EvalPromoteResult["agent"],
-    promoted_from_version: 7,
-    new_version: 10,
-    changed: true,
-  };
-  state.promotePending = false;
-});
+interface ModalApi {
+  compare?: EvalCompare;
+  promote?: EvalPromoteResult;
+  session?: "admin" | "member";
+}
 
-afterEach(() => {
-  cleanup();
-  promoteMutate.mockClear();
-  toastSuccess.mockClear();
-});
+function compareRoutes({ compare = compareFixture(), promote = promoted() }: ModalApi): Routes {
+  return {
+    "GET /evals/compare": compare,
+    "POST /agents/a-1/versions/7/promote": promote,
+  };
+}
+
+function renderModal(api: ModalApi = {}, props: Partial<CompareModalProps> = {}) {
+  const onClose = props.onClose ?? vi.fn();
+  const result = renderWithProviders(
+    <CompareModal
+      baseBatchId="b-base"
+      headBatchId="b-head"
+      agentId="a-1"
+      currentVersion={9}
+      {...props}
+      onClose={onClose}
+    />,
+    { session: api.session ?? "admin", routes: compareRoutes(api) },
+  );
+  return { ...result, onClose };
+}
+
+/** The promote button once the session resolved to Admin (live). */
+async function findLivePromote() {
+  const promote = await screen.findByRole("button", { name: "Promote v7" });
+  await waitFor(() => expect(promote).not.toHaveAttribute("aria-disabled"));
+  return promote;
+}
 
 /* ---------------------------------------------------------------- tests -- */
 
 describe("CompareModal delta cards", () => {
-  it("encodes every metric change with a glyph and unit text, not colour alone (AC-44)", () => {
+  it("encodes every metric change with a glyph and unit text, not colour alone (AC-44)", async () => {
     renderModal();
 
     // Each card shows both endpoints and a signed, unit-bearing delta.
-    expect(screen.getByText("78% → 82%")).toBeInTheDocument();
+    expect(await screen.findByText("78% → 82%")).toBeInTheDocument();
     expect(screen.getByText("▲4pt")).toBeInTheDocument();
     expect(screen.getByText("90% → 86%")).toBeInTheDocument();
     expect(screen.getByText("▼4pt")).toBeInTheDocument();
@@ -167,15 +138,16 @@ describe("CompareModal delta cards", () => {
     expect(screen.getByText("▲$0.0031")).toBeInTheDocument();
   });
 
-  it("renders an em dash for a null delta and drops the COST card when a side is null", () => {
-    state.compare.data = compareFixture({
-      base: batch({ recall: null, cost_usd: null }),
-      head: batch({ batch_id: "b-head", agent_version: 9, recall: 0.82, cost_usd: 0.0152 }),
-      deltas: { recall: null, precision: 0, citation_accuracy: 0, cost_usd: null },
+  it("renders an em dash for a null delta and drops the COST card when a side is null", async () => {
+    renderModal({
+      compare: compareFixture({
+        base: batch({ recall: null, cost_usd: null }),
+        head: batch({ batch_id: "b-head", agent_version: 9, recall: 0.82, cost_usd: 0.0152 }),
+        deltas: { recall: null, precision: 0, citation_accuracy: 0, cost_usd: null },
+      }),
     });
-    renderModal();
 
-    expect(screen.getByText("— → 82%")).toBeInTheDocument();
+    expect(await screen.findByText("— → 82%")).toBeInTheDocument();
     // The recall delta itself is a bare em dash, never a vacuous "0pt".
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
     expect(screen.queryByText(evalMessages.compare.delta.cost)).not.toBeInTheDocument();
@@ -183,14 +155,10 @@ describe("CompareModal delta cards", () => {
 });
 
 describe("CompareModal comparability", () => {
-  it("warns above the delta cards and names the changed cases (AC-33)", () => {
-    state.compare.data = compareFixture({
-      comparable: false,
-      changed_case_ids: ["case-a", "case-b"],
-    });
-    renderModal();
+  it("warns above the delta cards and names the changed cases (AC-33)", async () => {
+    renderModal({ compare: compareFixture({ comparable: false, changed_case_ids: ["case-a", "case-b"] }) });
 
-    const strip = screen.getByRole("alert");
+    const strip = await screen.findByRole("alert");
     expect(strip).toHaveTextContent(evalMessages.compare.notComparable);
     expect(strip).toHaveTextContent("2 cases changed");
     expect(strip).toHaveTextContent("case-a");
@@ -198,21 +166,21 @@ describe("CompareModal comparability", () => {
 
     // "above the deltas": the strip precedes the first metric card in the DOM.
     const recallCard = screen.getByText("Recall");
-    expect(strip.compareDocumentPosition(recallCard) & Node.DOCUMENT_POSITION_FOLLOWING).
-      toBeTruthy();
+    expect(strip.compareDocumentPosition(recallCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("shows no warning strip when the two batches ran the same case set", () => {
+  it("shows no warning strip when the two batches ran the same case set", async () => {
     renderModal();
+    expect(await screen.findByText("78% → 82%")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
 
 describe("CompareModal system prompt diff", () => {
-  it("renders the diff as escaped plain text with leading +/− characters", () => {
+  it("renders the diff as escaped plain text with leading +/− characters", async () => {
     renderModal();
 
-    const block = screen.getByRole("group", { name: evalMessages.compare.promptDiff });
+    const block = await screen.findByRole("group", { name: evalMessages.compare.promptDiff });
     expect(block.textContent).toContain("−Flag every nit.");
     expect(block.textContent).toContain("+<script>alert('xss')</script>");
     expect(block.textContent).toContain(" You are a security reviewer.");
@@ -226,104 +194,93 @@ describe("CompareModal system prompt diff", () => {
     expect(screen.getByText(evalMessages.compare.legendNew)).toBeInTheDocument();
   });
 
-  it("explains an unavailable diff instead of rendering a fake one", () => {
-    state.compare.data = compareFixture({ prompt_diff_available: false, prompt_diff: [] });
-    renderModal();
+  it("explains an unavailable diff instead of rendering a fake one", async () => {
+    renderModal({ compare: compareFixture({ prompt_diff_available: false, prompt_diff: [] }) });
 
-    expect(screen.getByText(evalMessages.compare.promptDiffUnavailable)).toBeInTheDocument();
-    expect(
-      screen.queryByRole("group", { name: evalMessages.compare.promptDiff }),
-    ).not.toBeInTheDocument();
+    expect(await screen.findByText(evalMessages.compare.promptDiffUnavailable)).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: evalMessages.compare.promptDiff })).not.toBeInTheDocument();
   });
 });
 
 describe("CompareModal dialog behaviour (AC-45)", () => {
-  it("traps focus and Escape closes only the compare modal, not the dialog under it", () => {
+  it("traps focus and Escape closes only the compare modal, not the dialog under it", async () => {
+    const user = userEvent.setup();
     const closeUnderlying = vi.fn();
     const onClose = vi.fn();
-    render(
-      <NextIntlClientProvider locale="en" messages={{ auth: authMessages, eval: evalMessages }}>
+    renderWithProviders(
+      <>
         <Modal title="Underlying dialog" onClose={closeUnderlying} />
-        <CompareModal
-          baseBatchId="b-base"
-          headBatchId="b-head"
-          agentId="a-1"
-          currentVersion={9}
-          onClose={onClose}
-        />
-      </NextIntlClientProvider>,
+        <CompareModal baseBatchId="b-base" headBatchId="b-head" agentId="a-1" currentVersion={9} onClose={onClose} />
+      </>,
+      { routes: compareRoutes({}) },
     );
 
     const dialog = screen.getByRole("dialog", { name: evalMessages.compare.title });
     // Opening moves focus inside the topmost dialog.
     expect(dialog.contains(document.activeElement)).toBe(true);
+    await screen.findByText("78% → 82%");
 
     // Tab from the last focusable wraps back inside — focus never reaches the
     // dialog underneath.
     const focusables = Array.from(
       dialog.querySelectorAll<HTMLElement>("button, a[href], input, textarea, select"),
     );
-    focusables[focusables.length - 1]!.focus();
-    fireEvent.keyDown(document, { key: "Tab" });
-    expect(document.activeElement).toBe(focusables[0]);
+    const first = focusables.at(0);
+    const last = focusables.at(-1);
+    if (!first || !last) throw new Error("no focusables in the dialog");
+    last.focus();
+    await user.tab();
+    expect(document.activeElement).toBe(first);
 
-    fireEvent.keyDown(document, { key: "Escape" });
+    await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(closeUnderlying).not.toHaveBeenCalled();
   });
 });
 
 describe("CompareModal promote", () => {
-  it("confirms the append-only version bump before promoting, then toasts it", () => {
-    renderModal();
+  it("confirms the append-only version bump before promoting, then toasts it", async () => {
+    const user = userEvent.setup();
+    const { router } = renderModal();
 
-    fireEvent.click(screen.getByRole("button", { name: "Promote v7" }));
+    await user.click(await findLivePromote());
     // §9.2: the copy must say a NEW version is created, not that v9 is rolled back.
     expect(screen.getByText(/this creates v10 with v7's settings/)).toBeInTheDocument();
-    expect(promoteMutate).not.toHaveBeenCalled();
+    expect(router.calls.some((c) => c.method === "POST")).toBe(false);
 
-    fireEvent.click(screen.getByRole("button", { name: "Promote v7" }));
-    expect(promoteMutate).toHaveBeenCalledTimes(1);
-    expect(promoteMutate.mock.calls[0]![0]).toEqual({ agentId: "a-1", version: 7 });
-    expect(toastSuccess).toHaveBeenCalledWith("v7 promoted as v10.");
+    await user.click(screen.getByRole("button", { name: "Promote v7" }));
+    expect(await screen.findByText("v7 promoted as v10.")).toBeInTheDocument();
+    expect(router.calls.find((c) => c.method === "POST")?.path).toBe("/agents/a-1/versions/7/promote");
   });
 
-  it("reports an unchanged configuration instead of claiming a new version", () => {
-    state.promoteResult = {
-      agent: {} as EvalPromoteResult["agent"],
-      promoted_from_version: 7,
-      new_version: 9,
-      changed: false,
-    };
-    renderModal();
+  it("reports an unchanged configuration instead of claiming a new version", async () => {
+    const user = userEvent.setup();
+    renderModal({ promote: promoted({ new_version: 9, changed: false }) });
 
-    fireEvent.click(screen.getByRole("button", { name: "Promote v7" }));
-    fireEvent.click(screen.getByRole("button", { name: "Promote v7" }));
+    await user.click(await findLivePromote());
+    await user.click(screen.getByRole("button", { name: "Promote v7" }));
 
-    expect(toastSuccess).toHaveBeenCalledWith("v7 is already the active configuration.");
+    expect(await screen.findByText("v7 is already the active configuration.")).toBeInTheDocument();
   });
 
-  it("Member: Promote is aria-disabled with an 'Admins only' description and never confirms (AC-33)", () => {
-    session.mode = "google";
-    session.role = "member";
-    try {
-      renderModal();
-      const promote = screen.getByRole("button", { name: "Promote v7" });
-      expect(promote).toHaveAttribute("aria-disabled", "true");
-      expect(promote).toHaveAccessibleDescription("Admins only");
-      fireEvent.click(promote);
-      expect(screen.queryByText(/this creates v10/)).not.toBeInTheDocument();
-      expect(promoteMutate).not.toHaveBeenCalled();
-    } finally {
-      session.mode = "local";
-      session.role = "admin";
-    }
+  it("Member: Promote is aria-disabled with an 'Admins only' description and never confirms (AC-33)", async () => {
+    const user = userEvent.setup();
+    const { router, onClose } = renderModal({ session: "member" });
+    const promote = await screen.findByRole("button", { name: "Promote v7", description: "Admins only" });
+    expect(promote).toHaveAttribute("aria-disabled", "true");
+    await user.click(promote);
+    // Sync point: an action a Member CAN take after the gated click (Escape
+    // dismisses the modal) — the click's effects are committed by then.
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/this creates v10/)).not.toBeInTheDocument();
+    expect(router.calls.some((c) => c.method === "POST")).toBe(false);
   });
 
-  it("offers no promote action when the base batch has no recorded version", () => {
-    state.compare.data = compareFixture({ promote_target_version: null });
-    renderModal();
+  it("offers no promote action when the base batch has no recorded version", async () => {
+    renderModal({ compare: compareFixture({ promote_target_version: null }) });
 
+    expect(await screen.findByText("78% → 82%")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Promote/ })).not.toBeInTheDocument();
     // The modal still renders and is still dismissible.
     expect(screen.getByRole("dialog", { name: evalMessages.compare.title })).toBeInTheDocument();

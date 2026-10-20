@@ -1,6 +1,7 @@
 {
   "card": {
     "noDescription": "No description",
+    "toggleLabel": "{name} enabled",
     "skillCount": "{count} skills"
   },
   "list": {

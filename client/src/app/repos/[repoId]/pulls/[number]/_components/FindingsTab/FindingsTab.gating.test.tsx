@@ -5,35 +5,15 @@
  * the server enforces the same rules.
  */
 import React from "react";
-import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
-import { QueryClient, QueryClientProvider, type UseMutationResult } from "@tanstack/react-query";
-import type {
-  CurrentSession,
-  ReviewRecordWithActor,
-  Role,
-  RunSummaryWithActor,
-} from "@devdigest/shared";
-import messages from "../../../../../../../../messages/en/prReview.json";
-import authMessages from "../../../../../../../../messages/en/auth.json";
-
-// Live progress streams over EventSource (jsdom has none) — not under test here.
-vi.mock("../RunStatus", () => ({ RunStatus: () => null }));
-
+import { describe, it, expect, vi } from "vitest";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { ReviewRecordWithActor, Role, RunSummaryWithActor } from "@devdigest/shared";
+import { useCancelRun } from "@/lib/hooks/reviews";
+import { renderWithProviders, sessionFor } from "@/test/render-with-providers";
 import { FindingsTab } from "./FindingsTab";
 
-afterEach(cleanup);
-
 const ME = "uA";
-
-function session(role: Role): CurrentSession {
-  return {
-    mode: "google",
-    user: { id: ME, email: "a@onlytraf.com", name: "Alice", avatar_url: null, role },
-    workspace: { id: "w1", name: "Team" },
-  };
-}
 
 function run(o: Partial<RunSummaryWithActor>): RunSummaryWithActor {
   return {
@@ -83,56 +63,56 @@ const REVIEW: ReviewRecordWithActor = {
   findings: [],
 } as unknown as ReviewRecordWithActor;
 
-function renderTab(role: Role) {
-  const qc = new QueryClient();
-  qc.setQueryData(["session"], session(role));
-  const mutate = vi.fn();
-  const cancelMutation = { mutate, isPending: false } as unknown as UseMutationResult<
-    unknown,
-    unknown,
-    string,
-    unknown
-  >;
-  const onDelete = vi.fn();
-  render(
-    <NextIntlClientProvider locale="en" messages={{ prReview: messages, auth: authMessages }}>
-      <QueryClientProvider client={qc}>
-        <FindingsTab
-          prId="pr-1"
-          liveRunIds={["mine", "theirs"]}
-          reviewRunning
-          lethalTrifecta={[]}
-          runs={[REVIEW]}
-          prRuns={PR_RUNS}
-          prCommits={[]}
-          cancelMutation={cancelMutation}
-          repo={null}
-          readOnly={false}
-          onOpenTrace={() => {}}
-          onDelete={onDelete}
-          onRunDone={() => {}}
-        />
-      </QueryClientProvider>
-    </NextIntlClientProvider>,
+/** The PR page passes its real cancel mutation down; so does this harness. */
+function FindingsTabWithCancel({ onDelete }: { onDelete: (runId: string) => void }) {
+  const cancel = useCancelRun();
+  return (
+    <FindingsTab
+      prId="pr-1"
+      liveRunIds={["mine", "theirs"]}
+      reviewRunning
+      lethalTrifecta={[]}
+      runs={[REVIEW]}
+      prRuns={PR_RUNS}
+      prCommits={[]}
+      cancelMutation={cancel}
+      repo={null}
+      readOnly={false}
+      onOpenTrace={() => {}}
+      onDelete={onDelete}
+      onRunDone={() => {}}
+    />
   );
-  return { mutate, onDelete };
+}
+
+function renderTab(role: Role) {
+  const onDelete = vi.fn();
+  const { router } = renderWithProviders(<FindingsTabWithCancel onDelete={onDelete} />, {
+    session: sessionFor(role, { userId: ME, name: "Alice" }),
+    routes: { "POST /runs/:id/cancel": { ok: true } },
+  });
+  const cancelled = () =>
+    router.calls.filter((c) => c.method === "POST").map((c) => c.path.split("/").at(2));
+  return { onDelete, cancelled };
 }
 
 describe("FindingsTab — run gating", () => {
-  it("Member: cancels only their own run (row + live Cancel), no Delete run / Delete review, sees initiators", () => {
-    const { mutate } = renderTab("member");
+  it("Member: cancels only their own run (row + live Cancel), no Delete run / Delete review, sees initiators", async () => {
+    const user = userEvent.setup();
+    const { cancelled } = renderTab("member");
 
-    // Exactly one per-row Cancel — on the run the Member started.
-    const cancels = screen.getAllByRole("button", { name: "Cancel run" });
-    expect(cancels).toHaveLength(1);
-    fireEvent.click(cancels[0]!);
-    expect(mutate).toHaveBeenLastCalledWith("mine");
+    // Exactly one per-row Cancel — on the run the Member started (once the session resolved).
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Cancel run" })).toHaveLength(1));
+    const [ownCancel] = screen.getAllByRole("button", { name: "Cancel run" });
+    if (!ownCancel) throw new Error("no Cancel run button");
+    await user.click(ownCancel);
+    // A cancel renders nothing of its own here (run state arrives via the
+    // props/stream), so the request is the only observable outcome.
+    await waitFor(() => expect(cancelled()).toEqual(["mine"]));
 
     // The live "Cancel" cancels only the Member's own live run.
-    mutate.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(mutate).toHaveBeenCalledTimes(1);
-    expect(mutate).toHaveBeenCalledWith("mine");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(cancelled()).toEqual(["mine", "mine"]));
 
     expect(screen.queryByRole("button", { name: "Delete run" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete this review run" })).not.toBeInTheDocument();
@@ -142,17 +122,16 @@ describe("FindingsTab — run gating", () => {
     expect(screen.getAllByText("Run by Bob")).toHaveLength(3);
   });
 
-  it("Admin: cancels any run and keeps Delete run / Delete review", () => {
-    const { mutate, onDelete } = renderTab("admin");
+  it("Admin: cancels any run and keeps Delete run / Delete review", async () => {
+    const user = userEvent.setup();
+    const { onDelete, cancelled } = renderTab("admin");
 
-    expect(screen.getAllByRole("button", { name: "Cancel run" })).toHaveLength(2);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Cancel run" })).toHaveLength(2));
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(mutate).toHaveBeenCalledWith("mine");
-    expect(mutate).toHaveBeenCalledWith("theirs");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(cancelled().sort()).toEqual(["mine", "theirs"]));
 
-    const settledRow = screen.getByRole("button", { name: "Delete run" });
-    fireEvent.click(settledRow);
+    await user.click(screen.getByRole("button", { name: "Delete run" }));
     expect(onDelete).toHaveBeenCalledWith("settled");
     expect(screen.getByRole("button", { name: "Delete this review run" })).toBeInTheDocument();
   });

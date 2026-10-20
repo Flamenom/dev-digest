@@ -118,6 +118,35 @@ d('SecretStoreRepository', () => {
     expect((await repo.listByKeyId('k9', ws2)).map((r) => r.keyName)).toEqual(['GITHUB_TOKEN', 'GITLAB_TOKEN']);
   });
 
+  it('G6: replaceMany is one batched statement — inserts + replaces, joins a tx, refuses duplicate slots', async () => {
+    await repo.upsert(write(ws1, 'BATCH_A', 'k1', null));
+    const batch = [write(ws1, 'BATCH_A', 'k7', userId), write(ws1, 'BATCH_B', 'k7', userId), write(ws2, 'BATCH_A', 'k7', null)];
+    await repo.replaceMany(batch);
+    const a = await repo.get(ws1, 'BATCH_A');
+    expect(a).toMatchObject({ keyId: 'k7', updatedBy: userId });
+    expect(Buffer.from(a!.ciphertext).equals(Buffer.from(batch[0]!.ciphertext))).toBe(true);
+    expect(Buffer.from(a!.nonce).equals(Buffer.from(batch[0]!.nonce))).toBe(true);
+    expect(await repo.get(ws1, 'BATCH_B')).toMatchObject({ keyId: 'k7' });
+    expect(await repo.get(ws2, 'BATCH_A')).toMatchObject({ keyId: 'k7', updatedBy: null });
+
+    // The same (workspace, key) twice in one batch is refused before SQL.
+    await expect(
+      repo.replaceMany([write(ws1, 'BATCH_A', 'k8'), write(ws1, 'BATCH_A', 'k8')]),
+    ).rejects.toThrow(/BATCH_A appears more than once/);
+    expect(await repo.get(ws1, 'BATCH_A')).toMatchObject({ keyId: 'k7' });
+
+    // Joins the caller's transaction: rolled back with it.
+    await expect(
+      repo.transaction(async (tx) => {
+        await repo.replaceMany([write(ws1, 'BATCH_B', 'k8')], tx);
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+    expect(await repo.get(ws1, 'BATCH_B')).toMatchObject({ keyId: 'k7' });
+
+    await repo.replaceMany([]); // no-op, no SQL error
+  });
+
   it('transaction rolls back every write on failure', async () => {
     await expect(
       repo.transaction(async (tx) => {

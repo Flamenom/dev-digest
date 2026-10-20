@@ -25,6 +25,7 @@ Cap ~5 new/session, ~80–100 lines/file (then prune/split). Promote persistent 
 
 ## Recurring Errors & Fixes
 
+- Correction to the entry below: the testcontainers `beforeAll` timeout is fixed (Task G7). Every server it-test now shares ONE Postgres, started lazily by a loopback broker in vitest `globalSetup`. Each file gets its own `CREATE DATABASE … TEMPLATE devdigest_template`, migrated once. Hermetic-only runs never start Docker. The full suite was green 3/3, with the critical path now the hermetic `rate-limit-per-user.test.ts` (~120 s). Evidence: server/test/global-setup.ts; server/test/helpers/pg.ts. Confidence: high. (2026-10-20)
 - Correction to the Open Question below about the `reviews.it` / `gitlab-feature-parity.it` flakes: resolved. The root cause was a run marked terminal before its trace was saved (see server/INSIGHTS.md, TRACE_BEFORE_STATUS); after the fix, 10/10 full runs were green.
   - What still fails, rarely, under full-suite Docker load (about 24 testcontainers suites, up to 10 at once): a `beforeAll` passes the 120 s `hookTimeout` while the container starts, and strict latency budgets swing 10–20×. Rerun the file alone before debugging.
   - Keep exact perf budgets behind `PERF_STRICT=1` (run that file alone), with a loose sanity bound in the full suite.

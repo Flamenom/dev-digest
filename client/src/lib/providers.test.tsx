@@ -1,71 +1,37 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
+import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import authMessages from "../../messages/en/auth.json";
-import { Providers } from "./providers";
 import { AuthGate } from "@/components/auth-gate";
+import { apiError, renderWithProviders, sessionFor, type Routes } from "@/test/render-with-providers";
+import { isAuthzCode } from "./providers";
+import { RoleProbe } from "@/test/role-probe";
+import { errorChannelMeta } from "./query-meta";
 import { api } from "./api";
-import {
-  navigation,
-  resetSignInRedirect,
-} from "./sign-in-redirect";
+import { navigation, resetSignInRedirect } from "./sign-in-redirect";
 
 /* The global error policy (AC-34, AC-35): 401 → exactly one sign-in redirect
-   (never from /sign-in itself); 403 authz → toast + session re-read. */
+   (never from /sign-in itself); 403 authz → toast + session re-read. One error
+   channel per mutation: a `local` mutation never also raises the global toast. */
 
 const nav = vi.hoisted(() => ({ pathname: "/" }));
 vi.mock("next/navigation", () => ({ usePathname: () => nav.pathname }));
 
-const MEMBER_SESSION = {
-  mode: "google",
-  user: { id: "u1", email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: "member" },
-  workspace: { id: "w1", name: "Team" },
-};
+const unauthenticated = () => apiError(401, "unauthenticated", "Sign in");
 
-function json(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
-const unauthenticated = () =>
-  json({ error: { code: "unauthenticated", message: "Sign in" } }, 401);
-
-const fetchMock = vi.fn();
 let assignSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   resetSignInRedirect();
-  fetchMock.mockReset();
-  vi.stubGlobal("fetch", fetchMock);
   assignSpy = vi.spyOn(navigation, "assign").mockImplementation(() => {});
 });
 
 afterEach(() => {
-  cleanup();
-  vi.unstubAllGlobals();
   assignSpy.mockRestore();
   window.history.pushState({}, "", "/");
 });
-
-/** Route the mocked API by path; `/auth/session` + `/repos` answer by default. */
-function routeApi(routes: Record<string, () => Response>) {
-  fetchMock.mockImplementation((url: string) => {
-    const path = new URL(url).pathname;
-    const hit = routes[path];
-    if (hit) return Promise.resolve(hit());
-    if (path === "/auth/session") return Promise.resolve(json(MEMBER_SESSION));
-    if (path === "/repos") return Promise.resolve(json([]));
-    return Promise.resolve(json({}));
-  });
-}
-
-function sessionCalls() {
-  return fetchMock.mock.calls.filter(([u]) => new URL(u as string).pathname === "/auth/session")
-    .length;
-}
 
 function TwoFailingReads() {
   const a = useQuery({ queryKey: ["a"], queryFn: () => api.get("/a"), retry: false });
@@ -73,66 +39,118 @@ function TwoFailingReads() {
   return <p>{a.isError && b.isError ? "both failed" : "loading"}</p>;
 }
 
-function SaveButton() {
-  const save = useMutation({ mutationFn: () => api.put("/settings", { x: 1 }) });
+function SaveButton({ local = false }: { local?: boolean }) {
+  const save = useMutation({
+    mutationFn: () => api.put("/settings", { x: 1 }),
+    ...(local ? errorChannelMeta("local") : {}),
+  });
   return (
-    <button type="button" onClick={() => save.mutate()}>
-      Save
-    </button>
+    <>
+      <RoleProbe />
+      <button type="button" onClick={() => save.mutate()}>
+        Save
+      </button>
+      {save.isError && <p role="alert">inline: save failed</p>}
+    </>
   );
 }
 
-function renderApp(ui: React.ReactNode) {
-  return render(
-    <NextIntlClientProvider locale="en" messages={{ auth: authMessages }}>
-      {/* Mirrors app/layout.tsx: the gate (session probe) sits inside Providers. */}
-      <Providers>
-        <AuthGate>{ui}</AuthGate>
-      </Providers>
-    </NextIntlClientProvider>,
-  );
+/** Session answers Member first, then Admin — a re-read flips the visible role. */
+function sessionThenPromoted(): Routes {
+  let reads = 0;
+  return {
+    "GET /auth/session": () => (++reads === 1 ? sessionFor("member") : sessionFor("admin")),
+  };
 }
+
+function renderApp(ui: React.ReactElement, routes: Routes) {
+  // Mirrors app/layout.tsx: the gate (session probe) sits inside Providers.
+  return renderWithProviders(<AuthGate>{ui}</AuthGate>, { routes });
+}
+
+describe("isAuthzCode", () => {
+  it("accepts exactly the 403 authz codes", () => {
+    for (const code of ["forbidden_role", "forbidden_owner", "csrf_rejected", "session_required"]) {
+      expect(isAuthzCode(code)).toBe(true);
+    }
+    for (const code of [undefined, "", "unauthenticated", "last_admin", "toasts.forbidden_role"]) {
+      expect(isAuthzCode(code)).toBe(false);
+    }
+  });
+});
 
 describe("Providers — global auth error policy", () => {
   it("parallel 401s redirect to sign-in exactly once, keeping the current path", async () => {
     nav.pathname = "/repos/r1";
     window.history.pushState({}, "", "/repos/r1?tab=files");
-    routeApi({ "/a": unauthenticated, "/b": unauthenticated });
 
-    renderApp(<TwoFailingReads />);
+    renderApp(<TwoFailingReads />, { "GET /a": unauthenticated, "GET /b": unauthenticated });
 
     expect(await screen.findByText("both failed")).toBeInTheDocument();
     expect(assignSpy).toHaveBeenCalledTimes(1);
-    expect(assignSpy).toHaveBeenCalledWith(
-      `/sign-in?return_to=${encodeURIComponent("/repos/r1?tab=files")}`,
-    );
+    expect(assignSpy).toHaveBeenCalledWith(`/sign-in?return_to=${encodeURIComponent("/repos/r1?tab=files")}`);
   });
 
   it("never redirects while already on the sign-in screen (no loop)", async () => {
     nav.pathname = "/sign-in";
     window.history.pushState({}, "", "/sign-in?return_to=%2F");
-    routeApi({ "/auth/session": unauthenticated, "/a": unauthenticated, "/b": unauthenticated });
 
-    renderApp(<TwoFailingReads />);
+    renderApp(<TwoFailingReads />, {
+      "GET /auth/session": unauthenticated,
+      "GET /a": unauthenticated,
+      "GET /b": unauthenticated,
+    });
 
     expect(await screen.findByText("both failed")).toBeInTheDocument();
     expect(assignSpy).not.toHaveBeenCalled();
   });
 
   it("a 403 forbidden_role toasts and re-reads the session without navigating", async () => {
+    const user = userEvent.setup();
     nav.pathname = "/settings/api-keys";
-    routeApi({
-      "/settings": () =>
-        json({ error: { code: "forbidden_role", message: "Admins only" } }, 403),
+    renderApp(<SaveButton />, {
+      ...sessionThenPromoted(),
+      "PUT /settings": () => apiError(403, "forbidden_role", "Admins only"),
     });
 
-    renderApp(<SaveButton />);
-    await waitFor(() => expect(sessionCalls()).toBe(1));
-
-    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+    expect(await screen.findByText("role: member")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await screen.findByText(authMessages.toasts.forbidden_role)).toBeInTheDocument();
-    await waitFor(() => expect(sessionCalls()).toBe(2));
+    expect(await screen.findByText("role: admin")).toBeInTheDocument();
     expect(assignSpy).not.toHaveBeenCalled();
+  });
+
+  it("a `local` mutation's 403 still re-reads the session but raises no toast", async () => {
+    const user = userEvent.setup();
+    nav.pathname = "/settings/members";
+    renderApp(<SaveButton local />, {
+      ...sessionThenPromoted(),
+      "PUT /settings": () => apiError(403, "forbidden_role", "Admins only"),
+    });
+
+    expect(await screen.findByText("role: member")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("inline: save failed");
+    expect(await screen.findByText("role: admin")).toBeInTheDocument();
+    expect(screen.queryByText(authMessages.toasts.forbidden_role)).not.toBeInTheDocument();
+  });
+
+  it("other mutation failures toast globally by default", async () => {
+    const user = userEvent.setup();
+    nav.pathname = "/";
+    renderApp(<SaveButton />, { "PUT /settings": () => apiError(500, "internal", "Engine exploded") });
+    await user.click(await screen.findByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Engine exploded")).toBeInTheDocument();
+  });
+
+  it("a `local` mutation's failure is shown only by its caller", async () => {
+    const user = userEvent.setup();
+    nav.pathname = "/";
+    renderApp(<SaveButton local />, { "PUT /settings": () => apiError(500, "internal", "Engine exploded") });
+    await user.click(await screen.findByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("inline: save failed");
+    expect(screen.queryByText("Engine exploded")).not.toBeInTheDocument();
   });
 });

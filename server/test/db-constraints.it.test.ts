@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
@@ -8,7 +7,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startPg, dockerAvailable, type PgFixture } from './helpers/pg.js';
+import { startPg, startEmptyPg, dockerAvailable, type PgFixture, type EmptyPgFixture } from './helpers/pg.js';
 import { seed } from '../src/db/seed.js';
 import { seedGitlabFixture } from '../src/db/seed-gitlab.js';
 import * as t from '../src/db/schema.js';
@@ -183,17 +182,13 @@ function migrationsBefore(prefix: string): string {
 }
 
 d('migration 0020 — applies over pre-existing rows', () => {
-  let container: StartedPostgreSqlContainer;
+  let container: EmptyPgFixture;
   let sql: postgres.Sql;
   let oldDir: string;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer('pgvector/pgvector:pg16')
-      .withDatabase('devdigest')
-      .withUsername('devdigest')
-      .withPassword('devdigest')
-      .start();
-    sql = postgres(container.getConnectionUri(), { max: 1, onnotice: () => {} });
+    container = await startEmptyPg();
+    sql = postgres(container.url, { max: 1, onnotice: () => {} });
     await sql`CREATE EXTENSION IF NOT EXISTS vector`;
     oldDir = migrationsBefore('0020_');
     await migrate(drizzle(sql), { migrationsFolder: oldDir });

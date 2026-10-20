@@ -1,6 +1,6 @@
 import type { ActorRef, ActorRefValue, Role } from '@devdigest/shared';
 import { ForbiddenOwnerError } from '../../platform/auth-errors.js';
-import { withActors, type ActorLookup } from '../_shared/actors.js';
+import { onlyResult, withActors, type ActorLookup } from '../_shared/actors.js';
 import { findingRowToDto, reviewToDto, type ReviewDto, type ReviewDtoFinding } from './helpers.js';
 import type { FindingRow, ReviewRow, RunSummaryRecord } from './repository.js';
 
@@ -67,8 +67,8 @@ export async function findingWithActor(
   row: FindingRow,
   lookup: ActorLookup,
 ): Promise<ReviewDtoFinding> {
-  const [dto] = await withActors([findingRowToDto(row)], { acted_by: () => row.actedBy }, lookup);
-  return dto!;
+  const enriched = await withActors([findingRowToDto(row)], { acted_by: () => row.actedBy }, lookup);
+  return onlyResult(enriched, 'findingWithActor');
 }
 
 async function resolveOnce(

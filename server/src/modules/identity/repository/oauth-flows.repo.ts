@@ -1,4 +1,4 @@
-import { eq, inArray, lt } from 'drizzle-orm';
+import { and, eq, inArray, lt } from 'drizzle-orm';
 import type { Db } from '../../../db/client.js';
 import * as t from '../../../db/schema.js';
 import { EXPIRED_SWEEP_BATCH, OAUTH_FLOW_TTL_MS } from '../constants.js';
@@ -56,14 +56,23 @@ export class OAuthFlowsRepo {
   }
 
   /**
-   * Take the flow for `stateHash` out of the store (`DELETE … RETURNING`, so a
-   * replay finds nothing — AC-7). An expired flow is deleted too but yields
-   * undefined. The DELETE is atomic: of two racing callbacks only one gets it.
+   * Take the flow for `stateHash` out of the store — only if it was started by
+   * the same browser (`bindingHash`, AC-7). One atomic
+   * `DELETE … WHERE state_hash = $1 AND binding_hash = $2 RETURNING …`: a
+   * replay finds nothing, of two racing callbacks only one gets the row, and a
+   * callback carrying the wrong binding matches NOTHING — it can't burn the
+   * victim's in-flight flow. An expired flow (right binding) is deleted too
+   * but yields undefined.
    */
-  async consume(stateHash: string, now: Date, tx?: IdentityExecutor): Promise<OAuthFlow | undefined> {
+  async consume(
+    stateHash: string,
+    bindingHash: string,
+    now: Date,
+    tx?: IdentityExecutor,
+  ): Promise<OAuthFlow | undefined> {
     const [row] = await execOf(this.db, tx)
       .delete(t.oauthFlows)
-      .where(eq(t.oauthFlows.stateHash, stateHash))
+      .where(and(eq(t.oauthFlows.stateHash, stateHash), eq(t.oauthFlows.bindingHash, bindingHash)))
       .returning({
         bindingHash: t.oauthFlows.bindingHash,
         nonce: t.oauthFlows.nonce,

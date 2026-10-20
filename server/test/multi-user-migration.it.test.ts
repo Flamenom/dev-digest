@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
@@ -7,7 +6,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dockerAvailable } from './helpers/pg.js';
+import { dockerAvailable, startEmptyPg, type EmptyPgFixture } from './helpers/pg.js';
 
 /**
  * Migration 0021 (multi-user server mode) must be additive for existing data
@@ -82,7 +81,7 @@ const NEW_NULL_COLUMNS: Record<string, string[]> = {
 type Row = Record<string, unknown>;
 
 d('migration 0021 — multi-user server mode', () => {
-  let container: StartedPostgreSqlContainer;
+  let container: EmptyPgFixture;
   let sql: postgres.Sql;
   let oldDir: string;
   let workspaceId: string;
@@ -95,12 +94,8 @@ d('migration 0021 — multi-user server mode', () => {
   }
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer('pgvector/pgvector:pg16')
-      .withDatabase('devdigest')
-      .withUsername('devdigest')
-      .withPassword('devdigest')
-      .start();
-    sql = postgres(container.getConnectionUri(), { max: 1, onnotice: () => {} });
+    container = await startEmptyPg();
+    sql = postgres(container.url, { max: 1, onnotice: () => {} });
     await sql`CREATE EXTENSION IF NOT EXISTS vector`;
     oldDir = migrationsBefore0021();
     await migrate(drizzle(sql), { migrationsFolder: oldDir });
@@ -284,18 +279,14 @@ d('migration 0021 — multi-user server mode', () => {
  * new metadata-object CHECK, TRUNCATE trigger and full api_tokens user index.
  */
 d('migration 0023 — inet ip, metadata CHECK, TRUNCATE guard, api_tokens user index', () => {
-  let container: StartedPostgreSqlContainer;
+  let container: EmptyPgFixture;
   let sql: postgres.Sql;
   let oldDir: string;
   let workspaceId: string;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer('pgvector/pgvector:pg16')
-      .withDatabase('devdigest')
-      .withUsername('devdigest')
-      .withPassword('devdigest')
-      .start();
-    sql = postgres(container.getConnectionUri(), { max: 1, onnotice: () => {} });
+    container = await startEmptyPg();
+    sql = postgres(container.url, { max: 1, onnotice: () => {} });
     await sql`CREATE EXTENSION IF NOT EXISTS vector`;
     oldDir = migrationsBefore('0023_');
     await migrate(drizzle(sql), { migrationsFolder: oldDir });
@@ -385,7 +376,7 @@ d('migration 0023 — inet ip, metadata CHECK, TRUNCATE guard, api_tokens user i
  * adds the sessions idle-sweep and encrypted_secrets key_id indexes.
  */
 d('migration 0024 — settings (workspace, key) uniqueness, sweep + rotation indexes', () => {
-  let container: StartedPostgreSqlContainer;
+  let container: EmptyPgFixture;
   let sql: postgres.Sql;
   let oldDir: string;
   let upToDir: string;
@@ -393,12 +384,8 @@ d('migration 0024 — settings (workspace, key) uniqueness, sweep + rotation ind
   let ws2: string;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer('pgvector/pgvector:pg16')
-      .withDatabase('devdigest')
-      .withUsername('devdigest')
-      .withPassword('devdigest')
-      .start();
-    sql = postgres(container.getConnectionUri(), { max: 1, onnotice: () => {} });
+    container = await startEmptyPg();
+    sql = postgres(container.url, { max: 1, onnotice: () => {} });
     await sql`CREATE EXTENSION IF NOT EXISTS vector`;
     oldDir = migrationsBefore('0024_');
     await migrate(drizzle(sql), { migrationsFolder: oldDir });
@@ -480,19 +467,15 @@ d('migration 0024 — settings (workspace, key) uniqueness, sweep + rotation ind
  * the request path — the index would defeat HOT updates).
  */
 d('migration 0025 — settings.user_id SET NULL + FK index, no sessions last_seen_at index', () => {
-  let container: StartedPostgreSqlContainer;
+  let container: EmptyPgFixture;
   let sql: postgres.Sql;
   let oldDir: string;
   let ws: string;
   let author: string;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer('pgvector/pgvector:pg16')
-      .withDatabase('devdigest')
-      .withUsername('devdigest')
-      .withPassword('devdigest')
-      .start();
-    sql = postgres(container.getConnectionUri(), { max: 1, onnotice: () => {} });
+    container = await startEmptyPg();
+    sql = postgres(container.url, { max: 1, onnotice: () => {} });
     await sql`CREATE EXTENSION IF NOT EXISTS vector`;
     oldDir = migrationsBefore('0025_');
     await migrate(drizzle(sql), { migrationsFolder: oldDir });

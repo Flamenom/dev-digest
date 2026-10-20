@@ -29,7 +29,7 @@ import type { DiscoveredDocument, Skill } from "@devdigest/shared";
 import { useRepos } from "@/lib/hooks/core";
 import { useDocument, useProjectContext, useSetSkillDocs } from "@/lib/hooks/projectContext";
 import { rootDirOf } from "@/lib/root-dir";
-import { useCan } from "@/lib/permissions";
+import { AdminHint, useAdminHint } from "@/components/admin-gate";
 import { BUCKET_COLORS, DRAG_HANDLE_GLYPH, NEUTRAL_COLORS } from "./constants";
 import { fileName, matchesQuery, moveTo, movePath, orderDocs, serializePreview, togglePath } from "./helpers";
 import { s } from "./styles";
@@ -38,7 +38,9 @@ export function ContextTab({ skill }: { skill: Skill }) {
   const t = useTranslations("skills");
   const reposQ = useRepos();
   const setDocs = useSetSkillDocs(skill.id);
-  const { isAdmin: canEdit } = useCan();
+  // Inert until the session resolves (fail closed); the notice only once we know.
+  const adminHint = useAdminHint();
+  const canEdit = !adminHint.readOnly;
 
   // Only the EXPLICIT selection is state; the effective repo derives from it.
   const [selectedRepoId, setSelectedRepoId] = React.useState<string | null>(null);
@@ -61,7 +63,7 @@ export function ContextTab({ skill }: { skill: Skill }) {
   const previewDoc = documents.find((d) => d.path === previewPath) ?? null;
 
   const persist = (paths: string[]) => {
-    if (!setDocs.isPending) setDocs.mutate({ paths });
+    if (canEdit && !setDocs.isPending) setDocs.mutate({ paths });
   };
   const toggle = (path: string, on: boolean) => persist(togglePath(attached, path, on));
   const move = (path: string, delta: number) => {
@@ -151,7 +153,9 @@ export function ContextTab({ skill }: { skill: Skill }) {
       <p style={s.caption}>
         {t("context.inheritanceNote")} {canEdit && t("context.orderHint")}
       </p>
-      {!canEdit && <p style={s.readOnlyNotice}>{t("context.readOnlyNotice")}</p>}
+      <AdminHint hint={adminHint} style={s.readOnlyNotice}>
+        {t("context.readOnlyNotice")}
+      </AdminHint>
 
       {!cloneAvailable ? (
         <EmptyState
@@ -175,6 +179,7 @@ export function ContextTab({ skill }: { skill: Skill }) {
                 name={name}
                 attached={isAttached}
                 editable={canEdit}
+                describedBy={adminHint.describedBy}
                 draggable={canEdit && isAttached && !filtering && !setDocs.isPending}
                 dragging={dragPath === doc.path}
                 tokensLabel={t("context.tokens", { count: doc.estimated_tokens })}
@@ -229,6 +234,7 @@ function DocumentRow({
   name,
   attached,
   editable,
+  describedBy,
   draggable,
   dragging,
   tokensLabel,
@@ -246,8 +252,10 @@ function DocumentRow({
   doc: DiscoveredDocument;
   name: string;
   attached: boolean;
-  /** False for a Member: no attach toggle handler, no move buttons. */
+  /** False for a Member: the attach checkbox and move buttons are aria-disabled. */
   editable: boolean;
+  /** Id of the visible read-only notice (Member). */
+  describedBy?: string;
   draggable: boolean;
   dragging: boolean;
   tokensLabel: string;
@@ -281,15 +289,31 @@ function DocumentRow({
       ) : (
         <span style={s.handlePlaceholder} aria-hidden />
       )}
-      {attached && editable && (
+      {attached && (
         <span style={s.orderBtns}>
-          <IconBtn icon="ArrowUp" size={24} label={moveUpLabel} onClick={onMoveUp} />
-          <IconBtn icon="ArrowDown" size={24} label={moveDownLabel} onClick={onMoveDown} />
+          <IconBtn
+            icon="ArrowUp"
+            size={24}
+            label={moveUpLabel}
+            onClick={onMoveUp}
+            aria-disabled={!editable}
+            aria-describedby={describedBy}
+          />
+          <IconBtn
+            icon="ArrowDown"
+            size={24}
+            label={moveDownLabel}
+            onClick={onMoveDown}
+            aria-disabled={!editable}
+            aria-describedby={describedBy}
+          />
         </span>
       )}
       <Checkbox
         checked={attached}
-        onChange={editable ? onToggle : undefined}
+        onChange={onToggle}
+        aria-disabled={!editable}
+        aria-describedby={describedBy}
         label={
           <span className="mono" style={s.name}>
             {name}

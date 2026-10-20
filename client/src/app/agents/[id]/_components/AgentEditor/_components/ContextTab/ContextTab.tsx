@@ -19,7 +19,7 @@ import type { Agent, DiscoveredDocument } from "@devdigest/shared";
 import { useRepos } from "@/lib/hooks/core";
 import { useDocument, useProjectContext, useSetAgentDocs } from "@/lib/hooks/projectContext";
 import { rootDirOf } from "@/lib/root-dir";
-import { useCan } from "@/lib/permissions";
+import { AdminHint, useAdminHint } from "@/components/admin-gate";
 import {
   attachedTokensOf,
   fileNameOf,
@@ -39,13 +39,13 @@ import { s } from "./styles";
     PUT /agents/:id/attached-docs. Attach state is keyed by path, never by
     visible row, so filtering can never change it (AC-12).
     Attaching docs is Admin-only (AC-33): a Member sees the attached set, its
-    order and the previews read-only, with the "Admins only" hint. */
+    order and the previews read-only — the attach checkboxes and move buttons
+    are aria-disabled and described by the visible "Admins only" hint. */
 export function ContextTab({ agent }: { agent: Agent }) {
   const t = useTranslations("agents");
-  const tAuth = useTranslations("auth");
-  const { isAdmin, isPending: sessionPending } = useCan();
   // Inert until the session resolves (fail closed); the hint only once we know.
-  const readOnly = !isAdmin;
+  const adminHint = useAdminHint();
+  const { readOnly, describedBy } = adminHint;
   const reposQ = useRepos();
   const repos = reposQ.data ?? [];
   // R-7 default: discover against the workspace's first repo unless the user picks another.
@@ -176,7 +176,7 @@ export function ContextTab({ agent }: { agent: Agent }) {
         {" · "}
         {t("context.untrustedNote")}
       </p>
-      {readOnly && !sessionPending && <p style={s.readOnlyHint}>{tAuth("gate.adminsOnly")}</p>}
+      <AdminHint hint={adminHint} />
       <p style={s.caption}>{t("context.orderHint")}</p>
       {!cloneAvailable ? (
         <EmptyState
@@ -204,9 +204,11 @@ export function ContextTab({ agent }: { agent: Agent }) {
                 attached={attached}
                 draggable={!readOnly && attached && !filtering && !setDocs.isPending}
                 dragging={dragPath === doc.path}
-                canMoveUp={!readOnly && at > 0}
-                canMoveDown={!readOnly && at >= 0 && at < attachedPaths.length - 1}
-                onToggle={readOnly ? undefined : (on) => toggle(doc.path, on)}
+                canMoveUp={at > 0}
+                canMoveDown={at >= 0 && at < attachedPaths.length - 1}
+                readOnly={readOnly}
+                describedBy={describedBy}
+                onToggle={(on) => toggle(doc.path, on)}
                 onMoveUp={() => move(doc.path, -1)}
                 onMoveDown={() => move(doc.path, 1)}
                 onPreview={() => setPreviewPath(doc.path)}
@@ -223,7 +225,8 @@ export function ContextTab({ agent }: { agent: Agent }) {
           repoId={repoId}
           doc={previewDoc}
           attached={attachedPaths.includes(previewDoc.path)}
-          onToggle={readOnly ? undefined : (on) => toggle(previewDoc.path, on)}
+          onToggle={(on) => toggle(previewDoc.path, on)}
+          readOnly={readOnly}
           onClose={() => setPreviewPath(null)}
         />
       )}
@@ -252,6 +255,8 @@ function DocRow({
   dragging,
   canMoveUp,
   canMoveDown,
+  readOnly,
+  describedBy,
   onToggle,
   onMoveUp,
   onMoveDown,
@@ -266,8 +271,11 @@ function DocRow({
   dragging: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
-  /** Absent = read-only (Member): the checkbox shows the state but does nothing. */
-  onToggle?: (on: boolean) => void;
+  /** Member: checkbox + move buttons show the state, are aria-disabled and do nothing. */
+  readOnly: boolean;
+  /** Id of the visible "Admins only" reason. */
+  describedBy?: string;
+  onToggle: (on: boolean) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onPreview: () => void;
@@ -294,7 +302,12 @@ function DocRow({
       ) : (
         <span style={s.handlePlaceholder} aria-hidden />
       )}
-      <Checkbox checked={attached} onChange={onToggle} />
+      <Checkbox
+        checked={attached}
+        onChange={onToggle}
+        aria-disabled={readOnly}
+        aria-describedby={describedBy}
+      />
       <span style={s.nameBox}>
         <span className="mono" style={s.name}>
           {name}
@@ -311,12 +324,26 @@ function DocRow({
       <span style={s.rowActions}>
         <span style={s.moveSlot}>
           {attached && canMoveUp && (
-            <IconBtn icon="ArrowUp" size={24} label={t("context.moveUp")} onClick={onMoveUp} />
+            <IconBtn
+              icon="ArrowUp"
+              size={24}
+              label={t("context.moveUp")}
+              onClick={onMoveUp}
+              aria-disabled={readOnly}
+              aria-describedby={describedBy}
+            />
           )}
         </span>
         <span style={s.moveSlot}>
           {attached && canMoveDown && (
-            <IconBtn icon="ArrowDown" size={24} label={t("context.moveDown")} onClick={onMoveDown} />
+            <IconBtn
+              icon="ArrowDown"
+              size={24}
+              label={t("context.moveDown")}
+              onClick={onMoveDown}
+              aria-disabled={readOnly}
+              aria-describedby={describedBy}
+            />
           )}
         </span>
         <IconBtn icon="Eye" size={24} label={t("context.preview")} onClick={onPreview} />
@@ -332,13 +359,15 @@ function PreviewDrawer({
   doc,
   attached,
   onToggle,
+  readOnly,
   onClose,
 }: {
   repoId: string;
   doc: DiscoveredDocument;
   attached: boolean;
-  /** Absent = read-only (Member). */
-  onToggle?: (on: boolean) => void;
+  onToggle: (on: boolean) => void;
+  /** Member: the attach checkbox is aria-disabled. */
+  readOnly: boolean;
   onClose: () => void;
 }) {
   const t = useTranslations("agents");
@@ -351,7 +380,12 @@ function PreviewDrawer({
         <span style={s.metaText}>
           {t("context.usedByAgents", { count: doc.used_by_agents ?? 0 })}
         </span>
-        <Checkbox checked={attached} onChange={onToggle} label={t("context.attachToggle")} />
+        <Checkbox
+          checked={attached}
+          onChange={onToggle}
+          label={t("context.attachToggle")}
+          aria-disabled={readOnly}
+        />
       </div>
       {docQ.isLoading ? (
         <Skeleton height={160} />

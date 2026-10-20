@@ -15,7 +15,7 @@ import type {
   PrCommit,
 } from "@devdigest/shared";
 import type { UseMutationResult } from "@tanstack/react-query";
-import { useCan } from "@/lib/permissions";
+import { useCan } from "@/lib/hooks/permissions";
 
 interface FindingsTabProps {
   prId: string | null;

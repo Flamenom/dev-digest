@@ -1,53 +1,53 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
+import { describe, it, expect, vi } from "vitest";
+import { screen } from "@testing-library/react";
+import type { MemberList } from "@devdigest/shared";
 import settingsMessages from "../../../../../../messages/en/settings.json";
+import { renderWithProviders, sessionFor } from "@/test/render-with-providers";
+import { SettingsView } from "./SettingsView";
 
 /* Deep link to a google-only section while the session probe is in flight:
    no fallback panel flash — an empty pane until the mode resolves. */
 
-const perm = vi.hoisted(() => ({ isPending: true }));
-vi.mock("next/navigation", () => ({ useParams: () => ({ section: "members" }) }));
-vi.mock("@/components/app-shell", () => ({
-  AppShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+vi.mock("next/navigation", () => ({
+  useParams: () => ({ section: "members" }),
+  usePathname: () => "/settings/members",
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
 }));
-vi.mock("@/lib/permissions", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/permissions")>();
-  return {
-    ...actual,
-    useCan: () =>
-      actual.buildPermissions({
-        mode: perm.isPending ? null : "google",
-        role: perm.isPending ? null : "admin",
-        userId: perm.isPending ? null : "u1",
-        isPending: perm.isPending,
-      }),
-  };
-});
-vi.mock("./_components/SettingsMembers", () => ({ SettingsMembers: () => <div>members panel</div> }));
 
-import { SettingsView } from "./SettingsView";
-
-function renderView() {
-  render(
-    <NextIntlClientProvider locale="en" messages={{ settings: settingsMessages }}>
-      <SettingsView />
-    </NextIntlClientProvider>,
-  );
-}
-
-afterEach(cleanup);
+const MEMBERS: MemberList = {
+  has_active_admin: true,
+  members: [
+    {
+      user_id: "u-test",
+      email: "test@onlytraf.com",
+      name: "Test User",
+      avatar_url: null,
+      role: "admin",
+      status: "active",
+      joined_at: "2026-10-01T12:00:00.000Z",
+      last_sign_in_at: null,
+    },
+  ],
+};
 
 describe("SettingsView", () => {
-  it("holds an empty pane for /settings/members while the session is pending, then shows Members", () => {
-    perm.isPending = true;
-    renderView();
-    expect(screen.queryByText(/Standard configuration forms/)).not.toBeInTheDocument();
-    expect(screen.queryByText("members panel")).not.toBeInTheDocument();
-    cleanup();
+  it("holds an empty pane for /settings/members while the session is pending, then shows Members", async () => {
+    let answerSession: (value: unknown) => void = () => {};
+    const sessionProbe = new Promise((resolve) => {
+      answerSession = resolve;
+    });
+    renderWithProviders(<SettingsView />, {
+      routes: { "GET /auth/session": () => sessionProbe, "GET /members": MEMBERS },
+    });
 
-    perm.isPending = false;
-    renderView();
-    expect(screen.getByText("members panel")).toBeInTheDocument();
+    // Probe in flight: neither the fallback panel nor the Members section.
+    expect(await screen.findByRole("heading", { name: settingsMessages.title })).toBeInTheDocument();
+    expect(screen.queryByText(/Standard configuration forms/)).not.toBeInTheDocument();
+    expect(screen.queryByText(settingsMessages.members.body)).not.toBeInTheDocument();
+
+    answerSession(sessionFor("admin"));
+    expect(await screen.findByText(settingsMessages.members.body)).toBeInTheDocument();
+    expect(await screen.findByRole("row", { name: /Test User/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Standard configuration forms/)).not.toBeInTheDocument();
   });
 });

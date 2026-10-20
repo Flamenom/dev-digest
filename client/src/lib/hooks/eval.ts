@@ -31,6 +31,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { errorChannelMeta, type ErrorChannelOptions } from "../query-meta";
 import type {
   EvalAgentDashboard,
   EvalBatchRecord,
@@ -272,7 +273,8 @@ export interface StartEvalBatchInput {
  * caller polls `useEvalBatch(batch_id)` for progress. 409
  * `batch_already_running` / 422 `no_cases` | `too_many_cases` stay inline.
  */
-export function useStartEvalBatch() {
+/** `errorChannel: "local"` when the caller renders the failure inline (EvalsTab). */
+export function useStartEvalBatch({ errorChannel = "global" }: ErrorChannelOptions = {}) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ agentId, caseIds }: StartEvalBatchInput) =>
@@ -280,6 +282,7 @@ export function useStartEvalBatch() {
         `/agents/${agentId}/eval-runs`,
         caseIds ? { case_ids: caseIds } : undefined,
       ),
+    ...errorChannelMeta(errorChannel),
     onSuccess: (data) => {
       // Pending rows exist the moment the 202 lands — every list that shows a
       // batch (or its progress) must pick the new one up.

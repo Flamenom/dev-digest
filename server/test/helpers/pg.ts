@@ -1,18 +1,30 @@
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { request } from 'node:http';
+import { inject } from 'vitest';
 import { createDb, type DbHandle } from '../../src/db/client.js';
-import { runMigrations } from '../../src/db/migrate.js';
 
 /**
- * Testcontainers helper: spin a Postgres + pgvector container, run migrations,
- * return a Drizzle client. Uses the same `pgvector/pgvector:pg16` image as
- * docker-compose so the `vector` extension is available.
+ * Integration-test Postgres helper. Every fixture is a FRESH DATABASE in ONE
+ * shared `pgvector/pgvector:pg16` cluster started lazily by
+ * `test/global-setup.ts` (Task G7) — no container start per file.
  *
- * Integration tests gate on `dockerAvailable()` and skip cleanly when Docker is
- * not reachable (CI/sandbox without a Docker daemon).
+ *  - `startPg()`      → a database cloned from the migrated template (all
+ *                       migrations applied once, at cluster start).
+ *  - `startEmptyPg()` → an empty database (no migrations, no extensions) for
+ *                       migration tests that apply a partial journal.
+ *
+ * `stop()` drops the database. Integration tests gate on `dockerAvailable()`
+ * and skip cleanly when Docker is not reachable (CI/sandbox without a daemon).
+ *
+ * The broker is reached over `node:http` (not global `fetch`) so tests that stub
+ * `fetch` cannot intercept fixture creation.
  */
 export interface PgFixture {
-  container: StartedPostgreSqlContainer;
   handle: DbHandle;
+  url: string;
+  stop: () => Promise<void>;
+}
+
+export interface EmptyPgFixture {
   url: string;
   stop: () => Promise<void>;
 }
@@ -32,22 +44,64 @@ export async function dockerAvailable(): Promise<boolean> {
   return dockerCache;
 }
 
-export async function startPg(): Promise<PgFixture> {
-  const container = await new PostgreSqlContainer('pgvector/pgvector:pg16')
-    .withDatabase('devdigest')
-    .withUsername('devdigest')
-    .withPassword('devdigest')
-    .start();
-  const url = container.getConnectionUri();
-  await runMigrations(url);
-  const handle = createDb(url, { max: 5 });
+function broker<T>(method: 'POST' | 'DELETE', path: string): Promise<T> {
+  const { url, token } = inject('pgBroker');
+  return new Promise<T>((resolve, reject) => {
+    const req = request(
+      new URL(path, url),
+      { method, headers: { authorization: `Bearer ${token}` } },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => (body += chunk));
+        res.on('end', () => {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(body);
+          } catch {
+            return reject(new Error(`pg broker: bad response (${res.statusCode}): ${body}`));
+          }
+          if (res.statusCode !== 200) {
+            const msg = (parsed as { error?: string }).error ?? body;
+            return reject(new Error(`pg broker ${method} ${path} failed (${res.statusCode}): ${msg}`));
+          }
+          resolve(parsed as T);
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function createDatabase(kind: 'migrated' | 'empty'): Promise<EmptyPgFixture> {
+  const { name, url } = await broker<{ name: string; url: string }>('POST', `/db?kind=${kind}`);
+  let dropped = false;
   return {
-    container,
-    handle,
     url,
     stop: async () => {
-      await handle.close();
-      await container.stop();
+      if (dropped) return;
+      dropped = true;
+      await broker('DELETE', `/db/${name}`);
     },
   };
+}
+
+/** Fresh, fully-migrated database + a Drizzle client over it. */
+export async function startPg(): Promise<PgFixture> {
+  const db = await createDatabase('migrated');
+  const handle = createDb(db.url, { max: 5 });
+  return {
+    handle,
+    url: db.url,
+    stop: async () => {
+      await handle.close();
+      await db.stop();
+    },
+  };
+}
+
+/** Fresh EMPTY database (no migrations, no `vector` extension). */
+export function startEmptyPg(): Promise<EmptyPgFixture> {
+  return createDatabase('empty');
 }

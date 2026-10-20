@@ -5,11 +5,10 @@ import type {
   AuditLog,
   EncryptedSecretRecord,
   EncryptedSecretWrite,
-  SecretStore,
 } from '../src/vendor/shared/auth-ports.js';
 import { EncryptedSecretsProvider } from '../src/adapters/secrets/encrypted.js';
 import { LocalSecretsProvider } from '../src/adapters/secrets/local.js';
-import { SecretsMaintenance, type SecretsLogger } from '../src/modules/secrets/service.js';
+import { SecretsMaintenance, type BatchSecretStore, type SecretsLogger } from '../src/modules/secrets/service.js';
 import { keyId } from '../src/platform/crypto/secret-box.js';
 import { SecretUndecryptableError } from '../src/platform/auth-errors.js';
 
@@ -23,14 +22,21 @@ const MANAGED = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'G
 const FAKE_VALUE = 'synthetic-test-value-0123456789abcdef';
 
 /** In-memory SecretStore; `transaction` snapshots and restores on throw. */
-class FakeStore implements SecretStore<'tx'> {
+class FakeStore implements BatchSecretStore<'tx'> {
   rows = new Map<string, EncryptedSecretRecord>();
+  /** Every store write, in order: `upsert:<key>` or `replaceMany:<n>`. */
+  writes: string[] = [];
   private k = (ws: string, key: string) => `${ws}\u0000${key}`;
 
   get = async (ws: string, key: string) => this.rows.get(this.k(ws, key));
   list = async (ws?: string) => [...this.rows.values()].filter((r) => !ws || r.workspaceId === ws);
   upsert = async (r: EncryptedSecretWrite) => {
+    this.writes.push(`upsert:${r.keyName}`);
     this.rows.set(this.k(r.workspaceId, r.keyName), { ...r, updatedAt: new Date() });
+  };
+  replaceMany = async (records: readonly EncryptedSecretWrite[]) => {
+    this.writes.push(`replaceMany:${records.length}`);
+    for (const r of records) this.rows.set(this.k(r.workspaceId, r.keyName), { ...r, updatedAt: new Date() });
   };
   insertIfAbsent = async (r: EncryptedSecretWrite) => {
     if (this.rows.has(this.k(r.workspaceId, r.keyName))) return false;
@@ -245,8 +251,11 @@ describe('SecretsMaintenance (fake store)', () => {
     const log = captureLog();
     const m = new SecretsMaintenance({ store, audit, masterKey: current, previousKey: previous, managedKeys: MANAGED, env: {}, log });
 
+    store.writes = [];
     const r = await m.rotateIfNeeded();
     expect(r).toEqual({ reencrypted: 2, failedKeyNames: [] });
+    // G6: one batched replace for every row — no per-row upsert loop.
+    expect(store.writes).toEqual(['replaceMany:2']);
     expect(log.lines).toContain('info re-encrypted 2 secrets');
     expect([...store.rows.values()].every((row) => row.keyId === keyId(current))).toBe(true);
     expect(store.rows.get(`${WS}\u0000OPENAI_API_KEY`)!.updatedBy).toBe('user-9');

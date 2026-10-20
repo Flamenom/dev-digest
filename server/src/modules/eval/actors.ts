@@ -10,7 +10,7 @@
  * Presentation-side helper: pure apart from the injected `lookup`.
  */
 import type { EvalCaseRecordWithActor } from '@devdigest/shared';
-import { withActors, type ActorLookup } from '../_shared/actors.js';
+import { onlyResult, withActors, type ActorLookup } from '../_shared/actors.js';
 import type { EvalCaseView } from './service.js';
 
 export async function withCaseCreators(
@@ -26,7 +26,6 @@ export async function withCaseCreator(
   view: EvalCaseView,
   lookup: ActorLookup,
 ): Promise<EvalCaseRecordWithActor> {
-  const [dto] = await withCaseCreators([view], lookup);
   // `withCaseCreators` maps 1:1, so a one-element input yields one element.
-  return dto!;
+  return onlyResult(await withCaseCreators([view], lookup), 'withCaseCreator');
 }

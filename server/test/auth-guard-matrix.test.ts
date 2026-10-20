@@ -233,7 +233,7 @@ describe('unclassified route default (Q7)', () => {
 });
 
 describe('route-driven audit descriptors (AC-52, google mode)', () => {
-  it('records secret saves (key NAME only) and settings changes; nothing for denied or read requests', async () => {
+  it('secret saves are audited with the write (key NAME only); a failed save, a denied or a no-key request records nothing', async () => {
     const events: Array<Record<string, unknown>> = [];
     const saved: string[] = [];
     const t = await buildHermeticGoogleApp({
@@ -242,7 +242,10 @@ describe('route-driven audit descriptors (AC-52, google mode)', () => {
         audit: { record: async (e) => void events.push({ ...e }) },
         secrets: {
           get: async () => undefined,
-          set: async (key: string) => void saved.push(key),
+          set: async (key: string, value: string) => {
+            if (value === 'ghp_write_fails') throw new Error('disk full');
+            saved.push(key);
+          },
         } as never,
       },
     });
@@ -250,6 +253,19 @@ describe('route-driven audit descriptors (AC-52, google mode)', () => {
       const admin = t.principals.session('admin');
       const member = t.principals.session('member');
       const secretValue = 'ghp_audit_must_not_contain_this';
+
+      // G4: the save itself fails → test-connection still answers 200 { ok: false },
+      // but nothing was written, so nothing is audited (not keyed on the HTTP status).
+      const failed = await t.app.inject(
+        asSession(admin, {
+          method: 'POST',
+          url: '/settings/test-connection',
+          payload: { provider: 'gitlab', key: 'ghp_write_fails' },
+        }),
+      );
+      expect(failed.statusCode).toBe(200);
+      expect(failed.json()).toMatchObject({ ok: false });
+      expect(events).toHaveLength(0);
 
       const ok = await t.app.inject(
         asSession(admin, {
@@ -274,7 +290,7 @@ describe('route-driven audit descriptors (AC-52, google mode)', () => {
         }),
       );
 
-      await auditWritesSettled(t.app); // started in onSend, tracked until written
+      await auditWritesSettled(t.app); // nothing hook-driven pending; the row was written in-request
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({
         workspaceId: admin.principal.workspaceId,
@@ -303,19 +319,14 @@ describe('route-driven audit descriptors (AC-52, google mode)', () => {
             events.push({ ...e });
           },
         },
-        secrets: { get: async () => undefined, set: async () => undefined } as never,
+        // `DELETE /repos/:id` is audited by the hook (route descriptor `repo.remove`).
+        repoService: { registerCloneJobHandler: () => undefined, remove: async () => undefined } as never,
       },
     });
     try {
       const admin = t.principals.session('admin');
       for (let i = 0; i < 5; i++) {
-        const res = await t.app.inject(
-          asSession(admin, {
-            method: 'POST',
-            url: '/settings/test-connection',
-            payload: { provider: 'github', key: `ghp_settle_${i}` },
-          }),
-        );
+        const res = await t.app.inject(asSession(admin, { method: 'DELETE', url: `/repos/${TEST_UUID}` }));
         expect(res.statusCode).toBe(200);
         await auditWritesSettled(t.app);
         expect(events).toHaveLength(i + 1);
@@ -337,10 +348,11 @@ describe('route-driven audit descriptors (AC-52, google mode)', () => {
       overrides: {
         github: new MockGitHubClient({ login: 'octocat' }),
         audit: { record: async (e) => void events.push({ ...e }) },
-        // The mutation "commits" only after the client has gone away.
-        secrets: {
-          get: async () => undefined,
-          set: async () => {
+        // The mutation "commits" only after the client has gone away
+        // (`DELETE /repos/:id` → hook-audited `repo.remove`).
+        repoService: {
+          registerCloneJobHandler: () => undefined,
+          remove: async () => {
             entered();
             await saveGate;
           },
@@ -352,18 +364,13 @@ describe('route-driven audit descriptors (AC-52, google mode)', () => {
       // The server-side socket closing = the client is gone before the reply.
       t.app.server.on('connection', (socket) => socket.on('close', () => aborted()));
       const admin = t.principals.session('admin');
-      const req = asSession(admin, { method: 'POST', url: '/settings/test-connection' });
-      const body = JSON.stringify({ provider: 'github', key: 'ghp_abort_case' });
-      const client = request(`${address}/settings/test-connection`, {
-        method: 'POST',
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'content-type': 'application/json',
-          'content-length': String(Buffer.byteLength(body)),
-        },
+      const req = asSession(admin, { method: 'DELETE', url: `/repos/${TEST_UUID}` });
+      const client = request(`${address}/repos/${TEST_UUID}`, {
+        method: 'DELETE',
+        headers: { ...(req.headers as Record<string, string>) },
       });
       client.on('error', () => undefined); // the abort below surfaces as ECONNRESET
-      client.end(body);
+      client.end();
 
       // Wait until the handler is blocked in the save, then drop the socket.
       await saveEntered;
@@ -377,33 +384,30 @@ describe('route-driven audit descriptors (AC-52, google mode)', () => {
       });
       expect(events[0]).toMatchObject({
         actorUserId: admin.principal.userId,
-        action: 'secret.save',
-        targetId: 'GITHUB_TOKEN',
+        action: 'repo.remove',
+        targetId: TEST_UUID,
       });
     } finally {
       await t.close();
     }
   });
 
-  it('descriptors derive ids from params / response and key names from the body', () => {
-    const settings = ROUTE_POLICY['PUT /settings']!.audit!;
-    const ctx = { params: {}, body: { theme: 'dark', density: 'compact' }, response: () => ({}) };
-    expect(settings.metadata!(ctx)).toEqual({ changed_keys: ['density', 'theme'] });
+  it('descriptors derive ids from params / response; settings + secret saves have none (service-audited)', () => {
+    // G4: `settings.update` / `secret.save` are written by SettingsService in the
+    // write's transaction — a hook descriptor here would double-write them.
+    expect(ROUTE_POLICY['PUT /settings']!.audit).toBeUndefined();
+    expect(ROUTE_POLICY['POST /settings/test-connection']!.audit).toBeUndefined();
     const create = ROUTE_POLICY['POST /repos']!.audit!;
     expect(create.targetId!({ params: {}, body: {}, response: () => ({ id: TEST_UUID }) })).toBe(TEST_UUID);
     expect(ROUTE_POLICY['POST /findings/:id/dismiss']!.audit!.action).toBe('finding.dismiss');
   });
 
   it.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty'])(
-    'secret-save descriptor: prototype key provider %s → no key name, no event, no metadata leak',
+    'secret-save session check: prototype key provider %s → no key name',
     (provider) => {
       const body = { provider, key: 'some-value' };
       expect(savedSecretKeyName(body)).toBeNull();
       const policy = ROUTE_POLICY['POST /settings/test-connection']!;
-      const ctx = { params: {}, body, response: () => ({}) };
-      expect(policy.audit!.when!(ctx)).toBe(false);
-      expect(policy.audit!.targetId!(ctx)).toBeNull();
-      expect(policy.audit!.metadata!(ctx)).toEqual({ key_name: null });
       expect(typeof policy.sessionOnly === 'function' && policy.sessionOnly({ body })).toBe(false);
     },
   );

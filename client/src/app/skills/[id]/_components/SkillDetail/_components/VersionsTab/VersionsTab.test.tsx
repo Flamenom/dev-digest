@@ -1,41 +1,14 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
-import type { Skill, SkillVersionEntry } from "@devdigest/shared";
-import messages from "../../../../../../../../messages/en/skills.json";
-import authMessages from "../../../../../../../../messages/en/auth.json";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { Skill, SkillVersionEntryWithAuthor } from "@devdigest/shared";
+import { renderWithProviders } from "@/test/render-with-providers";
+import { VersionsTab } from "./VersionsTab";
 
-// Multi-user gating: drive the session-derived role directly ("admin" =
-// today's behaviour, also what local mode resolves to).
-const perm = vi.hoisted(() => ({ role: "admin" as "admin" | "member" }));
-vi.mock("@/lib/permissions", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/permissions")>();
-  const current = () =>
-    actual.buildPermissions({ mode: "google", role: perm.role, userId: "u1", isPending: false });
-  return { ...actual, useCan: current, useIsAdmin: () => current().isAdmin };
-});
-
-vi.mock("@/lib/toast", () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), toast: vi.fn() }),
-}));
-
-const VERSIONS: SkillVersionEntry[] = [
+const VERSIONS: SkillVersionEntryWithAuthor[] = [
   { skill_id: "sk1", version: 2, note: "Tightened rubric", body: "new body", created_at: "2026-08-18T10:00:00Z" },
   { skill_id: "sk1", version: 1, note: null, body: "old body", created_at: "2026-08-17T10:00:00Z" },
 ];
-
-const restoreMutate = vi.fn();
-vi.mock("@/lib/hooks/skills", () => ({
-  useSkillVersions: () => ({ data: VERSIONS, isLoading: false, isError: false, refetch: vi.fn() }),
-  useRestoreSkillVersion: () => ({ mutate: restoreMutate, isPending: false }),
-}));
-
-import { VersionsTab } from "./VersionsTab";
-
-afterEach(() => {
-  cleanup();
-  restoreMutate.mockClear();
-});
 
 const SKILL: Skill = {
   id: "sk1",
@@ -49,41 +22,58 @@ const SKILL: Skill = {
   attached_doc_paths: [],
 };
 
-function renderTab() {
-  return render(
-    <NextIntlClientProvider locale="en" messages={{ skills: messages, auth: authMessages }}>
-      <VersionsTab skill={SKILL} />
-    </NextIntlClientProvider>,
-  );
+function renderTab({
+  session = "admin",
+  versions = VERSIONS,
+}: { session?: "admin" | "member"; versions?: SkillVersionEntryWithAuthor[] } = {}) {
+  return renderWithProviders(<VersionsTab skill={SKILL} />, {
+    session,
+    routes: {
+      "GET /skills/sk1/versions": versions,
+      "POST /skills/sk1/restore": { ...SKILL, body: "old body", version: 3 },
+    },
+  });
 }
 
+/** The restore button of the restorable row (v1; the head row's is natively disabled). */
+async function findRestoreV1() {
+  const buttons = await screen.findAllByRole("button", { name: /Restore/ });
+  const v1 = buttons.at(1);
+  if (!v1) throw new Error("no v1 restore button");
+  return v1;
+}
+
+afterEach(() => vi.restoreAllMocks());
+
 describe("VersionsTab", () => {
-  it("lists versions newest-first with note fallback and Current chip", () => {
+  it("lists versions newest-first with note fallback and Current chip", async () => {
     renderTab();
-    expect(screen.getByText("v2")).toBeInTheDocument();
+    expect(await screen.findByText("v2")).toBeInTheDocument();
     expect(screen.getByText("v1")).toBeInTheDocument();
     expect(screen.getByText("Tightened rubric")).toBeInTheDocument();
     expect(screen.getByText("Body updated")).toBeInTheDocument(); // null-note fallback
     expect(screen.getByText("Current")).toBeInTheDocument();
   });
 
-  it("restore confirms then POSTs the version to /skills/:id/restore", () => {
+  it("restore confirms, POSTs the version and confirms with a toast", async () => {
+    const user = userEvent.setup();
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-    renderTab();
-    const restoreButtons = screen.getAllByRole("button", { name: /Restore/ });
-    // first row (v2/head) is disabled; second row (v1) is the restorable one
-    fireEvent.click(restoreButtons[1]!);
+    const { router } = renderTab();
+    const restore = await findRestoreV1();
+    await waitFor(() => expect(restore).not.toHaveAttribute("aria-disabled"));
+    await user.click(restore);
+
     expect(confirmSpy).toHaveBeenCalled();
-    expect(restoreMutate).toHaveBeenCalledTimes(1);
-    const [vars] = restoreMutate.mock.calls[0]!;
-    expect(vars).toEqual({ id: "sk1", version: 1 });
-    confirmSpy.mockRestore();
+    expect(await screen.findByText("Restored from v1")).toBeInTheDocument();
+    expect(router.calls.find((c) => c.method === "POST")?.body).toEqual({ version: 1 });
   });
 
-  it("diff opens a modal with added/removed lines vs the previous version", () => {
+  it("diff opens a modal with added/removed lines vs the previous version", async () => {
+    const user = userEvent.setup();
     renderTab();
-    const diffButtons = screen.getAllByRole("button", { name: /Diff/ });
-    fireEvent.click(diffButtons[0]!); // v2 vs v1
+    const [diffV2] = await screen.findAllByRole("button", { name: /Diff/ });
+    if (!diffV2) throw new Error("no diff button");
+    await user.click(diffV2); // v2 vs v1
     expect(screen.getByText("Diff v1 → v2")).toBeInTheDocument();
     expect(screen.getByText("old body")).toBeInTheDocument();
     expect(screen.getByText("new body")).toBeInTheDocument();
@@ -91,36 +81,42 @@ describe("VersionsTab", () => {
 });
 
 describe("VersionsTab gating + version author (AC-33, AC-47/48)", () => {
-  afterEach(() => {
-    perm.role = "admin";
-  });
-
-  it("Member: Restore is aria-disabled with an 'Admins only' hint and never confirms or POSTs; Diff stays usable", () => {
-    perm.role = "member";
+  it("Member: Restore is aria-disabled with an 'Admins only' hint and never confirms or POSTs; Diff stays usable", async () => {
+    const user = userEvent.setup();
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-    renderTab();
-    const restore = screen.getAllByRole("button", { name: /Restore/ })[1]!;
+    const { router } = renderTab({ session: "member" });
+    const restore = await findRestoreV1();
+    await waitFor(() => expect(restore).toHaveAccessibleDescription("Admins only"));
     expect(restore).toHaveAttribute("aria-disabled", "true");
-    expect(restore).toHaveAccessibleDescription("Admins only");
-    fireEvent.click(restore);
-    expect(confirmSpy).not.toHaveBeenCalled();
-    expect(restoreMutate).not.toHaveBeenCalled();
+    await user.click(restore);
 
-    fireEvent.click(screen.getAllByRole("button", { name: /Diff/ })[0]!);
-    expect(screen.getByText("Diff v1 → v2")).toBeInTheDocument();
-    confirmSpy.mockRestore();
+    // Sync point: Diff is allowed for a Member — open it and wait for it. Any
+    // confirm/POST the gated click had started has happened (and its toast
+    // rendered) by then.
+    const [diffV2] = screen.getAllByRole("button", { name: /Diff/ });
+    if (!diffV2) throw new Error("no diff button");
+    await user.click(diffV2);
+    expect(await screen.findByText("Diff v1 → v2")).toBeInTheDocument();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(screen.queryByText("Restored from v1")).not.toBeInTheDocument();
+    expect(router.calls.some((c) => c.method === "POST")).toBe(false);
   });
 
-  it("names each version's author when present: user name, Local user, or —", () => {
-    VERSIONS[0] = { ...VERSIONS[0]!, author: { user_id: "u2", name: "Ann" } } as SkillVersionEntry;
-    VERSIONS[1] = { ...VERSIONS[1]!, author: { user_id: "sys", name: "System", is_system: true } } as SkillVersionEntry;
-    try {
-      renderTab();
-      expect(screen.getByText(/Ann/)).toBeInTheDocument();
-      expect(screen.getByText(/Local user/)).toBeInTheDocument();
-      expect(screen.queryByText("Admins only")).not.toBeInTheDocument();
-    } finally {
-      for (const v of VERSIONS) delete (v as { author?: unknown }).author;
-    }
+  it("names each version's author when present: user name, Local user, or —", async () => {
+    const [v2, v1] = VERSIONS;
+    if (!v2 || !v1) throw new Error("fixture");
+    renderTab({
+      versions: [
+        { ...v2, author: { user_id: "u2", name: "Ann" } },
+        { ...v1, author: { user_id: "sys", name: "System", is_system: true } },
+      ],
+    });
+    expect(await screen.findByText(/Ann/)).toBeInTheDocument();
+    expect(screen.getByText(/Local user/)).toBeInTheDocument();
+    // Session-resolved signal (Admin): Restore turns live — only then is the
+    // missing "Admins only" hint meaningful.
+    const restore = await findRestoreV1();
+    await waitFor(() => expect(restore).not.toHaveAttribute("aria-disabled"));
+    expect(screen.queryByText("Admins only")).not.toBeInTheDocument();
   });
 });

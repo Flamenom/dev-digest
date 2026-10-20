@@ -3,7 +3,7 @@
 import React from "react";
 import { useTranslations } from "next-intl";
 import { Button, SelectInput } from "@devdigest/ui";
-import type { Member, MemberUpdate, Role } from "@devdigest/shared";
+import { Role, type Member, type MemberUpdate } from "@devdigest/shared";
 import { ActorAvatar } from "@/components/actor-label";
 import { useUpdateMember } from "@/lib/hooks";
 import { formatDate } from "../../../../helpers";
@@ -50,8 +50,10 @@ export function MemberRow({ member, canManage, isSelf }: MemberRowProps) {
               mono={false}
               value={member.role}
               options={roleOptions}
-              onChange={(role) => {
-                if (role !== member.role) apply({ role: role as Role });
+              onChange={(value) => {
+                // The select only offers ROLES, but parse rather than cast the DOM value.
+                const parsed = Role.safeParse(value);
+                if (parsed.success && parsed.data !== member.role) apply({ role: parsed.data });
               }}
             />
           </label>

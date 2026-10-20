@@ -5,7 +5,7 @@
 
    Multi-user (AC-33): for a Member "Add Skill" is aria-disabled with the
    visible "Admins only" hint (no menu), the empty-state Import CTA is dropped
-   and the per-card enabled Toggle is not rendered (it is an edit). Local mode
+   and the per-card enabled Toggle is aria-disabled (it is an edit). Local mode
    resolves to Admin, so nothing changes there. */
 "use client";
 
@@ -14,7 +14,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Button, Dropdown, EmptyState, ErrorState, Icon, Skeleton } from "@devdigest/ui";
 import { useSkills, useSkillsUsage, useUpdateSkill } from "@/lib/hooks/skills";
-import { useCan } from "@/lib/permissions";
+import { useCan } from "@/lib/hooks/permissions";
 import { AdminOnly } from "@/components/admin-gate";
 import { SkillCard } from "./_components/SkillCard";
 import { ImportSkillModal } from "./_components/ImportSkillModal";
@@ -102,7 +102,8 @@ export function SkillsList() {
             active={sk.id === activeId}
             agentCount={counts.get(sk.id) ?? 0}
             onClick={() => router.push(`/skills/${sk.id}`)}
-            onToggle={isAdmin ? (enabled) => update.mutate({ id: sk.id, patch: { enabled } }) : undefined}
+            onToggle={(enabled) => update.mutate({ id: sk.id, patch: { enabled } })}
+            canToggle={isAdmin}
           />
         ))}
       </div>

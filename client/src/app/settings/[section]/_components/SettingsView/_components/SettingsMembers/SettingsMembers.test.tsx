@@ -1,25 +1,14 @@
-import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { CurrentSession, MemberList, Role } from "@devdigest/shared";
+import { describe, it, expect } from "vitest";
+import { screen, within, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { Member, MemberList } from "@devdigest/shared";
 import settingsMessages from "../../../../../../../../messages/en/settings.json";
-import authMessages from "../../../../../../../../messages/en/auth.json";
-import { ApiError } from "@/lib/api";
+import { apiError, renderWithProviders, type RouteRequest } from "@/test/render-with-providers";
+import { SettingsMembers } from "./SettingsMembers";
 
 /* AC-19 banner, AC-20 list fields, AC-21/AC-33 (Settings → Members row:
-   Admin manages, Member list only), AC-22 `last_admin` inline error. */
-
-let members: MemberList;
-const mutate = vi.fn();
-let updateState: { isError: boolean; error: unknown } = { isError: false, error: null };
-
-vi.mock("@/lib/hooks", () => ({
-  useMembers: () => ({ data: members, isPending: false, isError: false }),
-  useUpdateMember: () => ({ mutate, isPending: false, ...updateState }),
-}));
-
-import { SettingsMembers } from "./SettingsMembers";
+   Admin manages, Member list only), AC-22 `last_admin` inline error — the ONLY
+   error channel for the update (no global toast on top of it). */
 
 function list(hasAdmin = true): MemberList {
   return {
@@ -49,72 +38,116 @@ function list(hasAdmin = true): MemberList {
   };
 }
 
-function renderAs(role: Role, userId = "u1") {
-  const session: CurrentSession = {
-    mode: "google",
+/** A tiny in-memory members API: PATCH applies the patch and the list re-reads it. */
+function membersApi(initial: MemberList) {
+  let state = initial;
+  return {
+    "GET /members": () => state,
+    "PATCH /members/:userId": (req: RouteRequest) => {
+      const patch = req.body as Partial<Member>;
+      state = {
+        ...state,
+        members: state.members.map((m) => (m.user_id === req.params.userId ? { ...m, ...patch } : m)),
+      };
+      return state.members.find((m) => m.user_id === req.params.userId);
+    },
+  };
+}
+
+function sessionAs(role: "admin" | "member", userId: string) {
+  return {
+    mode: "google" as const,
     user: { id: userId, email: "x@onlytraf.com", name: "X", avatar_url: null, role },
     workspace: { id: "w1", name: "Team" },
   };
-  const qc = new QueryClient();
-  qc.setQueryData(["session"], session);
-  render(
-    <NextIntlClientProvider locale="en" messages={{ settings: settingsMessages, auth: authMessages }}>
-      <QueryClientProvider client={qc}>
-        <SettingsMembers />
-      </QueryClientProvider>
-    </NextIntlClientProvider>,
-  );
 }
 
-beforeEach(() => {
-  members = list();
-  updateState = { isError: false, error: null };
-});
-afterEach(() => {
-  cleanup();
-  mutate.mockReset();
-});
-
 describe("SettingsMembers", () => {
-  it("Admin: sees every member with all fields and can change role, deactivate and reactivate", () => {
-    renderAs("admin");
+  it("Admin: sees every member with all fields and can change role, deactivate and reactivate", async () => {
+    const user = userEvent.setup();
+    const { router } = renderWithProviders(<SettingsMembers />, {
+      session: sessionAs("admin", "u1"),
+      routes: membersApi(list()),
+    });
 
-    const ann = screen.getByRole("row", { name: /Ann Admin/ });
+    const ann = await screen.findByRole("row", { name: /Ann Admin/ });
     expect(within(ann).getByText("ann@onlytraf.com")).toBeInTheDocument();
-    expect(within(ann).getByText("(you)")).toBeInTheDocument();
+    expect(await within(ann).findByText("(you)")).toBeInTheDocument();
     expect(within(ann).getByText("Active")).toBeInTheDocument();
     expect(within(ann).getByText("Oct 1, 2026")).toBeInTheDocument();
     expect(within(ann).getByText("Oct 18, 2026")).toBeInTheDocument();
     const bob = screen.getByRole("row", { name: /Bob Member/ });
     expect(within(bob).getByText("Deactivated")).toBeInTheDocument();
     expect(within(bob).getByText("Never")).toBeInTheDocument();
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByText(settingsMessages.members.noAdmin)).not.toBeInTheDocument();
 
-    fireEvent.change(within(bob).getByRole("combobox", { name: /Role for Bob Member/ }), {
-      target: { value: "admin" },
+    await user.selectOptions(await within(bob).findByRole("combobox", { name: /Role for Bob Member/ }), "admin");
+    await waitFor(() =>
+      expect(within(screen.getByRole("row", { name: /Bob Member/ })).getByRole("combobox")).toHaveValue("admin"),
+    );
+    expect(router.calls.find((c) => c.method === "PATCH")?.body).toEqual({ role: "admin" });
+
+    await user.click(within(bob).getByRole("button", { name: "Reactivate Bob Member" }));
+    expect(
+      await within(screen.getByRole("row", { name: /Bob Member/ })).findByRole("button", {
+        name: "Deactivate Bob Member",
+      }),
+    ).toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: /Bob Member/ })).getByText("Active")).toBeInTheDocument();
+  });
+
+  it("Admin: a role value outside the Role enum is never sent", async () => {
+    const user = userEvent.setup();
+    const { router } = renderWithProviders(<SettingsMembers />, {
+      session: sessionAs("admin", "u1"),
+      routes: membersApi(list()),
     });
-    expect(mutate).toHaveBeenLastCalledWith({ userId: "u2", patch: { role: "admin" } });
 
-    fireEvent.click(within(bob).getByRole("button", { name: "Reactivate Bob Member" }));
-    expect(mutate).toHaveBeenLastCalledWith({ userId: "u2", patch: { status: "active" } });
+    const bob = await screen.findByRole("row", { name: /Bob Member/ });
+    const select = await within(bob).findByRole("combobox", { name: /Role for Bob Member/ });
+    // Inject a forged option so the DOM can actually carry the bogus value.
+    const forged = document.createElement("option");
+    forged.value = "owner";
+    select.appendChild(forged);
+    await user.selectOptions(select, "owner");
 
-    fireEvent.click(within(ann).getByRole("button", { name: "Deactivate Ann Admin" }));
-    expect(mutate).toHaveBeenLastCalledWith({ userId: "u1", patch: { status: "deactivated" } });
+    // Sync point: a valid role change made AFTER the forged one must be the
+    // FIRST PATCH — had "owner" been sent, it would already be recorded ahead.
+    await user.selectOptions(select, "admin");
+    await waitFor(() =>
+      expect(within(screen.getByRole("row", { name: /Bob Member/ })).getByRole("combobox")).toHaveValue("admin"),
+    );
+    expect(router.calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ role: "admin" }]);
   });
 
-  it("Admin: a `last_admin` rejection is shown inline", () => {
-    updateState = { isError: true, error: new ApiError("last admin", 409, "last_admin") };
-    renderAs("admin");
+  it("Admin: a `last_admin` rejection is shown inline only — no global toast", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsMembers />, {
+      session: sessionAs("admin", "u1"),
+      routes: {
+        "GET /members": list(),
+        "PATCH /members/:userId": () => apiError(409, "last_admin", "Cannot remove the last admin"),
+      },
+    });
 
-    const ann = screen.getByRole("row", { name: /Ann Admin/ });
-    expect(within(ann).getByRole("alert")).toHaveTextContent(settingsMessages.members.errors.last_admin);
+    const ann = await screen.findByRole("row", { name: /Ann Admin/ });
+    await user.click(await within(ann).findByRole("button", { name: "Deactivate Ann Admin" }));
+
+    expect(await within(ann).findByRole("alert")).toHaveTextContent(settingsMessages.members.errors.last_admin);
+    expect(screen.queryByText("Cannot remove the last admin")).not.toBeInTheDocument();
   });
 
-  it("Member: list only (no role selector or status actions) and the no-admin banner when nobody is Admin", () => {
-    members = list(false);
-    renderAs("member", "u2");
+  it("Member: list only (no role selector or status actions) and the no-admin banner when nobody is Admin", async () => {
+    renderWithProviders(<SettingsMembers />, {
+      session: sessionAs("member", "u2"),
+      routes: { "GET /members": list(false) },
+    });
 
-    expect(screen.getByRole("status")).toHaveTextContent("No admin — set the admin allowlist and sign in");
+    expect(await screen.findByText(settingsMessages.members.noAdmin)).toBeInTheDocument();
+    // The banner is data-driven; the "(you)" marker needs the RESOLVED session
+    // (userId u2). Wait for it so the absence assertions below can't pass in the
+    // fail-closed pending window.
+    expect(await within(screen.getByRole("row", { name: /Bob Member/ })).findByText("(you)")).toBeInTheDocument();
     expect(screen.getByText("Ann Admin")).toBeInTheDocument();
     expect(screen.getByText("bob@onlytraf.com")).toBeInTheDocument();
     expect(within(screen.getByRole("row", { name: /Ann Admin/ })).getByText("Admin")).toBeInTheDocument();

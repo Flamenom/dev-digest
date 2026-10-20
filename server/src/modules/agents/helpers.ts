@@ -8,7 +8,7 @@ import type {
   ReviewStrategy,
 } from '@devdigest/shared';
 import { AgentVersionConfig } from '@devdigest/shared';
-import { withActors, type ActorLookup } from '../_shared/actors.js';
+import { onlyResult, withActors, type ActorLookup } from '../_shared/actors.js';
 import type { AgentRow, AgentVersionRow } from './repository.js';
 
 /**
@@ -124,11 +124,14 @@ export interface VersionAuthorId {
 export type WithAgentActorIds<T extends Agent> = T & AgentActorIds;
 export type AgentVersionWithAuthorId = AgentVersion & VersionAuthorId;
 
-/** Response shape: the DTO plus resolved creator / last updater. */
-export type WithAgentActors<T extends Agent> = T & {
-  created_by: ActorRef;
-  updated_by: ActorRef;
-};
+/**
+ * Response shape: the DTO plus resolved creator / last updater, with the raw
+ * `*_id` fields dropped — exactly what `presentAgents` builds, so no cast.
+ */
+export type WithAgentActors<T extends Agent> = Omit<
+  WithAgentActorIds<T> & { created_by: ActorRef; updated_by: ActorRef },
+  keyof AgentActorIds
+>;
 /** Response shape: a version DTO plus its resolved author. */
 export type AgentVersionWithAuthorRef = AgentVersion & { author: ActorRef };
 
@@ -164,7 +167,7 @@ export async function presentAgents<T extends Agent>(
     { created_by: (r) => r.created_by_id, updated_by: (r) => r.updated_by_id },
     lookup,
   );
-  return enriched.map(({ created_by_id: _c, updated_by_id: _u, ...dto }) => dto as WithAgentActors<T>);
+  return enriched.map(({ created_by_id: _c, updated_by_id: _u, ...dto }): WithAgentActors<T> => dto);
 }
 
 /** Single-record convenience over `presentAgents`. */
@@ -172,8 +175,7 @@ export async function presentAgent<T extends Agent>(
   record: WithAgentActorIds<T>,
   lookup: ActorLookup,
 ): Promise<WithAgentActors<T>> {
-  const [one] = await presentAgents([record], lookup);
-  return one!;
+  return onlyResult(await presentAgents([record], lookup), 'presentAgent');
 }
 
 /** Resolve each version's `author` and drop the raw id. */

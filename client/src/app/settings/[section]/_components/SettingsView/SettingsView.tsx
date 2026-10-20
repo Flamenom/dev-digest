@@ -10,7 +10,7 @@ import { useParams } from "next/navigation";
 import { EmptyState, Skeleton } from "@devdigest/ui";
 import { useTranslations } from "next-intl";
 import { AppShell } from "@/components/app-shell";
-import { useCan } from "@/lib/permissions";
+import { useCan } from "@/lib/hooks/permissions";
 import { SettingsApiKeys } from "./_components/SettingsApiKeys";
 import { SettingsModels } from "./_components/SettingsModels";
 import { SettingsMembers } from "./_components/SettingsMembers";

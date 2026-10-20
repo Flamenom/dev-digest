@@ -120,7 +120,18 @@ d('identity repository', () => {
     };
     await repo.oauthFlows.create(flow);
 
-    const first = await repo.oauthFlows.consume(flow.stateHash, at(OAUTH_FLOW_TTL_MS - 1000));
+    // G3: a callback with another browser's binding matches nothing and does NOT
+    // delete the row — the victim's in-flight flow survives a stray callback.
+    expect(
+      await repo.oauthFlows.consume(flow.stateHash, sha256Hex('someone-else'), at(1000)),
+    ).toBeUndefined();
+    const intact = await pg.handle.db
+      .select({ stateHash: t.oauthFlows.stateHash })
+      .from(t.oauthFlows)
+      .where(eq(t.oauthFlows.stateHash, flow.stateHash));
+    expect(intact).toHaveLength(1);
+
+    const first = await repo.oauthFlows.consume(flow.stateHash, flow.bindingHash, at(OAUTH_FLOW_TTL_MS - 1000));
     expect(first).toMatchObject({
       bindingHash: flow.bindingHash,
       nonce: 'nonce-1',
@@ -128,11 +139,13 @@ d('identity repository', () => {
       returnTo: '/repos',
       expiresAt: at(OAUTH_FLOW_TTL_MS),
     });
-    expect(await repo.oauthFlows.consume(flow.stateHash, at(1000))).toBeUndefined();
+    expect(await repo.oauthFlows.consume(flow.stateHash, flow.bindingHash, at(1000))).toBeUndefined();
 
     const stale = { ...flow, stateHash: sha256Hex('state-2') };
     await repo.oauthFlows.create(stale);
-    expect(await repo.oauthFlows.consume(stale.stateHash, at(OAUTH_FLOW_TTL_MS + 1))).toBeUndefined();
+    expect(
+      await repo.oauthFlows.consume(stale.stateHash, stale.bindingHash, at(OAUTH_FLOW_TTL_MS + 1)),
+    ).toBeUndefined();
     // …and it is gone, not merely skipped.
     const left = await pg.handle.db
       .select()
@@ -143,6 +156,15 @@ d('identity repository', () => {
     // Only hashes reach the table.
     const raw = await pg.handle.db.select().from(t.oauthFlows);
     expect(raw.some((r) => r.stateHash === 'state-1' || r.bindingHash === 'binding-1')).toBe(false);
+  });
+
+  it('G6: sessions and api_tokens are stored with fillfactor = 90 (HOT touch updates)', async () => {
+    const rows = await pg.handle.db.execute<{ relname: string; reloptions: string[] | null }>(
+      sql`select relname, reloptions from pg_class where relname in ('sessions', 'api_tokens') and relkind = 'r'`,
+    );
+    const byName = new Map([...rows].map((r) => [r.relname, r.reloptions ?? []]));
+    expect(byName.get('sessions')).toContain('fillfactor=90');
+    expect(byName.get('api_tokens')).toContain('fillfactor=90');
   });
 
   it('AC-25: sessions end after 24 h idle or 30 days absolute', async () => {

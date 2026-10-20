@@ -1,43 +1,9 @@
-import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, within, cleanup, fireEvent, waitFor } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { describe, it, expect } from "vitest";
+import { screen, within, fireEvent, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Agent, AgentSkillLink, Skill } from "@devdigest/shared";
-import messages from "../../../../../../../../messages/en/agents.json";
-import authMessages from "../../../../../../../../messages/en/auth.json";
-
-// SkillsTab talks to the API through lib/api only — mock it wholesale.
-vi.mock("@/lib/api", () => ({
-  api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn() },
-}));
-
-/* Multi-user gating reads the session probe: mocked as the local-mode Admin
-   (every control enabled, as before); a test may flip `session` to a Member. */
-const session = vi.hoisted(() => ({
-  mode: "local" as "local" | "google",
-  role: "admin" as "admin" | "member",
-  userId: "u-admin",
-}));
-vi.mock("@/lib/hooks/session", () => ({
-  SESSION_QUERY_KEY: ["session"],
-  useSession: () => ({
-    data: {
-      mode: session.mode,
-      user: { id: session.userId, email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: session.role },
-      workspace: { id: "w1", name: "Team" },
-    },
-    isPending: false,
-  }),
-}));
-
-import { api } from "@/lib/api";
+import { renderWithProviders, type RouteRequest } from "@/test/render-with-providers";
 import { SkillsTab } from "./SkillsTab";
-
-afterEach(() => {
-  cleanup();
-  session.mode = "local";
-  session.role = "admin";
-});
 
 const AGENT: Agent = {
   id: "ag1",
@@ -81,98 +47,112 @@ const LINKS: AgentSkillLink[] = [
   { agent_id: "ag1", skill_id: "a", order: 1 },
 ];
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  (api.get as Mock).mockImplementation((path: string) => {
-    if (path === "/skills") return Promise.resolve(SKILLS);
-    if (path === "/agents/ag1/skills") return Promise.resolve(LINKS);
-    return Promise.reject(new Error(`unexpected GET ${path}`));
+/** In-memory links API: POST replaces the agent's full ordered set. */
+function renderTab(session: "admin" | "member" = "admin") {
+  let links = LINKS;
+  return renderWithProviders(<SkillsTab agent={AGENT} />, {
+    session,
+    routes: {
+      "GET /skills": SKILLS,
+      "GET /agents/ag1/skills": () => links,
+      "POST /agents/ag1/skills": (req: RouteRequest) => {
+        const { skill_ids } = req.body as { skill_ids: string[] };
+        links = skill_ids.map((id, i): AgentSkillLink => ({ agent_id: "ag1", skill_id: id, order: i }));
+        return links;
+      },
+      "GET /agents/ag1": AGENT,
+      "GET /agents": [],
+    },
   });
-  (api.post as Mock).mockImplementation((_path: string, body: { skill_ids: string[] }) =>
-    Promise.resolve(
-      body.skill_ids.map((id, i): AgentSkillLink => ({ agent_id: "ag1", skill_id: id, order: i })),
-    ),
-  );
-});
-
-function renderTab() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <NextIntlClientProvider locale="en" messages={{ auth: authMessages, agents: messages }}>
-        <SkillsTab agent={AGENT} />
-      </NextIntlClientProvider>
-    </QueryClientProvider>,
-  );
 }
 
-const rowNames = (rows: HTMLElement[]) =>
-  rows.map((r) => within(r).getByText(/-skill$/).textContent);
+const rowNames = () => screen.getAllByRole("listitem").map((r) => within(r).getByText(/-skill$/).textContent);
+
+function rowFor(name: string): HTMLElement {
+  const row = screen.getAllByRole("listitem").find((r) => within(r).queryByText(name));
+  if (!row) throw new Error(`no row for ${name}`);
+  return row;
+}
+
+/** A row's checkbox once the session resolved to Admin (live). */
+async function findLiveCheckbox(name: string) {
+  await screen.findAllByRole("listitem");
+  const box = within(rowFor(name)).getByRole("checkbox");
+  await waitFor(() => expect(box).not.toHaveAttribute("aria-disabled"));
+  return box;
+}
 
 describe("SkillsTab", () => {
   it("renders linked skills first in link order, then unlinked", async () => {
     renderTab();
-    const rows = await screen.findAllByRole("listitem");
-    expect(rowNames(rows)).toEqual(["gamma-skill", "alpha-skill", "beta-skill", "delta-skill"]);
+    await screen.findAllByRole("listitem");
+    expect(rowNames()).toEqual(["gamma-skill", "alpha-skill", "beta-skill", "delta-skill"]);
     expect(screen.getByText("2 of 4 enabled")).toBeInTheDocument();
   });
 
-  it("linking a skill posts the full ordered set with the new id appended", async () => {
-    renderTab();
-    const rows = await screen.findAllByRole("listitem");
-    const betaRow = rows.find((r) => within(r).queryByText("beta-skill"))!;
-    fireEvent.click(within(betaRow).getByRole("checkbox"));
-    await waitFor(() =>
-      expect(api.post).toHaveBeenCalledWith("/agents/ag1/skills", { skill_ids: ["c", "a", "b"] }),
-    );
+  it("linking a skill appends it to the full ordered set", async () => {
+    const user = userEvent.setup();
+    const { router } = renderTab();
+    await user.click(await findLiveCheckbox("beta-skill"));
+    expect(await screen.findByText("3 of 4 enabled")).toBeInTheDocument();
+    expect(rowNames()).toEqual(["gamma-skill", "alpha-skill", "beta-skill", "delta-skill"]);
+    expect(router.calls.find((c) => c.method === "POST")?.body).toEqual({ skill_ids: ["c", "a", "b"] });
   });
 
-  it("unlinking a skill posts the full ordered set without it", async () => {
+  it("unlinking a skill drops it from the set", async () => {
+    const user = userEvent.setup();
     renderTab();
-    const rows = await screen.findAllByRole("listitem");
-    const alphaRow = rows.find((r) => within(r).queryByText("alpha-skill"))!;
-    fireEvent.click(within(alphaRow).getByRole("checkbox"));
-    await waitFor(() =>
-      expect(api.post).toHaveBeenCalledWith("/agents/ag1/skills", { skill_ids: ["c"] }),
-    );
+    await user.click(await findLiveCheckbox("alpha-skill"));
+    expect(await screen.findByText("1 of 4 enabled")).toBeInTheDocument();
+    expect(within(rowFor("alpha-skill")).getByRole("checkbox")).toHaveAttribute("aria-checked", "false");
   });
 
-  it("drag-reordering linked rows posts the new full order", async () => {
+  it("drag-reordering linked rows saves the new full order", async () => {
     renderTab();
-    const rows = await screen.findAllByRole("listitem");
-    const alphaRow = rows.find((r) => within(r).queryByText("alpha-skill"))!;
-    const gammaRow = rows.find((r) => within(r).queryByText("gamma-skill"))!;
+    await findLiveCheckbox("alpha-skill");
+    const alphaRow = rowFor("alpha-skill");
+    // fireEvent on purpose: user-event has no HTML5 drag-and-drop API.
     fireEvent.dragStart(alphaRow);
-    fireEvent.dragOver(gammaRow);
+    fireEvent.dragOver(rowFor("gamma-skill"));
     fireEvent.dragEnd(alphaRow);
-    await waitFor(() =>
-      expect(api.post).toHaveBeenCalledWith("/agents/ag1/skills", { skill_ids: ["a", "c"] }),
-    );
+    await waitFor(() => expect(rowNames().slice(0, 2)).toEqual(["alpha-skill", "gamma-skill"]));
   });
 
   it("renders globally-disabled skills muted with a disabled badge", async () => {
     renderTab();
-    const rows = await screen.findAllByRole("listitem");
-    const deltaRow = rows.find((r) => within(r).queryByText("delta-skill"))!;
+    await screen.findAllByRole("listitem");
+    const deltaRow = rowFor("delta-skill");
     expect(deltaRow).toHaveStyle({ opacity: "0.55" });
     expect(within(deltaRow).getByText("disabled")).toBeInTheDocument();
   });
 });
 
-/* AC-33: attaching skills is Admin-only — a Member sees the linked set read-only
-   with the visible "Admins only" hint, and toggling posts nothing. */
+/* AC-33: attaching skills is Admin-only — a Member sees the linked set read-only:
+   checkboxes aria-disabled and described by the visible "Admins only" hint. */
 describe("SkillsTab — role gating (AC-33)", () => {
-  it("Member: read-only list with the 'Admins only' hint; clicking a checkbox posts nothing", async () => {
-    session.mode = "google";
-    session.role = "member";
-    renderTab();
-    const rows = await screen.findAllByRole("listitem");
-    expect(rowNames(rows)).toEqual(["gamma-skill", "alpha-skill", "beta-skill", "delta-skill"]);
-    expect(screen.getByText("Admins only")).toBeVisible();
+  it("Member: read-only list; checkboxes are aria-disabled, described by 'Admins only', and inert", async () => {
+    const user = userEvent.setup();
+    const { router } = renderTab("member");
+    expect(await screen.findByText("Admins only")).toBeVisible();
+    expect(rowNames()).toEqual(["gamma-skill", "alpha-skill", "beta-skill", "delta-skill"]);
 
-    const betaRow = rows.find((r) => within(r).queryByText("beta-skill"))!;
-    fireEvent.click(within(betaRow).getByRole("checkbox"));
-    expect(api.post).not.toHaveBeenCalled();
-    expect(rows[0]).toHaveAttribute("draggable", "false");
+    const beta = within(rowFor("beta-skill")).getByRole("checkbox");
+    expect(beta).toHaveAttribute("aria-disabled", "true");
+    expect(beta).toHaveAccessibleDescription("Admins only");
+    await user.click(beta);
+
+    // Sync point: filtering is allowed for a Member — narrow, then restore the
+    // list and wait for it. Any POST the gated click had started is recorded
+    // and its refetch rendered by then.
+    const filter = screen.getByPlaceholderText("Filter skills…");
+    await user.type(filter, "beta");
+    await waitFor(() => expect(rowNames()).toEqual(["beta-skill"]));
+    await user.clear(filter);
+    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(4));
+
+    expect(within(rowFor("beta-skill")).getByRole("checkbox")).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("2 of 4 enabled")).toBeInTheDocument();
+    expect(rowFor("gamma-skill")).toHaveAttribute("draggable", "false");
+    expect(router.calls.some((c) => c.method === "POST")).toBe(false);
   });
 });

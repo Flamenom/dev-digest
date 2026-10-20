@@ -33,7 +33,7 @@ import {
   useStartEvalBatch,
 } from "@/lib/hooks/eval";
 import { EvalCaseEditorModal } from "@/components/EvalCaseEditorModal";
-import { useCan } from "@/lib/permissions";
+import { useCan } from "@/lib/hooks/permissions";
 import { CaseRow } from "./_components/CaseRow";
 import { EM_DASH, ERROR_CODE_KEYS, METRIC_CARDS } from "./constants";
 import {
@@ -63,14 +63,14 @@ export function EvalsTab({ agent }: { agent: Agent }) {
   // The batch this tab started, if any. Kept after it finishes so the rows keep
   // showing that batch's results until the case list is refetched.
   const [batchId, setBatchId] = React.useState<string | null>(null);
-  const [batchError, setBatchError] = React.useState<string | null>(null);
   const [editor, setEditor] = React.useState<EditorTarget>(null);
   /** Set only by a 409 `case_has_runs`; `null` = no confirmation pending. */
   const [pendingDelete, setPendingDelete] = React.useState<{ caseId: string; runCount: number } | null>(null);
 
   const casesQ = useAgentEvalCases(agent.id);
   const dashQ = useAgentEvalDashboard(agent.id);
-  const startBatch = useStartEvalBatch();
+  // A failed start is shown inline above the case list — not also as a toast.
+  const startBatch = useStartEvalBatch({ errorChannel: "local" });
   const runCase = useRunEvalCase();
   const removeCase = useDeleteEvalCase();
   const { canEditEvalCase } = useCan();
@@ -107,13 +107,10 @@ export function EvalsTab({ agent }: { agent: Agent }) {
 
   // --- actions --------------------------------------------------------------
   const onRunAll = () => {
-    setBatchError(null);
+    // A new mutate() resets `startBatch.error`, so a stale failure clears itself.
     startBatch.mutate(
       { agentId: agent.id },
-      {
-        onSuccess: (started) => setBatchId(started.batch_id),
-        onError: (error) => setBatchError(errorCode(error) ?? "noCases"),
-      },
+      { onSuccess: (started) => setBatchId(started.batch_id) },
     );
   };
 
@@ -130,10 +127,16 @@ export function EvalsTab({ agent }: { agent: Agent }) {
     );
   };
 
+  // The ONLY channel for a failed batch start (the global toast is off for it),
+  // derived from the mutation's own error: a known code maps to its message,
+  // anything else shows the API message.
+  const batchError = startBatch.error;
+  const batchErrorCode = batchError ? errorCode(batchError) : null;
+  const batchErrorKey = batchErrorCode != null ? ERROR_CODE_KEYS[batchErrorCode] : undefined;
   const batchErrorText = batchError
-    ? ERROR_CODE_KEYS[batchError]
-      ? t(ERROR_CODE_KEYS[batchError]!)
-      : batchError
+    ? batchErrorKey
+      ? t(batchErrorKey)
+      : (batchError instanceof Error ? batchError.message : "") || t("errors.noCases")
     : null;
 
   return (
