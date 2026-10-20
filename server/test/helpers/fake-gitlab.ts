@@ -439,6 +439,24 @@ export function quickActionMatches(text: string): string[] {
   return found;
 }
 
+/**
+ * AC-13 security property, parser-independent: the raw lines (split on `\n`
+ * only — Ruby's `^`/`$`) that GitLab's command regex could match for ANY command
+ * name — `^\/<name>(?:[ ]<arg>)?\s*$` — with a generic ASCII name and, wider, a
+ * Unicode one (Ruby's `/i` case-folds U+212A → `k`, U+017F → `s`, …). Ignores
+ * Markdown structure entirely: after neutralisation this must be empty for EVERY
+ * input, whatever GitLab decides is code or paragraph.
+ */
+export function rawCommandLines(text: string): string[] {
+  return text
+    .split('\n')
+    .filter(
+      (line) =>
+        /^\/[A-Za-z_][A-Za-z0-9_]*(?:[ ][^\n]*)?\s*$/.test(line) ||
+        /^\/[\p{L}\p{N}_][\p{L}\p{M}\p{N}_]*(?:\s|$)/u.test(line),
+    );
+}
+
 // ---------- internals ----------
 
 function matches(path: string, pattern: string | RegExp): boolean {

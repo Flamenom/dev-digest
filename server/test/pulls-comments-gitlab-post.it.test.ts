@@ -7,7 +7,7 @@ import { loadConfig } from '../src/platform/config.js';
 import { seed } from '../src/db/seed.js';
 import * as t from '../src/db/schema.js';
 import { MockGitClient, MockGitHubClient, MockSecretsProvider } from '../src/adapters/mocks.js';
-import { FakeGitLab, diffNote, quickActionMatches, textPosition } from './helpers/fake-gitlab.js';
+import { FakeGitLab, diffNote, quickActionMatches, rawCommandLines, textPosition } from './helpers/fake-gitlab.js';
 
 /**
  * T7 — posting GitLab MR comments and replies end to end: real routes, real
@@ -224,20 +224,22 @@ d('GitLab MR comments: post + reply (fake GitLab, Testcontainers pg)', () => {
     });
   });
 
-  it('AC-13: the text GitLab receives contains no quick action; removing the inserted backslashes restores it', async () => {
+  it('AC-13: the text GitLab receives has no command-shaped line; removing the inserted marks restores it', async () => {
     const { fake, post } = await setup();
     const typed = '/merge\n/close\nLGTM\n  /label ~x\n```\n/approve\n```';
     const res = await post({ path: 'src/main.ts', line: 2, body: typed });
     expect(res.statusCode).toBe(200);
 
     const sent = (fake.writes[0]!.body as { body: string }).body;
-    // The oracle models GitLab's extractor (top-level paragraphs only, fences
-    // excluded): the typed text runs commands, the sent text runs none.
+    // Security property, parser-independent: no raw line matches `^\/<name>…`.
+    expect(rawCommandLines(typed)).toEqual(['/merge', '/close', '/approve']);
+    expect(rawCommandLines(sent)).toEqual([]);
+    // Secondary: the extractor model runs commands on the typed text, none on the sent text.
     expect(quickActionMatches(typed)).toEqual(['merge', 'close']);
     expect(quickActionMatches(sent)).toEqual([]);
-    // Fenced content is byte-identical.
-    expect(sent.endsWith('```\n/approve\n```')).toBe(true);
-    expect(sent.replace(/\\\//g, '/')).toBe(typed);
+    // Inside the fence only an invisible U+200B precedes the `/`.
+    expect(sent.endsWith('```\n\u200B/approve\n```')).toBe(true);
+    expect(sent.replace(/[\\\u200B]\//g, '/')).toBe(typed);
   });
 
   it('AC-14: a whitespace-only body → 400 on GitLab AND GitHub, with no host call', async () => {

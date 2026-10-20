@@ -138,13 +138,15 @@ repo from its URL. Specs: [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merg
     name, sanitised, rendered as inline code so it never mentions anyone);
     DevDigest strips that footer when reading the note back and shows
     "via DevDigest · <name>" instead. `local` mode adds no footer.
-  - **Quick actions are neutralised.** A line such as `/merge`, `/close` or
-    `/label` is escaped (`\/merge`) before posting, so it renders as typed and
-    never changes the MR's state, labels, approvals or assignees. Line endings
-    are normalised to LF first (GitLab drops `\r` before looking for quick
-    actions). Text inside fenced code blocks is sent unchanged; a `/` line is
-    left unescaped only when both a line scan and a full CommonMark parse agree
-    it is inside a code block.
+  - **Quick actions are neutralised.** Every line shaped like a quick action
+    (`/merge`, `/close`, `/label ~x`, any `/<name>` followed by end of line or
+    a space) is neutralised before posting, wherever it appears, so it never
+    changes the MR's state, labels, approvals or assignees. Outside code the
+    `/` is escaped (`\/merge`, renders as typed); inside a fenced code block an
+    invisible zero-width space (U+200B) is inserted before the `/` instead, so
+    code still looks unchanged. Lines like `/usr/bin/env` or `// comment` are
+    left alone. Line endings are normalised to LF first (GitLab drops `\r`
+    before looking for quick actions).
   - **Head moved → reload.** Before every post DevDigest reads the MR's current
     diff refs; if new commits were pushed since the diff was loaded, the post is
     refused (409 `comment_diff_outdated`, "New commits were pushed — reload the

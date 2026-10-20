@@ -175,6 +175,14 @@ both providers.
   - the MR's state, approvals, labels and assignees **shall** be unchanged by the post.
 
   _(observable: posting "/merge\n/close\nLGTM" → the body the fake GitLab receives has no line that GitLab parses as a quick action; manual check on a sandbox MR: MR stays open, text renders as typed)_
+
+  > **Amended 2026-10-20:** every command-shaped line (`/` + command name, then end of line
+  > or whitespace, after an optional lead of spaces / zero-width characters) is neutralised
+  > wherever it appears, so safety no longer depends on guessing which lines GitLab's
+  > renderer treats as code. Fenced code is still visually preserved: a command-shaped line
+  > inside a code block gets an invisible U+200B ZERO WIDTH SPACE before its `/`; outside
+  > code it gets `\/` (renders as `/`). Lines that are not command-shaped (`/usr/bin/env`,
+  > `// c`) are unchanged.
 - AC-14: **IF** the comment body is empty or whitespace-only, **THEN** the system **shall**
   reject it with a validation error and make no host call. The client **shall** keep the post
   button disabled for such a body. This applies to both providers.   _(observable: body "   " → 400; composer button disabled)_

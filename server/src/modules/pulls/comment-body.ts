@@ -18,12 +18,28 @@ import { Parser } from 'commonmark';
 const UNICODE_LEAD = '\\u00A0\\u2000-\\u200B\\u202F\\u205F\\u3000\\uFEFF';
 
 /**
- * A line whose first non-blank character is `/`: 0–3 ASCII spaces, optionally
+ * A COMMAND-SHAPED line: an optional lead of 0–3 ASCII spaces, optionally
  * followed by a run of Unicode spaces/zero-width chars (after which any further
- * spaces are fine — the line can no longer be indented code). Group 1 is the
- * prefix kept before the inserted backslash.
+ * spaces are fine), then `/`, a command name and end-of-line or whitespace.
+ * Group 1 is the lead, kept before the inserted character.
+ *
+ * GitLab's extractor matches `^\/(?<cmd>NAMES)(?:[ ](?<arg>[^\n]*))?(?:\s*\n|$)`
+ * (flags m, i) on raw lines. The name pattern here is GENERIC, so commands GitLab
+ * adds later are covered too, and deliberately WIDER than ASCII: Ruby's `/i`
+ * applies Unicode case folding (U+212A KELVIN SIGN ~ `k`, U+017F LONG S ~ `s`,
+ * ligatures such as U+FB01 ~ `fi`), so any letter/mark/digit/underscore run
+ * counts. A lead is harmless to neutralise, so leading spaces are accepted even
+ * though GitLab's `^\/` itself would not match them. Paths and comments
+ * (`/usr/bin/env`, `/path/to`, `// c`, a `/*` block comment) are not
+ * command-shaped.
  */
-const SLASH_LINE = new RegExp(`^( {0,3}(?:[${UNICODE_LEAD}][ ${UNICODE_LEAD}]*)?)/`);
+const COMMAND_LINE = new RegExp(
+  `^( {0,3}(?:[${UNICODE_LEAD}][ ${UNICODE_LEAD}]*)?)/[\\p{L}\\p{N}_][\\p{L}\\p{M}\\p{N}_]*(?=\\s|$)`,
+  'u',
+);
+
+/** Inserted before `/` on command-shaped lines believed to be code: U+200B, invisible. */
+const ZERO_WIDTH_SPACE = '\u200B';
 
 /** CommonMark fence opener: 0–3 spaces, then ``` or ~~~ (≥ 3). */
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
@@ -117,45 +133,48 @@ function commonmarkCodeLines(text: string, lines: readonly string[]): Set<number
 
 /**
  * Makes sure GitLab's quick-action extractor finds no command in `body`, while
- * the rendered text stays what the user typed (AC-13).
+ * the rendered text stays what the user typed (AC-13, amended 2026-10-20).
  *
  * GitLab's extractor (`lib/gitlab/quick_actions/extractor.rb`) deletes `\r`,
- * renders the text through Banzai, keeps only TOP-LEVEL paragraphs, and matches
- * `^\/<cmd>` on those paragraphs' raw source lines.
+ * renders the text through Banzai (comrak + GLFM extensions: `>>>` multiline
+ * quotes, description lists, alerts, footnotes, tables, math, …), keeps only
+ * TOP-LEVEL paragraphs, and matches `^\/<cmd>` on those paragraphs' raw lines.
  *
- * Technique (plan "Quick-action neutralisation — decision"):
+ * INVARIANT: every command-shaped line (see `COMMAND_LINE`) is neutralised,
+ * wherever it is — safety never depends on guessing which lines GitLab renders
+ * as code. The code/paragraph guess only picks the INVISIBLE form:
  * 1. Line endings are normalised first: `\r\n` → `\n`, then any lone `\r` →
- *    `\n` (CommonMark treats a bare CR as a line ending). CRLF is therefore NOT
- *    preserved: the text sent is exactly the text analysed here, so GitLab's own
- *    `\r` deletion can no longer re-shape lines behind our back (a leading `\r`
- *    hiding a `/`, or a `\r` splitting a closing fence).
- * 2. On every line whose first non-blank character is `/` (after 0–3 spaces or a
- *    run of Unicode spaces/zero-width chars), a backslash is inserted before that
- *    `/` — UNLESS the line lies inside a code block according to BOTH the line
- *    heuristic (top-level ``` / ~~~ fences) AND a real CommonMark parse
- *    (`commonmark`, with source positions). A bypass would need both parsers to
- *    be fooled identically. `\/` never matches `^\/`; CommonMark renders the
- *    escaped ASCII punctuation `\/` as `/`.
+ *    `\n`. CRLF is therefore NOT preserved: the text sent is exactly the text
+ *    analysed here, so GitLab's own `\r` deletion cannot re-shape lines.
+ * 2. A command-shaped line believed to be inside a code block — BOTH the line
+ *    heuristic (top-level ``` / ~~~ fences) AND a real CommonMark parse agree —
+ *    gets U+200B ZERO WIDTH SPACE inserted before its `/` (invisible in rendered
+ *    code, where a backslash would show).
+ * 3. Every other command-shaped line gets `\` inserted before its `/`;
+ *    CommonMark renders the escaped ASCII punctuation `\/` as `/`.
+ * Either way the raw line no longer starts with `/`, so `^\/` cannot match; a
+ * wrong code/paragraph guess costs rendering fidelity, never safety. When a CPU
+ * guard skips the parse, nothing counts as code (backslash everywhere — safe).
  *
- * - Genuine fenced blocks (both agree) are byte-identical (after step 1).
- *   Fence-looking lines inside HTML blocks, block quotes or lists are not
- *   top-level fences, so `/` lines there are escaped — over-escaping is safe.
- * - Lines indented ≥ 4 spaces or with a tab are untouched (indented code, where a
- *   backslash would show, or a continuation the raw-line regex cannot match).
+ * Untouched: lines that are not command-shaped (`/usr/bin/env`, `// c`,
+ * `\/merge`, mid-line `/merge`), and lines indented ≥ 4 spaces or with a tab
+ * (the raw-line regex cannot match them).
  */
 export function neutraliseQuickActions(body: string): string {
   const text = body.replace(/\r\n?/g, '\n');
   const lines = text.split('\n');
+  const command = lines.map((line) => COMMAND_LINE.exec(line));
+  if (command.every((m) => m === null)) return text;
   const fenced = heuristicFencedLines(lines);
-  const slash = lines.map((line) => SLASH_LINE.exec(line));
-  // The parse only matters when the heuristic would keep some `/` line.
-  const needsParse = slash.some((m, i) => m !== null && fenced[i]);
+  // The parse only matters when the heuristic believes some command line is code.
+  const needsParse = command.some((m, i) => m !== null && fenced[i]);
   const code = needsParse ? commonmarkCodeLines(text, lines) : new Set<number>();
   for (let i = 0; i < lines.length; i++) {
-    const m = slash[i];
-    if (!m || (fenced[i] && code.has(i))) continue;
-    const prefix = m[1]!;
-    lines[i] = `${prefix}\\${lines[i]!.slice(prefix.length)}`;
+    const m = command[i];
+    if (!m) continue;
+    const lead = m[1]!;
+    const mark = fenced[i] && code.has(i) ? ZERO_WIDTH_SPACE : '\\';
+    lines[i] = `${lead}${mark}${lines[i]!.slice(lead.length)}`;
   }
   return lines.join('\n');
 }
