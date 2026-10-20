@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import authMessages from "../../../../../../../../messages/en/auth.json";
+import settingsMessages from "../../../../../../../../messages/en/settings.json";
 import { FEATURE_MODELS } from "@/lib/feature-models";
 import { renderWithProviders } from "@/test/render-with-providers";
 import { SettingsModels } from "./SettingsModels";
@@ -33,9 +35,14 @@ describe("SettingsModels gating", () => {
     expect(screen.getAllByRole("textbox")).toHaveLength(FEATURE_MODELS.length);
   });
 
-  it("Admin: no hint and no read-only values", () => {
+  it("Admin: live selectors (open to a model search), no hint and no read-only values", async () => {
+    const user = userEvent.setup();
     if (!FIRST) throw new Error("FEATURE_MODELS is empty");
     renderModels(false);
+
+    // Positive: the live picker shows the current model and opens its search.
+    await user.click(await screen.findByText(FIRST.defaultModel));
+    expect(screen.getByPlaceholderText(settingsMessages.models.search)).toBeInTheDocument();
 
     expect(screen.queryByText(authMessages.gate.adminsOnly)).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: `${FIRST.label} model` })).not.toBeInTheDocument();

@@ -3,6 +3,7 @@ import { screen, cleanup, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { EvalCaseDraft, EvalCaseRecordWithActor } from "@devdigest/shared";
 import { renderWithProviders, sessionFor } from "@/test/render-with-providers";
+import { RoleProbe, findRole } from "@/test/role-probe";
 
 /* The providers + session probe come from the shared `renderWithProviders`
    (role gating runs for real). The eval data layer stays a mutable
@@ -152,9 +153,14 @@ afterEach(() => {
 
 function renderModal(props: Partial<React.ComponentProps<typeof EvalCaseEditorModal>> = {}) {
   const onClose = vi.fn();
-  renderWithProviders(<EvalCaseEditorModal caseId="case-1" agentId="agent-1" onClose={onClose} {...props} />, {
-    session: currentSession,
-  });
+  // RoleProbe: a session-resolved signal (`findRole`) for the gating tests.
+  renderWithProviders(
+    <>
+      <RoleProbe />
+      <EvalCaseEditorModal caseId="case-1" agentId="agent-1" onClose={onClose} {...props} />
+    </>,
+    { session: currentSession },
+  );
   return onClose;
 }
 
@@ -429,7 +435,10 @@ describe("EvalCaseEditorModal — ownership gating (AC-30)", () => {
     state.record = { ...CASE, created_by: { user_id: "u-b", name: "Bob" } };
     renderModal();
 
-    expect(await screen.findByText("Created by Bob")).toBeInTheDocument();
+    // Fail-closed while the session is pending: wait for the resolved Member
+    // role before asserting the edit controls are absent.
+    await findRole("member");
+    expect(screen.getByText("Created by Bob")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
     expect(screen.queryByText("Run on save")).not.toBeInTheDocument();
@@ -442,6 +451,7 @@ describe("EvalCaseEditorModal — ownership gating (AC-30)", () => {
     // Legacy: no recorded creator → Admin-only, labelled "—".
     state.record = { ...CASE, created_by: null };
     renderModal();
+    await findRole("member");
     expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
     expect(screen.getByText("—")).toBeInTheDocument();

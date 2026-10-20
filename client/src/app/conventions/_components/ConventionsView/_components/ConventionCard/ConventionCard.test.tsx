@@ -156,7 +156,7 @@ describe("ConventionCard", () => {
     const input = screen.getByDisplayValue("Always use async/await instead of .then() chains");
     await user.clear(input);
     await user.type(input, "  Prefer async/await  ");
-    await user.click(screen.getByText("Save"));
+    await user.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByText("Prefer async/await")).toBeInTheDocument();
     expect(router.calls.find((c) => c.method === "PATCH")?.body).toEqual({ rule: "Prefer async/await" });
   });
@@ -169,7 +169,7 @@ describe("ConventionCard", () => {
     const input = screen.getByDisplayValue("Always use async/await instead of .then() chains");
     await user.clear(input);
     await user.type(input, "changed");
-    await user.click(screen.getByText("Cancel"));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.getByText("Always use async/await instead of .then() chains")).toBeInTheDocument();
 
     // Sync point: a later write that must be the FIRST PATCH — had Cancel saved,

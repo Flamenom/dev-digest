@@ -113,6 +113,10 @@ describe("VersionsTab gating + version author (AC-33, AC-47/48)", () => {
     });
     expect(await screen.findByText(/Ann/)).toBeInTheDocument();
     expect(screen.getByText(/Local user/)).toBeInTheDocument();
+    // Session-resolved signal (Admin): Restore turns live — only then is the
+    // missing "Admins only" hint meaningful.
+    const restore = await findRestoreV1();
+    await waitFor(() => expect(restore).not.toHaveAttribute("aria-disabled"));
     expect(screen.queryByText("Admins only")).not.toBeInTheDocument();
   });
 });

@@ -3,6 +3,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Agent } from "@devdigest/shared";
 import { renderWithProviders } from "@/test/render-with-providers";
+import { RoleProbe, findRole } from "@/test/role-probe";
 import { AgentCard } from "./AgentCard";
 
 const AGENT: Agent = {
@@ -53,9 +54,18 @@ describe("AgentCard — role gating (AC-33)", () => {
   it("Member: the toggle is shown aria-disabled and inert; Delete agent is hidden", async () => {
     const user = userEvent.setup();
     const onToggle = vi.fn();
-    renderWithProviders(<AgentCard ag={AGENT} onToggle={onToggle} />, { session: "member" });
+    renderWithProviders(
+      <>
+        <RoleProbe />
+        <AgentCard ag={AGENT} onToggle={onToggle} />
+      </>,
+      { session: "member" },
+    );
 
-    const toggle = await screen.findByRole("switch", { name: "Security Reviewer enabled" });
+    // The UI is fail-closed while the session probe is pending — wait for the
+    // resolved Member role so the inert/absent assertions below are meaningful.
+    await findRole("member");
+    const toggle = screen.getByRole("switch", { name: "Security Reviewer enabled" });
     expect(toggle).toHaveAttribute("aria-disabled", "true");
     expect(toggle).toHaveAttribute("aria-checked", "true");
     await user.click(toggle);

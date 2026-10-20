@@ -3,6 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Agent, AgentListItem } from "@devdigest/shared";
 import { renderWithProviders, type RouteRequest } from "@/test/render-with-providers";
+import { RoleProbe, findRole } from "@/test/role-probe";
 import { AgentsListView } from "./AgentsListView";
 
 /* AC-33 (Agents row of the UI gating table): creating an agent is Admin-only —
@@ -66,8 +67,17 @@ describe("AgentsListView — role gating (AC-33)", () => {
   });
 
   it("Member with no agents: the empty state offers no create CTA", async () => {
-    renderWithProviders(<AgentsListView />, { session: "member", routes: agentsApi([]) });
+    renderWithProviders(
+      <>
+        <RoleProbe />
+        <AgentsListView />
+      </>,
+      { session: "member", routes: agentsApi([]) },
+    );
 
+    // Fail-closed while the session is pending: wait for the resolved Member
+    // role (not just the data) before asserting the CTA is absent.
+    await findRole("member");
     expect(await screen.findByText("No agents yet")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Create your first agent" })).not.toBeInTheDocument();
   });

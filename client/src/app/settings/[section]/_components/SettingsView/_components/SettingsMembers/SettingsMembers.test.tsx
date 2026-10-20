@@ -144,6 +144,10 @@ describe("SettingsMembers", () => {
     });
 
     expect(await screen.findByText(settingsMessages.members.noAdmin)).toBeInTheDocument();
+    // The banner is data-driven; the "(you)" marker needs the RESOLVED session
+    // (userId u2). Wait for it so the absence assertions below can't pass in the
+    // fail-closed pending window.
+    expect(await within(screen.getByRole("row", { name: /Bob Member/ })).findByText("(you)")).toBeInTheDocument();
     expect(screen.getByText("Ann Admin")).toBeInTheDocument();
     expect(screen.getByText("bob@onlytraf.com")).toBeInTheDocument();
     expect(within(screen.getByRole("row", { name: /Ann Admin/ })).getByText("Admin")).toBeInTheDocument();

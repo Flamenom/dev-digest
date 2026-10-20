@@ -7,7 +7,7 @@ import authMessages from "../../messages/en/auth.json";
 import { AuthGate } from "@/components/auth-gate";
 import { apiError, renderWithProviders, sessionFor, type Routes } from "@/test/render-with-providers";
 import { isAuthzCode } from "./providers";
-import { useCan } from "./hooks/permissions";
+import { RoleProbe } from "@/test/role-probe";
 import { errorChannelMeta } from "./query-meta";
 import { api } from "./api";
 import { navigation, resetSignInRedirect } from "./sign-in-redirect";
@@ -37,12 +37,6 @@ function TwoFailingReads() {
   const a = useQuery({ queryKey: ["a"], queryFn: () => api.get("/a"), retry: false });
   const b = useQuery({ queryKey: ["b"], queryFn: () => api.get("/b"), retry: false });
   return <p>{a.isError && b.isError ? "both failed" : "loading"}</p>;
-}
-
-/** Shows the role the UI currently gates on, so a session re-read is visible. */
-function RoleProbe() {
-  const { role } = useCan();
-  return <p>role: {role ?? "pending"}</p>;
 }
 
 function SaveButton({ local = false }: { local?: boolean }) {
