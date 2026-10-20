@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Convention, ConventionListResponse } from "@devdigest/shared";
 import { apiError, renderWithProviders, testRepo, type RouteRequest, type Routes } from "@/test/render-with-providers";
 import { ConventionsView } from "./ConventionsView";
@@ -79,13 +80,15 @@ async function findLive(name: RegExp) {
 
 describe("ConventionsView", () => {
   it("empty state: Run extraction scans and shows the extracted conventions", async () => {
+    const user = userEvent.setup();
     renderView(EMPTY);
     expect(await screen.findByText("No conventions extracted yet")).toBeInTheDocument();
-    fireEvent.click(await findLive(/Run extraction/));
+    await user.click(await findLive(/Run extraction/));
     expect(await screen.findByText("Redis access goes through the singleton")).toBeInTheDocument();
   });
 
   it("populated: heading, scan meta, accepted count, cards; Deselect all resets to pending", async () => {
+    const user = userEvent.setup();
     renderView(POPULATED);
     expect(await screen.findByText("acme/payments-api")).toBeInTheDocument();
     expect(await screen.findByText(/Detected from 84 sample files/)).toBeInTheDocument();
@@ -93,15 +96,16 @@ describe("ConventionsView", () => {
     expect(screen.getByText("1 of 2 accepted")).toBeInTheDocument();
     expect(screen.getByText("Redis access goes through the singleton")).toBeInTheDocument();
 
-    fireEvent.click(await findLive(/Deselect all/));
+    await user.click(await findLive(/Deselect all/));
     expect(await screen.findByText("0 of 2 accepted")).toBeInTheDocument();
   });
 
   it("a failed extraction raises exactly one toast — the view's own message, not the generic one", async () => {
+    const user = userEvent.setup();
     renderView(EMPTY, "admin", {
       "POST /repos/r1/conventions/extract": () => apiError(500, "internal", "boom from the API"),
     });
-    fireEvent.click(await findLive(/Run extraction/));
+    await user.click(await findLive(/Run extraction/));
     expect(await screen.findByText("Extraction failed")).toBeInTheDocument();
     expect(screen.queryByText("boom from the API")).not.toBeInTheDocument();
   });
@@ -114,22 +118,24 @@ describe("ConventionsView", () => {
 
 describe("ConventionsView gating (AC-33)", () => {
   it("Member: Run extraction is aria-disabled with an 'Admins only' hint and does not extract", async () => {
+    const user = userEvent.setup();
     const { router } = renderView(EMPTY, "member");
     const run = await screen.findByRole("button", { name: /Run extraction/, description: "Admins only" });
     expect(run).toHaveAttribute("aria-disabled", "true");
-    fireEvent.click(run);
+    await user.click(run);
     expect(screen.getByText("No conventions extracted yet")).toBeInTheDocument();
     expect(router.calls.some((c) => c.method === "POST")).toBe(false);
   });
 
   it("Member: Re-scan, Deselect all and Create skill are aria-disabled and inert; the list stays readable", async () => {
+    const user = userEvent.setup();
     const { router } = renderView(POPULATED, "member");
     await screen.findByRole("button", { name: /Re-scan/, description: "Admins only" });
     for (const name of [/Re-scan/, /Deselect all/, /Create skill/]) {
       const btn = screen.getByRole("button", { name });
       expect(btn).toHaveAttribute("aria-disabled", "true");
       expect(btn).toHaveAccessibleDescription("Admins only");
-      fireEvent.click(btn);
+      await user.click(btn);
     }
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByText("1 of 2 accepted")).toBeInTheDocument();

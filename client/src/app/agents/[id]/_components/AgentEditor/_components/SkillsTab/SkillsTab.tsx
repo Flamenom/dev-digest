@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl";
 import { Badge, Checkbox, Chip, EmptyState, ErrorState, Skeleton, TextInput } from "@devdigest/ui";
 import type { Agent, Skill } from "@devdigest/shared";
 import { useAgentSkills, useSetAgentSkills, useWorkspaceSkills } from "@/lib/hooks/agents";
-import { useCan } from "@/lib/hooks/permissions";
+import { AdminHint, useAdminHint } from "@/components/admin-gate";
 import { linkedIdsOf, matchesFilter, moveTo, orderRows, toggleLinked } from "./helpers";
 import { s } from "./styles";
 
@@ -18,12 +18,9 @@ const DRAG_HANDLE_GLYPH = "≡";
     "Admins only" hint, no dragging). */
 export function SkillsTab({ agent }: { agent: Agent }) {
   const t = useTranslations("agents");
-  const tAuth = useTranslations("auth");
-  const { isAdmin, isPending: sessionPending } = useCan();
   // Inert until the session resolves (fail closed); the hint only once we know.
-  const readOnly = !isAdmin;
-  const hintId = React.useId();
-  const showHint = readOnly && !sessionPending;
+  const adminHint = useAdminHint();
+  const { readOnly, describedBy } = adminHint;
   const skillsQ = useWorkspaceSkills();
   const linksQ = useAgentSkills(agent.id);
   const setSkills = useSetAgentSkills(agent.id);
@@ -116,11 +113,7 @@ export function SkillsTab({ agent }: { agent: Agent }) {
           />
         </div>
       </div>
-      {showHint && (
-        <p id={hintId} style={s.readOnlyHint}>
-          {tAuth("gate.adminsOnly")}
-        </p>
-      )}
+      <AdminHint hint={adminHint} />
       <p style={s.caption}>{t("skills.orderHint")}</p>
       {visible.length === 0 ? (
         <div style={s.noMatches}>{t("skills.noMatches")}</div>
@@ -135,7 +128,7 @@ export function SkillsTab({ agent }: { agent: Agent }) {
               dragging={dragId === sk.id}
               onToggle={(on) => toggle(sk.id, on)}
               readOnly={readOnly}
-              describedBy={showHint ? hintId : undefined}
+              describedBy={describedBy}
               onDragStart={(e) => startDrag(e, sk.id)}
               onDragOver={(e) => dragOverRow(e, sk.id)}
               onDragEnd={endDrag}

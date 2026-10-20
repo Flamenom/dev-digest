@@ -22,5 +22,7 @@ export function isAriaDisabled(value: AriaDisabledProps["aria-disabled"]): boole
   return value === true || value === "true";
 }
 
-/** The shared inert look (dimmed, not-allowed cursor). */
+/** The shared inert look (dimmed, not-allowed cursor) — the single source for
+ *  every aria-disabled control, including non-primitive ones gated by the
+ *  app's `AdminOnly` (it passes this as `controlProps.style`). */
 export const INERT_STYLE: React.CSSProperties = { opacity: 0.5, cursor: "not-allowed" };

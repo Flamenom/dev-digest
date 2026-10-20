@@ -19,7 +19,7 @@ import type { Agent, DiscoveredDocument } from "@devdigest/shared";
 import { useRepos } from "@/lib/hooks/core";
 import { useDocument, useProjectContext, useSetAgentDocs } from "@/lib/hooks/projectContext";
 import { rootDirOf } from "@/lib/root-dir";
-import { useCan } from "@/lib/hooks/permissions";
+import { AdminHint, useAdminHint } from "@/components/admin-gate";
 import {
   attachedTokensOf,
   fileNameOf,
@@ -43,13 +43,9 @@ import { s } from "./styles";
     are aria-disabled and described by the visible "Admins only" hint. */
 export function ContextTab({ agent }: { agent: Agent }) {
   const t = useTranslations("agents");
-  const tAuth = useTranslations("auth");
-  const { isAdmin, isPending: sessionPending } = useCan();
   // Inert until the session resolves (fail closed); the hint only once we know.
-  const readOnly = !isAdmin;
-  const hintId = React.useId();
-  const showHint = readOnly && !sessionPending;
-  const describedBy = showHint ? hintId : undefined;
+  const adminHint = useAdminHint();
+  const { readOnly, describedBy } = adminHint;
   const reposQ = useRepos();
   const repos = reposQ.data ?? [];
   // R-7 default: discover against the workspace's first repo unless the user picks another.
@@ -180,11 +176,7 @@ export function ContextTab({ agent }: { agent: Agent }) {
         {" · "}
         {t("context.untrustedNote")}
       </p>
-      {showHint && (
-        <p id={hintId} style={s.readOnlyHint}>
-          {tAuth("gate.adminsOnly")}
-        </p>
-      )}
+      <AdminHint hint={adminHint} />
       <p style={s.caption}>{t("context.orderHint")}</p>
       {!cloneAvailable ? (
         <EmptyState

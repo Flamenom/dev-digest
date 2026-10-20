@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent } from "@testing-library/react";
+import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Agent } from "@devdigest/shared";
 import { renderWithProviders } from "@/test/render-with-providers";
 import { AgentCard } from "./AgentCard";
@@ -38,24 +39,26 @@ describe("AgentCard (smoke)", () => {
    aria-disabled and inert; Delete agent (destructive) stays hidden for them. */
 describe("AgentCard — role gating (AC-33)", () => {
   it("Admin: the enabled toggle works and Delete agent is offered", async () => {
+    const user = userEvent.setup();
     const onToggle = vi.fn();
     renderWithProviders(<AgentCard ag={AGENT} onToggle={onToggle} />, { session: "admin" });
 
     expect(await screen.findByRole("button", { name: "Delete agent" })).toBeInTheDocument();
     const toggle = screen.getByRole("switch", { name: "Security Reviewer enabled" });
     expect(toggle).not.toHaveAttribute("aria-disabled");
-    fireEvent.click(toggle);
+    await user.click(toggle);
     expect(onToggle).toHaveBeenCalledWith(false);
   });
 
   it("Member: the toggle is shown aria-disabled and inert; Delete agent is hidden", async () => {
+    const user = userEvent.setup();
     const onToggle = vi.fn();
     renderWithProviders(<AgentCard ag={AGENT} onToggle={onToggle} />, { session: "member" });
 
     const toggle = await screen.findByRole("switch", { name: "Security Reviewer enabled" });
     expect(toggle).toHaveAttribute("aria-disabled", "true");
     expect(toggle).toHaveAttribute("aria-checked", "true");
-    fireEvent.click(toggle);
+    await user.click(toggle);
     expect(onToggle).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Delete agent" })).not.toBeInTheDocument();
   });

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent, within, waitFor } from "@testing-library/react";
+import { screen, within, waitFor } from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { DiscoveredDocument, DiscoverySummary } from "@devdigest/shared";
 import { apiError, renderWithProviders, testRepo, type RouteRequest, type Routes } from "@/test/render-with-providers";
 import { ProjectContextView } from "./ProjectContextView";
@@ -51,12 +52,12 @@ function renderView(session: "admin" | "member" = "admin", extra: Routes = {}) {
 }
 
 /** Select a document and switch its pane to Edit (once the session resolved to Admin). */
-async function openEditor(path: string) {
-  fireEvent.click(await screen.findByRole("button", { name: `Open ${path}` }));
+async function openEditor(user: UserEvent, path: string) {
+  await user.click(await screen.findByRole("button", { name: `Open ${path}` }));
   const pane = screen.getByRole("region", { name: path });
   const edit = within(pane).getByRole("button", { name: "Edit" });
   await waitFor(() => expect(edit).not.toHaveAttribute("aria-disabled"));
-  fireEvent.click(edit);
+  await user.click(edit);
   return pane;
 }
 
@@ -110,6 +111,7 @@ describe("ProjectContextView", () => {
   });
 
   it("reload button re-reads the discovery (a newly discovered document appears)", async () => {
+    const user = userEvent.setup();
     let reads = 0;
     const extraDoc: DiscoveredDocument = { path: "docs/new.md", bucket: "docs", estimated_tokens: 10 };
     renderView("admin", {
@@ -119,15 +121,16 @@ describe("ProjectContextView", () => {
       },
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Reload documents" }));
+    await user.click(await screen.findByRole("button", { name: "Reload documents" }));
     expect(await screen.findByRole("button", { name: "Open docs/new.md" })).toBeInTheDocument();
   });
 
   it("selects a document, toggles inline Preview/Edit, shows the resync warning, and saves (AC-31..AC-34)", async () => {
+    const user = userEvent.setup();
     const { router } = renderView();
 
     // Select a document in the left list — the right pane shows it inline (no drawer).
-    fireEvent.click(await screen.findByRole("button", { name: "Open docs/adr/one.md" }));
+    await user.click(await screen.findByRole("button", { name: "Open docs/adr/one.md" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     const pane = screen.getByRole("region", { name: "docs/adr/one.md" });
     expect(within(pane).getByText("one.md")).toBeInTheDocument();
@@ -138,7 +141,7 @@ describe("ProjectContextView", () => {
     expect(await screen.findByRole("heading", { name: "ADR One" })).toBeInTheDocument();
 
     // Switch to Edit: keyboard-operable textarea with the raw markdown (AC-31).
-    await openEditor("docs/adr/one.md");
+    await openEditor(user, "docs/adr/one.md");
     expect(within(pane).getByRole("button", { name: "Edit" })).toHaveAttribute("aria-pressed", "true");
     const textarea = screen.getByLabelText("Raw markdown");
     expect(textarea).toHaveValue("# ADR One\n\nBody of the decision.");
@@ -147,8 +150,9 @@ describe("ProjectContextView", () => {
     expect(screen.getByText(/git reset --hard/)).toBeInTheDocument();
 
     // Edit + Save writes { path, text } and confirms inline.
-    fireEvent.change(textarea, { target: { value: "# ADR One (edited)" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await user.clear(textarea);
+    await user.type(textarea, "# ADR One (edited)");
+    await user.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByText("Saved to the repo clone.")).toBeInTheDocument();
     expect(router.calls.find((c) => c.method === "PUT")?.body).toEqual({
       path: "docs/adr/one.md",
@@ -157,11 +161,12 @@ describe("ProjectContextView", () => {
   });
 
   it("a failed save is reported inline only — no global toast on top", async () => {
+    const user = userEvent.setup();
     renderView("admin", {
       "PUT /repos/r1/project-context/document": () => apiError(500, "internal", "disk exploded"),
     });
-    await openEditor("docs/adr/one.md");
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await openEditor(user, "docs/adr/one.md");
+    await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await screen.findByText("Save failed — the document was not written.")).toBeInTheDocument();
     expect(screen.queryByText("disk exploded")).not.toBeInTheDocument();
@@ -170,13 +175,14 @@ describe("ProjectContextView", () => {
 
 describe("ProjectContextView gating (AC-33)", () => {
   it("Member: read-only Preview — Edit is aria-disabled with an 'Admins only' hint and never opens the editor", async () => {
+    const user = userEvent.setup();
     renderView("member");
 
     const pane = await screen.findByRole("region", { name: "specs/2026-06/project-context.md" });
     const edit = within(pane).getByRole("button", { name: "Edit" });
     await waitFor(() => expect(edit).toHaveAccessibleDescription("Admins only"));
     expect(edit).toHaveAttribute("aria-disabled", "true");
-    fireEvent.click(edit);
+    await user.click(edit);
     expect(edit).toHaveAttribute("aria-pressed", "false");
     expect(screen.queryByLabelText("Raw markdown")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();

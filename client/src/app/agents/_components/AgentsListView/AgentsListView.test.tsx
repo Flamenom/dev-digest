@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Agent, AgentListItem } from "@devdigest/shared";
 import { renderWithProviders, type RouteRequest } from "@/test/render-with-providers";
 import { AgentsListView } from "./AgentsListView";
@@ -45,6 +46,7 @@ function agentsApi(initial: AgentListItem[]) {
 
 describe("AgentsListView — role gating (AC-33)", () => {
   it("Member: Add Agent is aria-disabled with an 'Admins only' description and opens no menu", async () => {
+    const user = userEvent.setup();
     renderWithProviders(<AgentsListView />, { session: "member", routes: agentsApi([AGENT]) });
 
     expect(await screen.findByText("Security Reviewer")).toBeInTheDocument();
@@ -52,13 +54,13 @@ describe("AgentsListView — role gating (AC-33)", () => {
     expect(add).toHaveAttribute("aria-disabled", "true");
     add.focus();
     expect(add).toHaveFocus();
-    fireEvent.click(add);
+    await user.click(add);
     expect(screen.queryByText("Create from scratch")).not.toBeInTheDocument();
 
     // The card is readable; its toggle is shown inert and Delete is not offered.
     const toggle = screen.getByRole("switch", { name: "Security Reviewer enabled" });
     expect(toggle).toHaveAttribute("aria-disabled", "true");
-    fireEvent.click(toggle);
+    await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-checked", "true");
     expect(screen.queryByRole("button", { name: "Delete agent" })).not.toBeInTheDocument();
   });
@@ -71,16 +73,17 @@ describe("AgentsListView — role gating (AC-33)", () => {
   });
 
   it("Admin: Add Agent opens the create menu; the toggle flips the agent and Delete is shown", async () => {
+    const user = userEvent.setup();
     const { router } = renderWithProviders(<AgentsListView />, { session: "admin", routes: agentsApi([AGENT]) });
 
     expect(await screen.findByRole("button", { name: "Delete agent" })).toBeInTheDocument();
     const add = screen.getByRole("button", { name: "Add Agent" });
     expect(add).not.toHaveAttribute("aria-disabled");
     expect(screen.queryByText("Admins only")).not.toBeInTheDocument();
-    fireEvent.click(add);
+    await user.click(add);
     expect(screen.getByText("Create from scratch")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("switch", { name: "Security Reviewer enabled" }));
+    await user.click(screen.getByRole("switch", { name: "Security Reviewer enabled" }));
     await waitFor(() =>
       expect(screen.getByRole("switch", { name: "Security Reviewer enabled" })).toHaveAttribute(
         "aria-checked",

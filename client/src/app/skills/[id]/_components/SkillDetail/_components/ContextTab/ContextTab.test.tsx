@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { screen, within, fireEvent, waitFor } from "@testing-library/react";
+import { screen, within, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { DiscoveredDocument, DiscoverySummary, Skill } from "@devdigest/shared";
 import { useSkill } from "@/lib/hooks/skills";
 import { renderWithProviders, testRepo, type RouteRequest } from "@/test/render-with-providers";
@@ -50,6 +51,10 @@ function renderTab(session: "admin" | "member" = "admin") {
       "GET /repos": [REPO],
       "GET /repos/r1/project-context": { documents: DOCS, summary: SUMMARY },
       "GET /skills/sk1": () => skill,
+      "GET /repos/r1/project-context/document": (req: RouteRequest) => ({
+        path: req.query.get("path"),
+        text: `Body of ${req.query.get("path")}`,
+      }),
       "PUT /skills/sk1/attached-docs": (req: RouteRequest) => {
         skill = { ...skill, attached_doc_paths: (req.body as { paths: string[] }).paths };
         return skill;
@@ -111,8 +116,9 @@ describe("ContextTab", () => {
   });
 
   it("attaching a document appends it to the ordered attached set", async () => {
+    const user = userEvent.setup();
     const { router } = renderTab();
-    fireEvent.click(await findLiveCheckbox("perf.md"));
+    await user.click(await findLiveCheckbox("perf.md"));
     expect(await screen.findByText("3 attached")).toBeInTheDocument();
     expect(rowNames().slice(0, 3)).toEqual(["setup.md", "auth.md", "perf.md"]);
     expect(router.calls.find((c) => c.method === "PUT")?.body).toEqual({
@@ -121,28 +127,31 @@ describe("ContextTab", () => {
   });
 
   it("detaching a document drops it from the attached set", async () => {
+    const user = userEvent.setup();
     renderTab();
-    fireEvent.click(await findLiveCheckbox("setup.md"));
+    await user.click(await findLiveCheckbox("setup.md"));
     expect(await screen.findByText("1 attached")).toBeInTheDocument();
     expect(within(rowFor("setup.md")).getByRole("checkbox")).toHaveAttribute("aria-checked", "false");
   });
 
   it("keyboard reorder (move up) moves the document first", async () => {
+    const user = userEvent.setup();
     renderTab();
     await findLiveCheckbox("auth.md");
-    fireEvent.click(screen.getByRole("button", { name: "Move auth.md up" }));
+    await user.click(screen.getByRole("button", { name: "Move auth.md up" }));
     await waitFor(() => expect(rowNames().slice(0, 2)).toEqual(["auth.md", "setup.md"]));
   });
 
   it("search narrows the list by filename/path without changing attach state", async () => {
+    const user = userEvent.setup();
     const { router } = renderTab();
     await screen.findAllByRole("listitem");
     const search = screen.getByPlaceholderText("Search documents…");
 
-    fireEvent.change(search, { target: { value: "perf" } });
+    await user.type(search, "perf");
     expect(rowNames()).toEqual(["perf.md"]);
 
-    fireEvent.change(search, { target: { value: "" } });
+    await user.clear(search);
     expect(screen.getAllByRole("listitem")).toHaveLength(4);
     // Toggles set before filtering remain set; nothing was persisted.
     expect(within(rowFor("setup.md")).getByRole("checkbox")).toHaveAttribute("aria-checked", "true");
@@ -152,24 +161,33 @@ describe("ContextTab", () => {
 
 describe("ContextTab gating (AC-33)", () => {
   it("Member: read-only — notice shown, checkboxes and move buttons aria-disabled and inert; Preview still works", async () => {
+    const user = userEvent.setup();
     const { router } = renderTab("member");
     await screen.findAllByRole("listitem");
     const notice = "Only admins can change attached documents.";
-    expect(screen.getByText(notice)).toBeInTheDocument();
+    // Shown once the session resolves to Member (suppressed while pending).
+    expect(await screen.findByText(notice)).toBeInTheDocument();
 
     const perf = within(rowFor("perf.md")).getByRole("checkbox");
     expect(perf).toHaveAttribute("aria-disabled", "true");
     expect(perf).toHaveAccessibleDescription(notice);
-    fireEvent.click(perf);
-    expect(perf).toHaveAttribute("aria-checked", "false");
+    await user.click(perf);
 
     const moveUp = screen.getByRole("button", { name: "Move auth.md up" });
     expect(moveUp).toHaveAttribute("aria-disabled", "true");
     expect(moveUp).toHaveAccessibleDescription(notice);
-    fireEvent.click(moveUp);
-    expect(rowNames().slice(0, 2)).toEqual(["setup.md", "auth.md"]);
+    await user.click(moveUp);
 
-    expect(screen.getByRole("button", { name: "Preview auth.md" })).not.toHaveAttribute("aria-disabled");
+    // Sync point: Preview is allowed for a Member and does its own round trip.
+    // By the time its body is on screen, any PUT the gated clicks had started
+    // has been recorded and its re-read rendered.
+    const preview = screen.getByRole("button", { name: "Preview auth.md" });
+    expect(preview).not.toHaveAttribute("aria-disabled");
+    await user.click(preview);
+    expect(await screen.findByText("Body of specs/auth.md")).toBeInTheDocument();
+
+    expect(within(rowFor("perf.md")).getByRole("checkbox")).toHaveAttribute("aria-checked", "false");
+    expect(rowNames().slice(0, 2)).toEqual(["setup.md", "auth.md"]);
     expect(router.calls.some((c) => c.method === "PUT")).toBe(false);
   });
 });

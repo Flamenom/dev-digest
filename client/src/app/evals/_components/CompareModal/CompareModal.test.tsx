@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { Modal } from "@devdigest/ui";
 import type { Agent, EvalBatchRecord, EvalCompare, EvalPromoteResult } from "@devdigest/shared";
 import evalMessages from "../../../../../messages/en/eval.json";
@@ -203,6 +204,7 @@ describe("CompareModal system prompt diff", () => {
 
 describe("CompareModal dialog behaviour (AC-45)", () => {
   it("traps focus and Escape closes only the compare modal, not the dialog under it", async () => {
+    const user = userEvent.setup();
     const closeUnderlying = vi.fn();
     const onClose = vi.fn();
     renderWithProviders(
@@ -227,10 +229,10 @@ describe("CompareModal dialog behaviour (AC-45)", () => {
     const last = focusables.at(-1);
     if (!first || !last) throw new Error("no focusables in the dialog");
     last.focus();
-    fireEvent.keyDown(document, { key: "Tab" });
+    await user.tab();
     expect(document.activeElement).toBe(first);
 
-    fireEvent.keyDown(document, { key: "Escape" });
+    await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(closeUnderlying).not.toHaveBeenCalled();
   });
@@ -238,32 +240,39 @@ describe("CompareModal dialog behaviour (AC-45)", () => {
 
 describe("CompareModal promote", () => {
   it("confirms the append-only version bump before promoting, then toasts it", async () => {
+    const user = userEvent.setup();
     const { router } = renderModal();
 
-    fireEvent.click(await findLivePromote());
+    await user.click(await findLivePromote());
     // §9.2: the copy must say a NEW version is created, not that v9 is rolled back.
     expect(screen.getByText(/this creates v10 with v7's settings/)).toBeInTheDocument();
     expect(router.calls.some((c) => c.method === "POST")).toBe(false);
 
-    fireEvent.click(screen.getByRole("button", { name: "Promote v7" }));
+    await user.click(screen.getByRole("button", { name: "Promote v7" }));
     expect(await screen.findByText("v7 promoted as v10.")).toBeInTheDocument();
     expect(router.calls.find((c) => c.method === "POST")?.path).toBe("/agents/a-1/versions/7/promote");
   });
 
   it("reports an unchanged configuration instead of claiming a new version", async () => {
+    const user = userEvent.setup();
     renderModal({ promote: promoted({ new_version: 9, changed: false }) });
 
-    fireEvent.click(await findLivePromote());
-    fireEvent.click(screen.getByRole("button", { name: "Promote v7" }));
+    await user.click(await findLivePromote());
+    await user.click(screen.getByRole("button", { name: "Promote v7" }));
 
     expect(await screen.findByText("v7 is already the active configuration.")).toBeInTheDocument();
   });
 
   it("Member: Promote is aria-disabled with an 'Admins only' description and never confirms (AC-33)", async () => {
-    const { router } = renderModal({ session: "member" });
+    const user = userEvent.setup();
+    const { router, onClose } = renderModal({ session: "member" });
     const promote = await screen.findByRole("button", { name: "Promote v7", description: "Admins only" });
     expect(promote).toHaveAttribute("aria-disabled", "true");
-    fireEvent.click(promote);
+    await user.click(promote);
+    // Sync point: an action a Member CAN take after the gated click (Escape
+    // dismisses the modal) — the click's effects are committed by then.
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(screen.queryByText(/this creates v10/)).not.toBeInTheDocument();
     expect(router.calls.some((c) => c.method === "POST")).toBe(false);
   });

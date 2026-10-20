@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { screen, cleanup, fireEvent, within } from "@testing-library/react";
+import { screen, cleanup, within } from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { EvalCaseDraft, EvalCaseRecordWithActor } from "@devdigest/shared";
 import { renderWithProviders, sessionFor } from "@/test/render-with-providers";
 
@@ -169,14 +170,16 @@ function firstCall<A extends unknown[]>(fn: { mock: { calls: A[] } }): A {
 
 const expectedEditor = () => screen.getByPlaceholderText("Expected output");
 
-/** `@testing-library/user-event` is not a dependency here — the repo's RTL
-    tests drive controlled inputs with `fireEvent.change`. */
-function setValue(el: HTMLElement, value: string) {
-  fireEvent.change(el, { target: { value } });
+/** Replace a field's value the way a user would: clear it, then paste — paste
+    (not `type`) because JSON's `{` / `[` are key descriptors to `user.type`. */
+async function setValue(user: UserEvent, el: HTMLElement, value: string) {
+  await user.clear(el);
+  await user.paste(value);
 }
 
 describe("EvalCaseEditorModal", () => {
-  it("shows exactly two Input tabs — Diff and PR meta, never Files (§19.1) — and edits both", () => {
+  it("shows exactly two Input tabs — Diff and PR meta, never Files (§19.1) — and edits both", async () => {
+    const user = userEvent.setup();
     state.record = CASE;
     renderModal({ repoId: "repo-1" });
 
@@ -188,12 +191,13 @@ describe("EvalCaseEditorModal", () => {
     // The Diff tab is open first and holds the case's pinned diff.
     expect(screen.getByPlaceholderText(/^--- a\/src\/config\.ts/)).toHaveValue(DIFF);
 
-    fireEvent.click(screen.getByRole("button", { name: "PR meta" }));
+    await user.click(screen.getByRole("button", { name: "PR meta" }));
     expect(screen.getByLabelText("Title")).toHaveValue("Add Stripe");
     expect(screen.getByDisplayValue("Wire payments")).toBeInTheDocument();
   });
 
   it("AC-14: malformed expected_output shows the invalid badge and disables Save; the skeleton recovers both", async () => {
+    const user = userEvent.setup();
     state.record = CASE;
     renderModal();
 
@@ -201,19 +205,20 @@ describe("EvalCaseEditorModal", () => {
     expect(await findSave()).toBeEnabled();
     expect(screen.getByText("valid JSON")).toBeInTheDocument();
 
-    setValue(expectedEditor(), "{ kind: nope");
+    await setValue(user, expectedEditor(), "{ kind: nope");
 
     expect(screen.getByText("invalid JSON")).toBeInTheDocument();
     expect(screen.queryByText("valid JSON")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Save$/ })).toBeDisabled();
 
     // `+ Finding skeleton` is the way back to a valid one-expectation template.
-    fireEvent.click(screen.getByRole("button", { name: "+ Finding skeleton" }));
+    await user.click(screen.getByRole("button", { name: "+ Finding skeleton" }));
     expect(screen.getByText("valid JSON")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Save$/ })).toBeEnabled();
   });
 
   it("AC-13: warns for every must_find range that misses the case's own hunks, and clears once it lands inside", async () => {
+    const user = userEvent.setup();
     state.record = CASE;
     renderModal();
     await findSave();
@@ -221,7 +226,8 @@ describe("EvalCaseEditorModal", () => {
     // Line 12 is inside the only hunk ([10,16]) — no warning yet.
     expect(screen.queryByText(/are not inside any hunk/)).not.toBeInTheDocument();
 
-    setValue(
+    await setValue(
+      user,
       expectedEditor(),
       JSON.stringify({
         kind: "must_find",
@@ -241,6 +247,7 @@ describe("EvalCaseEditorModal", () => {
   });
 
   it("saves the edited draft, preserving pinned provenance, and honours the Run-on-save toggle", async () => {
+    const user = userEvent.setup();
     state.record = CASE;
     const onClose = renderModal({ repoId: "repo-1" });
     const save = await findSave();
@@ -254,12 +261,12 @@ describe("EvalCaseEditorModal", () => {
     expect(screen.getByText("Last run failed")).toBeInTheDocument();
     expect(screen.getByText("expected 1, got 0")).toBeInTheDocument();
 
-    setValue(screen.getByLabelText("Name"), "renamed-case");
+    await setValue(user, screen.getByLabelText("Name"), "renamed-case");
     // Q6 — the toggle starts OFF for every modal session.
     const runOnSave = screen.getByRole("switch", { name: "Run on save" });
     expect(runOnSave).toHaveAttribute("aria-checked", "false");
-    fireEvent.click(runOnSave);
-    fireEvent.click(save);
+    await user.click(runOnSave);
+    await user.click(save);
 
     expect(updateMutate).toHaveBeenCalledTimes(1);
     const [vars, opts] = firstCall(updateMutate);
@@ -284,10 +291,11 @@ describe("EvalCaseEditorModal", () => {
   });
 
   it("AC-12: a 409 case_has_runs turns Delete into a confirmation that states the run count", async () => {
+    const user = userEvent.setup();
     state.record = CASE;
     const onClose = renderModal();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    await user.click(await screen.findByRole("button", { name: "Delete" }));
     expect(deleteMutate).toHaveBeenCalledWith(
       { caseId: "case-1", agentId: "agent-1", force: false },
       expect.anything(),
@@ -299,7 +307,7 @@ describe("EvalCaseEditorModal", () => {
     );
     expect(onClose).not.toHaveBeenCalled();
 
-    fireEvent.click(within(confirm).getByRole("button", { name: "Delete" }));
+    await user.click(within(confirm).getByRole("button", { name: "Delete" }));
     expect(deleteMutate).toHaveBeenLastCalledWith(
       { caseId: "case-1", agentId: "agent-1", force: true },
       expect.anything(),
@@ -308,6 +316,7 @@ describe("EvalCaseEditorModal", () => {
   });
 
   it("opens a blank, valid, runless editor for a new case and creates it", async () => {
+    const user = userEvent.setup();
     const onClose = renderModal({ caseId: null });
     await findSave();
 
@@ -323,8 +332,8 @@ describe("EvalCaseEditorModal", () => {
     // An empty name is not saveable even though the JSON is valid.
     expect(screen.getByRole("button", { name: /^Save$/ })).toBeDisabled();
 
-    setValue(screen.getByLabelText("Name"), "new-case");
-    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+    await setValue(user, screen.getByLabelText("Name"), "new-case");
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
 
     expect(createMutate).toHaveBeenCalledTimes(1);
     const [body, opts] = firstCall(createMutate);
@@ -343,11 +352,12 @@ describe("EvalCaseEditorModal", () => {
 
   /* --- Run case on an UNSAVED draft (R8b) ---------------------------------- */
 
-  it("runs an unsaved case without creating it, and shows what came back", () => {
+  it("runs an unsaved case without creating it, and shows what came back", async () => {
+    const user = userEvent.setup();
     state.draft = DRAFT;
     renderModal({ caseId: null, sourceFindingId: "finding-7", prId: "pr-1" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Run case" }));
+    await user.click(screen.getByRole("button", { name: "Run case" }));
 
     // R8b, against the agent the DRAFT names — the PR page never knew it.
     expect(runDraftMutate).toHaveBeenCalledTimes(1);
@@ -414,6 +424,7 @@ describe("EvalCaseEditorModal — ownership gating (AC-30)", () => {
   });
 
   it("Member on someone else's or a legacy case: read-only footer, but the case can still be run", async () => {
+    const user = userEvent.setup();
     asMember("u-a");
     state.record = { ...CASE, created_by: { user_id: "u-b", name: "Bob" } };
     renderModal();
@@ -423,7 +434,7 @@ describe("EvalCaseEditorModal — ownership gating (AC-30)", () => {
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
     expect(screen.queryByText("Run on save")).not.toBeInTheDocument();
     expect(screen.getByText(/Only the case's creator or an admin can edit or delete it/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Run case" }));
+    await user.click(screen.getByRole("button", { name: "Run case" }));
     expect(runMutate).toHaveBeenCalledTimes(1);
     expect(updateMutate).not.toHaveBeenCalled();
     cleanup();

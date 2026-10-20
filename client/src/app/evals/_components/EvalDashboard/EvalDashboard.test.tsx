@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { screen, fireEvent, within, waitFor } from "@testing-library/react";
+import { screen, within, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type {
   EvalAgentSummary,
   EvalBatchRecord,
@@ -177,6 +178,7 @@ describe("EvalDashboard (/evals overview)", () => {
   });
 
   it("runs all agents and explains every skipped one (AC-34)", async () => {
+    const user = userEvent.setup();
     const result: EvalRunAllResult = {
       started: [{ batch_id: "b9", agent_id: "ag1", agent_version: 7, cases_total: 20 }],
       skipped: [
@@ -189,7 +191,7 @@ describe("EvalDashboard (/evals overview)", () => {
 
     const runAll = await screen.findByRole("button", { name: /run all agents/i });
     await waitFor(() => expect(runAll).toBeEnabled());
-    fireEvent.click(runAll);
+    await user.click(runAll);
 
     const summary = await findRunAllSummary();
     expect(within(summary).getByText("Test Quality Reviewer")).toBeInTheDocument();
@@ -200,6 +202,7 @@ describe("EvalDashboard (/evals overview)", () => {
   });
 
   it("opens the case editor for ?case=<uuid> and clears the param on close", async () => {
+    const user = userEvent.setup();
     const caseRecord: EvalCaseRecord = {
       id: "case-1",
       owner_kind: "agent",
@@ -218,7 +221,7 @@ describe("EvalDashboard (/evals overview)", () => {
     const dialog = await screen.findByRole("dialog");
     expect(await within(dialog).findByDisplayValue("stripe-key-leak")).toBeInTheDocument();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: /cancel/i }));
+    await user.click(within(dialog).getByRole("button", { name: /cancel/i }));
     // useQueryParam removes the key by rewriting the URL through router.replace.
     expect(replace).toHaveBeenCalled();
     expect(String(replace.mock.calls.at(0)?.[0])).not.toContain("case=case-1");

@@ -6,7 +6,8 @@
  */
 import React from "react";
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReviewRecordWithActor, Role, RunSummaryWithActor } from "@devdigest/shared";
 import { useCancelRun } from "@/lib/hooks/reviews";
 import { renderWithProviders, sessionFor } from "@/test/render-with-providers";
@@ -97,17 +98,20 @@ function renderTab(role: Role) {
 
 describe("FindingsTab — run gating", () => {
   it("Member: cancels only their own run (row + live Cancel), no Delete run / Delete review, sees initiators", async () => {
+    const user = userEvent.setup();
     const { cancelled } = renderTab("member");
 
     // Exactly one per-row Cancel — on the run the Member started (once the session resolved).
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Cancel run" })).toHaveLength(1));
     const [ownCancel] = screen.getAllByRole("button", { name: "Cancel run" });
     if (!ownCancel) throw new Error("no Cancel run button");
-    fireEvent.click(ownCancel);
+    await user.click(ownCancel);
+    // A cancel renders nothing of its own here (run state arrives via the
+    // props/stream), so the request is the only observable outcome.
     await waitFor(() => expect(cancelled()).toEqual(["mine"]));
 
     // The live "Cancel" cancels only the Member's own live run.
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(cancelled()).toEqual(["mine", "mine"]));
 
     expect(screen.queryByRole("button", { name: "Delete run" })).not.toBeInTheDocument();
@@ -119,14 +123,15 @@ describe("FindingsTab — run gating", () => {
   });
 
   it("Admin: cancels any run and keeps Delete run / Delete review", async () => {
+    const user = userEvent.setup();
     const { onDelete, cancelled } = renderTab("admin");
 
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Cancel run" })).toHaveLength(2));
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(cancelled().sort()).toEqual(["mine", "theirs"]));
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete run" }));
+    await user.click(screen.getByRole("button", { name: "Delete run" }));
     expect(onDelete).toHaveBeenCalledWith("settled");
     expect(screen.getByRole("button", { name: "Delete this review run" })).toBeInTheDocument();
   });

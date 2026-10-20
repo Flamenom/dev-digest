@@ -1,6 +1,7 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { screen, fireEvent } from "@testing-library/react";
+import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import authMessages from "../../messages/en/auth.json";
 import { AuthGate } from "@/components/auth-gate";
@@ -111,6 +112,7 @@ describe("Providers — global auth error policy", () => {
   });
 
   it("a 403 forbidden_role toasts and re-reads the session without navigating", async () => {
+    const user = userEvent.setup();
     nav.pathname = "/settings/api-keys";
     renderApp(<SaveButton />, {
       ...sessionThenPromoted(),
@@ -118,7 +120,7 @@ describe("Providers — global auth error policy", () => {
     });
 
     expect(await screen.findByText("role: member")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await screen.findByText(authMessages.toasts.forbidden_role)).toBeInTheDocument();
     expect(await screen.findByText("role: admin")).toBeInTheDocument();
@@ -126,6 +128,7 @@ describe("Providers — global auth error policy", () => {
   });
 
   it("a `local` mutation's 403 still re-reads the session but raises no toast", async () => {
+    const user = userEvent.setup();
     nav.pathname = "/settings/members";
     renderApp(<SaveButton local />, {
       ...sessionThenPromoted(),
@@ -133,7 +136,7 @@ describe("Providers — global auth error policy", () => {
     });
 
     expect(await screen.findByText("role: member")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("inline: save failed");
     expect(await screen.findByText("role: admin")).toBeInTheDocument();
@@ -141,16 +144,18 @@ describe("Providers — global auth error policy", () => {
   });
 
   it("other mutation failures toast globally by default", async () => {
+    const user = userEvent.setup();
     nav.pathname = "/";
     renderApp(<SaveButton />, { "PUT /settings": () => apiError(500, "internal", "Engine exploded") });
-    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+    await user.click(await screen.findByRole("button", { name: "Save" }));
     expect(await screen.findByText("Engine exploded")).toBeInTheDocument();
   });
 
   it("a `local` mutation's failure is shown only by its caller", async () => {
+    const user = userEvent.setup();
     nav.pathname = "/";
     renderApp(<SaveButton local />, { "PUT /settings": () => apiError(500, "internal", "Engine exploded") });
-    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+    await user.click(await screen.findByRole("button", { name: "Save" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("inline: save failed");
     expect(screen.queryByText("Engine exploded")).not.toBeInTheDocument();
   });

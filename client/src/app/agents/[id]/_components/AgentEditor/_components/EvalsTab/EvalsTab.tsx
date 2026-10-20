@@ -63,11 +63,6 @@ export function EvalsTab({ agent }: { agent: Agent }) {
   // The batch this tab started, if any. Kept after it finishes so the rows keep
   // showing that batch's results until the case list is refetched.
   const [batchId, setBatchId] = React.useState<string | null>(null);
-  // The ONLY channel for a failed batch start (the global toast is off for it):
-  // a known code maps to its message, anything else shows the API message.
-  const [batchError, setBatchError] = React.useState<{ code: string | null; message: string } | null>(
-    null,
-  );
   const [editor, setEditor] = React.useState<EditorTarget>(null);
   /** Set only by a 409 `case_has_runs`; `null` = no confirmation pending. */
   const [pendingDelete, setPendingDelete] = React.useState<{ caseId: string; runCount: number } | null>(null);
@@ -112,14 +107,10 @@ export function EvalsTab({ agent }: { agent: Agent }) {
 
   // --- actions --------------------------------------------------------------
   const onRunAll = () => {
-    setBatchError(null);
+    // A new mutate() resets `startBatch.error`, so a stale failure clears itself.
     startBatch.mutate(
       { agentId: agent.id },
-      {
-        onSuccess: (started) => setBatchId(started.batch_id),
-        onError: (error) =>
-          setBatchError({ code: errorCode(error), message: error instanceof Error ? error.message : "" }),
-      },
+      { onSuccess: (started) => setBatchId(started.batch_id) },
     );
   };
 
@@ -136,11 +127,16 @@ export function EvalsTab({ agent }: { agent: Agent }) {
     );
   };
 
-  const batchErrorKey = batchError?.code != null ? ERROR_CODE_KEYS[batchError.code] : undefined;
+  // The ONLY channel for a failed batch start (the global toast is off for it),
+  // derived from the mutation's own error: a known code maps to its message,
+  // anything else shows the API message.
+  const batchError = startBatch.error;
+  const batchErrorCode = batchError ? errorCode(batchError) : null;
+  const batchErrorKey = batchErrorCode != null ? ERROR_CODE_KEYS[batchErrorCode] : undefined;
   const batchErrorText = batchError
     ? batchErrorKey
       ? t(batchErrorKey)
-      : batchError.message || t("errors.noCases")
+      : (batchError instanceof Error ? batchError.message : "") || t("errors.noCases")
     : null;
 
   return (

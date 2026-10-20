@@ -29,7 +29,7 @@ import type { DiscoveredDocument, Skill } from "@devdigest/shared";
 import { useRepos } from "@/lib/hooks/core";
 import { useDocument, useProjectContext, useSetSkillDocs } from "@/lib/hooks/projectContext";
 import { rootDirOf } from "@/lib/root-dir";
-import { useCan } from "@/lib/hooks/permissions";
+import { AdminHint, useAdminHint } from "@/components/admin-gate";
 import { BUCKET_COLORS, DRAG_HANDLE_GLYPH, NEUTRAL_COLORS } from "./constants";
 import { fileName, matchesQuery, moveTo, movePath, orderDocs, serializePreview, togglePath } from "./helpers";
 import { s } from "./styles";
@@ -38,8 +38,9 @@ export function ContextTab({ skill }: { skill: Skill }) {
   const t = useTranslations("skills");
   const reposQ = useRepos();
   const setDocs = useSetSkillDocs(skill.id);
-  const { isAdmin: canEdit } = useCan();
-  const noticeId = React.useId();
+  // Inert until the session resolves (fail closed); the notice only once we know.
+  const adminHint = useAdminHint();
+  const canEdit = !adminHint.readOnly;
 
   // Only the EXPLICIT selection is state; the effective repo derives from it.
   const [selectedRepoId, setSelectedRepoId] = React.useState<string | null>(null);
@@ -152,11 +153,9 @@ export function ContextTab({ skill }: { skill: Skill }) {
       <p style={s.caption}>
         {t("context.inheritanceNote")} {canEdit && t("context.orderHint")}
       </p>
-      {!canEdit && (
-        <p id={noticeId} style={s.readOnlyNotice}>
-          {t("context.readOnlyNotice")}
-        </p>
-      )}
+      <AdminHint hint={adminHint} style={s.readOnlyNotice}>
+        {t("context.readOnlyNotice")}
+      </AdminHint>
 
       {!cloneAvailable ? (
         <EmptyState
@@ -180,7 +179,7 @@ export function ContextTab({ skill }: { skill: Skill }) {
                 name={name}
                 attached={isAttached}
                 editable={canEdit}
-                describedBy={canEdit ? undefined : noticeId}
+                describedBy={adminHint.describedBy}
                 draggable={canEdit && isAttached && !filtering && !setDocs.isPending}
                 dragging={dragPath === doc.path}
                 tokensLabel={t("context.tokens", { count: doc.estimated_tokens })}

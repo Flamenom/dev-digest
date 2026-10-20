@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { screen, cleanup, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Skill, SkillWithActors } from "@devdigest/shared";
 import { renderWithProviders, type RouteRequest, type Routes } from "@/test/render-with-providers";
 import { SkillDetail } from "./SkillDetail";
@@ -61,18 +62,18 @@ describe("SkillDetail Config tab", () => {
   });
 
   it("editing the body shows the unsaved chip and save asks for a version note", async () => {
+    const user = userEvent.setup();
     const { router } = renderDetail();
     const save = await findLiveSave();
-    fireEvent.change(screen.getByLabelText("Skill body"), {
-      target: { value: "# Rubric\nCheck branches.\nAnd negatives." },
-    });
+    await user.clear(screen.getByLabelText("Skill body"));
+    await user.type(screen.getByLabelText("Skill body"), "# Rubric\nCheck branches.\nAnd negatives.");
     expect(screen.getByText("unsaved")).toBeInTheDocument();
 
-    fireEvent.click(save);
+    await user.click(save);
     // The note mini-modal appears instead of an immediate save.
     const note = screen.getByPlaceholderText("e.g. Tightened the boundary-value checklist");
-    fireEvent.change(note, { target: { value: "Added negative-path rule" } });
-    fireEvent.click(screen.getByRole("button", { name: /Save version/ }));
+    await user.type(note, "Added negative-path rule");
+    await user.click(screen.getByRole("button", { name: /Save version/ }));
 
     expect(await screen.findByText("Skill saved (v3)")).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("e.g. Tightened the boundary-value checklist")).not.toBeInTheDocument();
@@ -87,12 +88,11 @@ describe("SkillDetail Config tab", () => {
   });
 
   it("saves directly (no note prompt) when the body is unchanged", async () => {
+    const user = userEvent.setup();
     const { router } = renderDetail();
     const save = await findLiveSave();
-    fireEvent.change(screen.getByDisplayValue("branch-coverage-rubric"), {
-      target: { value: "branch-coverage-rubric-v2" },
-    });
-    fireEvent.click(save);
+    await user.type(screen.getByDisplayValue("branch-coverage-rubric"), "-v2");
+    await user.click(save);
     expect(await screen.findByText("Skill saved (v3)")).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("e.g. Tightened the boundary-value checklist")).not.toBeInTheDocument();
     expect(putBody(router)).toMatchObject({ name: "branch-coverage-rubric-v2" });
@@ -102,12 +102,14 @@ describe("SkillDetail Config tab", () => {
 
 describe("SkillDetail gating + attribution (AC-33, AC-47/48)", () => {
   it("Member: Save is aria-disabled with an 'Admins only' hint and does nothing; Delete is hidden", async () => {
+    const user = userEvent.setup();
     const { router } = renderDetail(SKILL, "member");
 
     const save = await screen.findByRole("button", { name: /^Save$/, description: "Admins only" });
     expect(save).toHaveAttribute("aria-disabled", "true");
-    fireEvent.change(screen.getByLabelText("Skill body"), { target: { value: "changed" } });
-    fireEvent.click(save);
+    await user.clear(screen.getByLabelText("Skill body"));
+    await user.type(screen.getByLabelText("Skill body"), "changed");
+    await user.click(save);
     expect(screen.queryByPlaceholderText("e.g. Tightened the boundary-value checklist")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Delete/ })).not.toBeInTheDocument();
     expect(router.calls.some((c) => c.method === "PUT")).toBe(false);

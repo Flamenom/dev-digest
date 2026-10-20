@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { screen, fireEvent, within, waitForElementToBeRemoved } from "@testing-library/react";
+import { screen, within, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ApiTokenCreated, ApiTokenListItem } from "@devdigest/shared";
 import settingsMessages from "../../../../../../../../messages/en/settings.json";
 import { apiError, renderWithProviders, type RouteRequest, type Routes } from "@/test/render-with-providers";
@@ -47,6 +48,7 @@ function tokensApi(extra: Routes = {}): Routes {
 
 describe("SettingsApiTokens", () => {
   it("creates a token with the default 90-day expiry, shows the value once, and clears it on Done", async () => {
+    const user = userEvent.setup();
     const { router } = renderWithProviders(<SettingsApiTokens />, { routes: tokensApi() });
 
     const row = await screen.findByRole("row", { name: /Laptop MCP/ });
@@ -55,8 +57,8 @@ describe("SettingsApiTokens", () => {
     expect(screen.queryByDisplayValue(TOKEN_VALUE)).not.toBeInTheDocument();
 
     expect(screen.getByLabelText("Expires in (days)")).toHaveValue(90);
-    fireEvent.change(screen.getByLabelText("Token name"), { target: { value: "  CI box " } });
-    fireEvent.click(screen.getByRole("button", { name: "Create token" }));
+    await user.type(screen.getByLabelText("Token name"), "  CI box ");
+    await user.click(screen.getByRole("button", { name: "Create token" }));
 
     expect(await screen.findByDisplayValue(TOKEN_VALUE)).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Copy your new token now" })).toBeInTheDocument();
@@ -65,42 +67,48 @@ describe("SettingsApiTokens", () => {
     expect(await screen.findByRole("row", { name: /CI box/ })).toHaveTextContent("ddg_pat_wxyz…");
     expect(router.calls.find((c) => c.method === "POST")?.body).toEqual({ name: "CI box", expires_in_days: 90 });
 
-    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    await user.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.queryByDisplayValue(TOKEN_VALUE)).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Copy your new token now" })).not.toBeInTheDocument();
   });
 
   it("validates the form, shows the token_limit message inline only, and revokes a token", async () => {
+    const user = userEvent.setup();
     const { router } = renderWithProviders(<SettingsApiTokens />, {
       routes: tokensApi({ "POST /tokens": () => apiError(409, "token_limit", "Too many tokens") }),
     });
     await screen.findByRole("row", { name: /Laptop MCP/ });
 
-    fireEvent.click(screen.getByRole("button", { name: "Create token" }));
+    await user.click(screen.getByRole("button", { name: "Create token" }));
     expect(screen.getByRole("alert")).toHaveTextContent(settingsMessages.apiTokens.nameInvalid);
-    fireEvent.change(screen.getByLabelText("Token name"), { target: { value: "x" } });
-    fireEvent.change(screen.getByLabelText("Expires in (days)"), { target: { value: "366" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create token" }));
+    await user.clear(screen.getByLabelText("Token name"));
+    await user.type(screen.getByLabelText("Token name"), "x");
+    await user.clear(screen.getByLabelText("Expires in (days)"));
+    await user.type(screen.getByLabelText("Expires in (days)"), "366");
+    await user.click(screen.getByRole("button", { name: "Create token" }));
     expect(screen.getByRole("alert")).toHaveTextContent(settingsMessages.apiTokens.expiryInvalid);
     expect(router.calls.some((c) => c.method === "POST")).toBe(false);
 
-    fireEvent.change(screen.getByLabelText("Expires in (days)"), { target: { value: "30" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create token" }));
+    await user.clear(screen.getByLabelText("Expires in (days)"));
+    await user.type(screen.getByLabelText("Expires in (days)"), "30");
+    await user.click(screen.getByRole("button", { name: "Create token" }));
     expect(await screen.findByText(settingsMessages.apiTokens.errors.token_limit)).toBeInTheDocument();
     expect(screen.queryByText("Too many tokens")).not.toBeInTheDocument();
     expect(router.calls.find((c) => c.method === "POST")?.body).toEqual({ name: "x", expires_in_days: 30 });
 
-    fireEvent.click(screen.getByRole("button", { name: "Revoke token Laptop MCP" }));
-    await waitForElementToBeRemoved(() => screen.queryByRole("row", { name: /Laptop MCP/ }));
+    await user.click(screen.getByRole("button", { name: "Revoke token Laptop MCP" }));
+    // The row may already be gone once the awaited click settles.
+    await waitFor(() => expect(screen.queryByRole("row", { name: /Laptop MCP/ })).not.toBeInTheDocument());
   });
 
   it("a failed revoke is shown inline in its row only — no global toast on top", async () => {
+    const user = userEvent.setup();
     renderWithProviders(<SettingsApiTokens />, {
       routes: tokensApi({ "DELETE /tokens/:id": () => apiError(500, "internal", "db down") }),
     });
 
     const row = await screen.findByRole("row", { name: /Laptop MCP/ });
-    fireEvent.click(within(row).getByRole("button", { name: "Revoke token Laptop MCP" }));
+    await user.click(within(row).getByRole("button", { name: "Revoke token Laptop MCP" }));
     expect(await within(row).findByRole("alert")).toHaveTextContent(settingsMessages.apiTokens.errors.revoke);
     expect(screen.queryByText("db down")).not.toBeInTheDocument();
   });

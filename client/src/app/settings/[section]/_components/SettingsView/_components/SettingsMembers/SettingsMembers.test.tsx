@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { screen, fireEvent, within, waitFor } from "@testing-library/react";
+import { screen, within, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Member, MemberList } from "@devdigest/shared";
 import settingsMessages from "../../../../../../../../messages/en/settings.json";
 import { apiError, renderWithProviders, type RouteRequest } from "@/test/render-with-providers";
@@ -63,6 +64,7 @@ function sessionAs(role: "admin" | "member", userId: string) {
 
 describe("SettingsMembers", () => {
   it("Admin: sees every member with all fields and can change role, deactivate and reactivate", async () => {
+    const user = userEvent.setup();
     const { router } = renderWithProviders(<SettingsMembers />, {
       session: sessionAs("admin", "u1"),
       routes: membersApi(list()),
@@ -79,15 +81,13 @@ describe("SettingsMembers", () => {
     expect(within(bob).getByText("Never")).toBeInTheDocument();
     expect(screen.queryByText(settingsMessages.members.noAdmin)).not.toBeInTheDocument();
 
-    fireEvent.change(await within(bob).findByRole("combobox", { name: /Role for Bob Member/ }), {
-      target: { value: "admin" },
-    });
+    await user.selectOptions(await within(bob).findByRole("combobox", { name: /Role for Bob Member/ }), "admin");
     await waitFor(() =>
       expect(within(screen.getByRole("row", { name: /Bob Member/ })).getByRole("combobox")).toHaveValue("admin"),
     );
     expect(router.calls.find((c) => c.method === "PATCH")?.body).toEqual({ role: "admin" });
 
-    fireEvent.click(within(bob).getByRole("button", { name: "Reactivate Bob Member" }));
+    await user.click(within(bob).getByRole("button", { name: "Reactivate Bob Member" }));
     expect(
       await within(screen.getByRole("row", { name: /Bob Member/ })).findByRole("button", {
         name: "Deactivate Bob Member",
@@ -97,6 +97,7 @@ describe("SettingsMembers", () => {
   });
 
   it("Admin: a role value outside the Role enum is never sent", async () => {
+    const user = userEvent.setup();
     const { router } = renderWithProviders(<SettingsMembers />, {
       session: sessionAs("admin", "u1"),
       routes: membersApi(list()),
@@ -108,12 +109,19 @@ describe("SettingsMembers", () => {
     const forged = document.createElement("option");
     forged.value = "owner";
     select.appendChild(forged);
-    fireEvent.change(select, { target: { value: "owner" } });
+    await user.selectOptions(select, "owner");
 
-    expect(router.calls.some((c) => c.method === "PATCH")).toBe(false);
+    // Sync point: a valid role change made AFTER the forged one must be the
+    // FIRST PATCH — had "owner" been sent, it would already be recorded ahead.
+    await user.selectOptions(select, "admin");
+    await waitFor(() =>
+      expect(within(screen.getByRole("row", { name: /Bob Member/ })).getByRole("combobox")).toHaveValue("admin"),
+    );
+    expect(router.calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ role: "admin" }]);
   });
 
   it("Admin: a `last_admin` rejection is shown inline only — no global toast", async () => {
+    const user = userEvent.setup();
     renderWithProviders(<SettingsMembers />, {
       session: sessionAs("admin", "u1"),
       routes: {
@@ -123,7 +131,7 @@ describe("SettingsMembers", () => {
     });
 
     const ann = await screen.findByRole("row", { name: /Ann Admin/ });
-    fireEvent.click(await within(ann).findByRole("button", { name: "Deactivate Ann Admin" }));
+    await user.click(await within(ann).findByRole("button", { name: "Deactivate Ann Admin" }));
 
     expect(await within(ann).findByRole("alert")).toHaveTextContent(settingsMessages.members.errors.last_admin);
     expect(screen.queryByText("Cannot remove the last admin")).not.toBeInTheDocument();

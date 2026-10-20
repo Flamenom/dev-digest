@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { screen, fireEvent, within, waitFor } from "@testing-library/react";
+import { screen, within, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type {
   Agent,
   EvalAgentDashboard,
@@ -168,6 +169,7 @@ describe("AgentEditor Evals tab (screen E)", () => {
   });
 
   it("flips each case row to its own result as the batch finishes (§19.6)", async () => {
+    const user = userEvent.setup();
     const { router } = renderTab({
       dashboard: dashboard([BATCH]),
       cases: [
@@ -203,7 +205,7 @@ describe("AgentEditor Evals tab (screen E)", () => {
     expect(within(rowNamed("stripe-key-leak")).getByText("must find")).toBeInTheDocument();
     expect(within(rowNamed("clean-refactor-no-flags")).getByText("must not flag")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /Run all evals/i }));
+    await user.click(screen.getByRole("button", { name: /Run all evals/i }));
 
     // …and now each row reads the batch row for its own case.
     expect(await within(rowNamed("stripe-key-leak")).findByRole("img", { name: "passed" })).toBeInTheDocument();
@@ -223,6 +225,7 @@ describe("AgentEditor Evals tab (screen E)", () => {
   });
 
   it("a failed batch start is explained inline only — no global toast on top", async () => {
+    const user = userEvent.setup();
     renderTab({
       cases: [evalCase("case-1", "stripe-key-leak")],
       extra: {
@@ -232,7 +235,7 @@ describe("AgentEditor Evals tab (screen E)", () => {
 
     const run = await screen.findByRole("button", { name: /Run all evals/i });
     await waitFor(() => expect(run).toBeEnabled());
-    fireEvent.click(run);
+    await user.click(run);
     expect(await screen.findByRole("alert")).toHaveTextContent(messages.errors.batchAlreadyRunning);
     expect(screen.queryByText("raw server text")).not.toBeInTheDocument();
   });
@@ -258,6 +261,7 @@ describe("AgentEditor Evals tab — eval-case ownership (AC-30)", () => {
   ];
 
   it("Member: Edit/Delete only on their own case; Run, Run all and New case stay enabled", async () => {
+    const user = userEvent.setup();
     const { router } = renderTab({ cases: CASES }, sessionFor("member", { userId: "u-a" }));
 
     await screen.findAllByRole("listitem");
@@ -272,7 +276,9 @@ describe("AgentEditor Evals tab — eval-case ownership (AC-30)", () => {
       expect(within(row).getByRole("button", { name: "Run" })).toBeInTheDocument();
     }
 
-    fireEvent.click(within(rowNamed("others-case")).getByRole("button", { name: "Run" }));
+    await user.click(within(rowNamed("others-case")).getByRole("button", { name: "Run" }));
+    // A single-case run has no visible outcome on this tab (results land on the
+    // next case-list read), so the request itself is the only observable signal.
     await waitFor(() => expect(router.calls.some((c) => c.path === "/eval-cases/case-other/run")).toBe(true));
     expect(screen.getByRole("button", { name: /Run all evals/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: /New case/i })).toBeEnabled();

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { screen, fireEvent, within } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { SecretsStatusHost } from "@/lib/types";
 import { apiError, renderWithProviders, type RouteRequest } from "@/test/render-with-providers";
 import { SettingsApiKeys } from "./SettingsApiKeys";
@@ -14,6 +15,7 @@ const status: SecretsStatusHost = {
 
 describe("SettingsApiKeys", () => {
   it("shows a GitLab token row with the minimal-scopes hint, status and test connection", async () => {
+    const user = userEvent.setup();
     const { router } = renderWithProviders(<SettingsApiKeys />, {
       routes: {
         "GET /settings/secrets-status": status,
@@ -33,15 +35,14 @@ describe("SettingsApiKeys", () => {
 
     expect(screen.getAllByRole("button", { name: "Test connection" })).toHaveLength(5);
     const gitlabRow = screen.getByRole("group", { name: "GitLab access token" });
-    fireEvent.change(within(gitlabRow).getByLabelText("GitLab access token"), {
-      target: { value: "glpat-xyz" },
-    });
-    fireEvent.click(within(gitlabRow).getByRole("button", { name: "Test connection" }));
+    await user.type(within(gitlabRow).getByLabelText("GitLab access token"), "glpat-xyz");
+    await user.click(within(gitlabRow).getByRole("button", { name: "Test connection" }));
     expect(await screen.findByText("Token OK (read_api)")).toBeInTheDocument();
     expect(router.calls.find((c) => c.method === "POST")?.body).toEqual({ provider: "gitlab", key: "glpat-xyz" });
   });
 
   it("a failed test is shown inline in its row only — no global toast on top", async () => {
+    const user = userEvent.setup();
     renderWithProviders(<SettingsApiKeys />, {
       routes: {
         "GET /settings/secrets-status": status,
@@ -50,7 +51,7 @@ describe("SettingsApiKeys", () => {
     });
 
     const gitlabRow = screen.getByRole("group", { name: "GitLab access token" });
-    fireEvent.click(within(gitlabRow).getByRole("button", { name: "Test connection" }));
+    await user.click(within(gitlabRow).getByRole("button", { name: "Test connection" }));
     expect(await within(gitlabRow).findByText("GitLab is unreachable")).toBeInTheDocument();
     expect(screen.getAllByText("GitLab is unreachable")).toHaveLength(1);
   });

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Skill, SkillVersionEntryWithAuthor } from "@devdigest/shared";
 import { renderWithProviders } from "@/test/render-with-providers";
 import { VersionsTab } from "./VersionsTab";
@@ -55,11 +56,12 @@ describe("VersionsTab", () => {
   });
 
   it("restore confirms, POSTs the version and confirms with a toast", async () => {
+    const user = userEvent.setup();
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const { router } = renderTab();
     const restore = await findRestoreV1();
     await waitFor(() => expect(restore).not.toHaveAttribute("aria-disabled"));
-    fireEvent.click(restore);
+    await user.click(restore);
 
     expect(confirmSpy).toHaveBeenCalled();
     expect(await screen.findByText("Restored from v1")).toBeInTheDocument();
@@ -67,10 +69,11 @@ describe("VersionsTab", () => {
   });
 
   it("diff opens a modal with added/removed lines vs the previous version", async () => {
+    const user = userEvent.setup();
     renderTab();
     const [diffV2] = await screen.findAllByRole("button", { name: /Diff/ });
     if (!diffV2) throw new Error("no diff button");
-    fireEvent.click(diffV2); // v2 vs v1
+    await user.click(diffV2); // v2 vs v1
     expect(screen.getByText("Diff v1 → v2")).toBeInTheDocument();
     expect(screen.getByText("old body")).toBeInTheDocument();
     expect(screen.getByText("new body")).toBeInTheDocument();
@@ -79,18 +82,23 @@ describe("VersionsTab", () => {
 
 describe("VersionsTab gating + version author (AC-33, AC-47/48)", () => {
   it("Member: Restore is aria-disabled with an 'Admins only' hint and never confirms or POSTs; Diff stays usable", async () => {
+    const user = userEvent.setup();
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const { router } = renderTab({ session: "member" });
     const restore = await findRestoreV1();
     await waitFor(() => expect(restore).toHaveAccessibleDescription("Admins only"));
     expect(restore).toHaveAttribute("aria-disabled", "true");
-    fireEvent.click(restore);
-    expect(confirmSpy).not.toHaveBeenCalled();
+    await user.click(restore);
 
+    // Sync point: Diff is allowed for a Member — open it and wait for it. Any
+    // confirm/POST the gated click had started has happened (and its toast
+    // rendered) by then.
     const [diffV2] = screen.getAllByRole("button", { name: /Diff/ });
     if (!diffV2) throw new Error("no diff button");
-    fireEvent.click(diffV2);
-    expect(screen.getByText("Diff v1 → v2")).toBeInTheDocument();
+    await user.click(diffV2);
+    expect(await screen.findByText("Diff v1 → v2")).toBeInTheDocument();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(screen.queryByText("Restored from v1")).not.toBeInTheDocument();
     expect(router.calls.some((c) => c.method === "POST")).toBe(false);
   });
 

@@ -1,6 +1,7 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { CurrentSession, Role } from "@devdigest/shared";
 import authMessages from "../../../messages/en/auth.json";
 import { navigation, resetSignInRedirect } from "@/lib/sign-in-redirect";
@@ -48,14 +49,15 @@ function renderShell(current: CurrentSession) {
   );
 }
 
-async function openRepoSwitcher() {
-  fireEvent.click(await screen.findByText("acme/api"));
+async function openRepoSwitcher(user: UserEvent) {
+  await user.click(await screen.findByText("acme/api"));
 }
 
 const menuLabel = (name: string) => authMessages.user.menuLabel.replace("{name}", name);
 
 describe("AppShell identity + repo gating", () => {
   it("google Admin: shows avatar, name, role; Sign out signs out and goes to /sign-in", async () => {
+    const user = userEvent.setup();
     const { router: api } = renderShell(session("google", "admin"));
 
     const identity = await screen.findByRole("group", { name: menuLabel("Ann Example") });
@@ -64,26 +66,27 @@ describe("AppShell identity + repo gating", () => {
     expect(within(identity).getByText(authMessages.roles.admin)).toBeInTheDocument();
 
     // Admin keeps both repo actions.
-    await openRepoSwitcher();
+    await openRepoSwitcher(user);
     expect(screen.getByRole("button", { name: "Remove acme/api" })).toBeInTheDocument();
     const adminAdd = screen.getByRole("button", { name: "Add repository…" });
     expect(adminAdd).not.toHaveAttribute("aria-disabled");
     expect(adminAdd).not.toHaveAttribute("aria-describedby");
-    fireEvent.click(adminAdd);
+    await user.click(adminAdd);
     expect(router.push).toHaveBeenCalledWith("/onboarding");
 
-    fireEvent.click(within(identity).getByRole("button", { name: authMessages.user.signOut }));
+    await user.click(within(identity).getByRole("button", { name: authMessages.user.signOut }));
     await waitFor(() => expect(assignSpy).toHaveBeenCalledWith("/sign-in"));
     expect(api.calls.some((c) => c.method === "POST" && c.path === "/auth/sign-out")).toBe(true);
   });
 
   it("google Member: remove is hidden; Add repository is inert with a visible 'Admins only' reason", async () => {
+    const user = userEvent.setup();
     renderShell(session("google", "member"));
 
     const identity = await screen.findByRole("group", { name: menuLabel("Ann Example") });
     expect(within(identity).getByText(authMessages.roles.member)).toBeInTheDocument();
 
-    await openRepoSwitcher();
+    await openRepoSwitcher(user);
     expect(screen.queryByRole("button", { name: "Remove acme/api" })).not.toBeInTheDocument();
     const add = screen.getByRole("button", { name: /Add repository/ });
     expect(add).toHaveAccessibleName(`Add repository… ${authMessages.gate.adminsOnly}`);
@@ -92,15 +95,16 @@ describe("AppShell identity + repo gating", () => {
     expect(add).not.toBeDisabled(); // stays focusable
     add.focus();
     expect(add).toHaveFocus();
-    fireEvent.click(add);
+    await user.click(add);
     expect(router.push).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: /Add repository/ })).toBeInTheDocument(); // menu stays open
   });
 
   it("local mode: no identity block and no Sign out; repo actions unchanged", async () => {
+    const user = userEvent.setup();
     renderShell(session("local", "admin"));
 
-    await openRepoSwitcher();
+    await openRepoSwitcher(user);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Remove acme/api" })).toBeInTheDocument(),
     );

@@ -18,6 +18,7 @@
 
 import React from "react";
 import { useTranslations } from "next-intl";
+import { INERT_STYLE } from "@devdigest/ui";
 import { useCan } from "@/lib/hooks/permissions";
 import { s } from "./styles";
 
@@ -73,7 +74,9 @@ export function AdminOnly({ children, allowed, hint, hintStyle }: AdminOnlyProps
           "aria-disabled": true,
           tabIndex: 0,
           ...(showHint ? { "aria-describedby": hintId } : {}),
-          style: s.inertControl,
+          // One inert look everywhere: the design-system primitives apply the
+          // same INERT_STYLE themselves; plain controls get it from here.
+          style: INERT_STYLE,
         },
         guard:
           () =>

@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { apiError, renderWithProviders, testRepo, type Routes } from "@/test/render-with-providers";
 import { AddRepoView } from "./AddRepoView";
 
@@ -21,6 +22,7 @@ async function findLiveAdd() {
 
 describe("AddRepoView", () => {
   it("advertises github.com and gitlab.com and opens the repo on success", async () => {
+    const user = userEvent.setup();
     const { router } = renderView("admin", { "POST /repos": testRepo({ id: "r1" }) });
 
     expect(screen.getByText(/https:\/\/github\.com\/acme\/payments-api/)).toBeInTheDocument();
@@ -33,10 +35,8 @@ describe("AddRepoView", () => {
     );
 
     const add = await findLiveAdd();
-    fireEvent.change(screen.getByRole("textbox"), {
-      target: { value: "https://gitlab.com/space-profit/platform/crm-frontend" },
-    });
-    fireEvent.click(add);
+    await user.type(screen.getByRole("textbox"), "https://gitlab.com/space-profit/platform/crm-frontend");
+    await user.click(add);
     await waitFor(() => expect(push).toHaveBeenCalledWith("/repos/r1/pulls"));
     expect(router.calls.find((c) => c.method === "POST")?.body).toEqual({
       url: "https://gitlab.com/space-profit/platform/crm-frontend",
@@ -44,6 +44,7 @@ describe("AddRepoView", () => {
   });
 
   it("renders add failures inline only — no global toast on top", async () => {
+    const user = userEvent.setup();
     let attempt = 0;
     renderView("admin", {
       "POST /repos": () =>
@@ -53,21 +54,22 @@ describe("AddRepoView", () => {
     });
 
     const add = await findLiveAdd();
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "https://bitbucket.org/a/b" } });
-    fireEvent.click(add);
+    await user.type(screen.getByRole("textbox"), "https://bitbucket.org/a/b");
+    await user.click(add);
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Only github.com and gitlab.com repository URLs are supported.",
     );
     expect(screen.queryByText("unsupported host")).not.toBeInTheDocument();
     expect(push).not.toHaveBeenCalled();
 
-    fireEvent.click(add);
+    await user.click(add);
     // Exactly one place shows the message: the inline alert (getBy throws on duplicates).
     expect(await screen.findByText("Repo already added")).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Repo already added");
   });
 
   it("Member: Add repository is aria-disabled with a visible 'Admins only' description and adds nothing", async () => {
+    const user = userEvent.setup();
     const { router } = renderView("member");
 
     const add = await screen.findByRole("button", { name: "Add repository", description: "Admins only" });
@@ -76,9 +78,14 @@ describe("AddRepoView", () => {
     expect(screen.getByText("Admins only")).toBeVisible();
 
     const input = screen.getByRole("textbox");
-    fireEvent.change(input, { target: { value: "https://github.com/acme/payments-api" } });
-    fireEvent.click(add);
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.type(input, "https://github.com/acme/payments-api");
+    await user.click(add);
+    await user.type(input, "{Enter}");
+    // Sync point: keep typing (allowed for a Member) and wait for it to land —
+    // any POST the click/Enter had started is recorded, and its alert or
+    // navigation rendered, by then.
+    await user.type(input, "-v2");
+    expect(await screen.findByDisplayValue("https://github.com/acme/payments-api-v2")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(push).not.toHaveBeenCalled();
     expect(router.calls.some((c) => c.method === "POST")).toBe(false);

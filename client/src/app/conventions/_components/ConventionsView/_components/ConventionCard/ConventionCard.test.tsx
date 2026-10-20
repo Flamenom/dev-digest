@@ -1,5 +1,7 @@
+import React from "react";
 import { describe, it, expect } from "vitest";
-import { screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { screen, cleanup, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Convention, ConventionListResponse } from "@devdigest/shared";
 import { useConventions } from "@/lib/hooks/conventions";
 import { renderWithProviders, type RouteRequest } from "@/test/render-with-providers";
@@ -39,11 +41,27 @@ const GITLAB_REPO: EvidenceLinkRepo = {
 };
 
 /** Renders the card from the real conventions query, as the page does — so a
-    mutation's effect is visible once the list re-reads. */
+    mutation's effect is visible once the list re-reads. "Re-read" forces a
+    fresh server read and counts it, so a test can await a read issued AFTER
+    an interaction (a sync point that reflects any write that interaction made). */
 function CardFromApi({ repo }: { repo: EvidenceLinkRepo | null }) {
-  const { data } = useConventions("r1");
+  const { data, refetch } = useConventions("r1");
+  const [reads, setReads] = React.useState(0);
   const first = data?.conventions[0];
-  return first ? <ConventionCard convention={first} repoId="r1" repo={repo} /> : null;
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          void refetch().then(() => setReads((n) => n + 1));
+        }}
+      >
+        Re-read
+      </button>
+      <output aria-label="server reads">{reads}</output>
+      {first ? <ConventionCard convention={first} repoId="r1" repo={repo} /> : null}
+    </>
+  );
 }
 
 /** In-memory conventions API: PATCH applies the patch, the list re-reads it. */
@@ -112,47 +130,60 @@ describe("ConventionCard", () => {
   });
 
   it("Accept marks the convention accepted; clicking the active state toggles back to pending", async () => {
+    const user = userEvent.setup();
     const { router } = renderCard(convention());
-    fireEvent.click(await findLiveAccept());
+    await user.click(await findLiveAccept());
     expect(await screen.findByRole("button", { name: "Accepted" })).toBeInTheDocument();
     expect(router.calls.find((c) => c.method === "PATCH")?.body).toEqual({ status: "accepted" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Accepted" }));
+    await user.click(screen.getByRole("button", { name: "Accepted" }));
     expect(await screen.findByRole("button", { name: "Accept" })).toBeInTheDocument();
   });
 
   it("Reject marks the convention rejected", async () => {
+    const user = userEvent.setup();
     renderCard(convention());
     await findLiveAccept();
-    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    await user.click(screen.getByRole("button", { name: "Reject" }));
     expect(await screen.findByRole("button", { name: "Rejected" })).toBeInTheDocument();
   });
 
   it("inline edit saves a trimmed rule", async () => {
+    const user = userEvent.setup();
     const { router } = renderCard(convention());
     await findLiveAccept();
-    fireEvent.click(screen.getByRole("button", { name: "Edit rule" }));
+    await user.click(screen.getByRole("button", { name: "Edit rule" }));
     const input = screen.getByDisplayValue("Always use async/await instead of .then() chains");
-    fireEvent.change(input, { target: { value: "  Prefer async/await  " } });
-    fireEvent.click(screen.getByText("Save"));
+    await user.clear(input);
+    await user.type(input, "  Prefer async/await  ");
+    await user.click(screen.getByText("Save"));
     expect(await screen.findByText("Prefer async/await")).toBeInTheDocument();
     expect(router.calls.find((c) => c.method === "PATCH")?.body).toEqual({ rule: "Prefer async/await" });
   });
 
   it("cancel restores the original rule without saving", async () => {
+    const user = userEvent.setup();
     const { router } = renderCard(convention());
     await findLiveAccept();
-    fireEvent.click(screen.getByRole("button", { name: "Edit rule" }));
+    await user.click(screen.getByRole("button", { name: "Edit rule" }));
     const input = screen.getByDisplayValue("Always use async/await instead of .then() chains");
-    fireEvent.change(input, { target: { value: "changed" } });
-    fireEvent.click(screen.getByText("Cancel"));
+    await user.clear(input);
+    await user.type(input, "changed");
+    await user.click(screen.getByText("Cancel"));
     expect(screen.getByText("Always use async/await instead of .then() chains")).toBeInTheDocument();
-    expect(router.calls.some((c) => c.method === "PATCH")).toBe(false);
+
+    // Sync point: a later write that must be the FIRST PATCH — had Cancel saved,
+    // its rule PATCH would already be recorded ahead of this one.
+    await user.click(screen.getByRole("button", { name: "Reject" }));
+    expect(await screen.findByRole("button", { name: "Rejected" })).toBeInTheDocument();
+    expect(screen.getByText("Always use async/await instead of .then() chains")).toBeInTheDocument();
+    expect(router.calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ status: "rejected" }]);
   });
 });
 
 describe("ConventionCard gating (AC-33)", () => {
   it("Member: Accept / Reject / Edit rule are aria-disabled and inert; one 'Admins only' hint", async () => {
+    const user = userEvent.setup();
     const { router } = renderCard(convention(), REPO, "member");
     const accept = await screen.findByRole("button", { name: /Accept/, description: "Admins only" });
     const reject = screen.getByRole("button", { name: /Reject/ });
@@ -160,8 +191,12 @@ describe("ConventionCard gating (AC-33)", () => {
     const edit = screen.getByRole("button", { name: "Edit rule" });
     for (const btn of [accept, reject, edit]) {
       expect(btn).toHaveAttribute("aria-disabled", "true");
-      fireEvent.click(btn);
+      await user.click(btn);
     }
+    // Sync point: a fresh server read issued after the clicks — any PATCH they
+    // had sent is applied server-side and would show in the re-read card.
+    await user.click(screen.getByRole("button", { name: "Re-read" }));
+    expect(await screen.findByRole("status", { name: "server reads" })).toHaveTextContent("1");
     expect(screen.getAllByText("Admins only")).toHaveLength(1);
     // Nothing changed: no edit field opened, the status stayed, nothing was sent.
     expect(screen.queryByDisplayValue("Always use async/await instead of .then() chains")).not.toBeInTheDocument();

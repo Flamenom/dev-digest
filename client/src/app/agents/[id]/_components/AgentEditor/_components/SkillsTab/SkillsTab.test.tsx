@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { screen, within, fireEvent, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Agent, AgentSkillLink, Skill } from "@devdigest/shared";
 import { renderWithProviders, type RouteRequest } from "@/test/render-with-providers";
 import { SkillsTab } from "./SkillsTab";
@@ -90,16 +91,18 @@ describe("SkillsTab", () => {
   });
 
   it("linking a skill appends it to the full ordered set", async () => {
+    const user = userEvent.setup();
     const { router } = renderTab();
-    fireEvent.click(await findLiveCheckbox("beta-skill"));
+    await user.click(await findLiveCheckbox("beta-skill"));
     expect(await screen.findByText("3 of 4 enabled")).toBeInTheDocument();
     expect(rowNames()).toEqual(["gamma-skill", "alpha-skill", "beta-skill", "delta-skill"]);
     expect(router.calls.find((c) => c.method === "POST")?.body).toEqual({ skill_ids: ["c", "a", "b"] });
   });
 
   it("unlinking a skill drops it from the set", async () => {
+    const user = userEvent.setup();
     renderTab();
-    fireEvent.click(await findLiveCheckbox("alpha-skill"));
+    await user.click(await findLiveCheckbox("alpha-skill"));
     expect(await screen.findByText("1 of 4 enabled")).toBeInTheDocument();
     expect(within(rowFor("alpha-skill")).getByRole("checkbox")).toHaveAttribute("aria-checked", "false");
   });
@@ -108,6 +111,7 @@ describe("SkillsTab", () => {
     renderTab();
     await findLiveCheckbox("alpha-skill");
     const alphaRow = rowFor("alpha-skill");
+    // fireEvent on purpose: user-event has no HTML5 drag-and-drop API.
     fireEvent.dragStart(alphaRow);
     fireEvent.dragOver(rowFor("gamma-skill"));
     fireEvent.dragEnd(alphaRow);
@@ -127,6 +131,7 @@ describe("SkillsTab", () => {
    checkboxes aria-disabled and described by the visible "Admins only" hint. */
 describe("SkillsTab — role gating (AC-33)", () => {
   it("Member: read-only list; checkboxes are aria-disabled, described by 'Admins only', and inert", async () => {
+    const user = userEvent.setup();
     const { router } = renderTab("member");
     expect(await screen.findByText("Admins only")).toBeVisible();
     expect(rowNames()).toEqual(["gamma-skill", "alpha-skill", "beta-skill", "delta-skill"]);
@@ -134,8 +139,18 @@ describe("SkillsTab — role gating (AC-33)", () => {
     const beta = within(rowFor("beta-skill")).getByRole("checkbox");
     expect(beta).toHaveAttribute("aria-disabled", "true");
     expect(beta).toHaveAccessibleDescription("Admins only");
-    fireEvent.click(beta);
-    expect(beta).toHaveAttribute("aria-checked", "false");
+    await user.click(beta);
+
+    // Sync point: filtering is allowed for a Member — narrow, then restore the
+    // list and wait for it. Any POST the gated click had started is recorded
+    // and its refetch rendered by then.
+    const filter = screen.getByPlaceholderText("Filter skills…");
+    await user.type(filter, "beta");
+    await waitFor(() => expect(rowNames()).toEqual(["beta-skill"]));
+    await user.clear(filter);
+    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(4));
+
+    expect(within(rowFor("beta-skill")).getByRole("checkbox")).toHaveAttribute("aria-checked", "false");
     expect(screen.getByText("2 of 4 enabled")).toBeInTheDocument();
     expect(rowFor("gamma-skill")).toHaveAttribute("draggable", "false");
     expect(router.calls.some((c) => c.method === "POST")).toBe(false);

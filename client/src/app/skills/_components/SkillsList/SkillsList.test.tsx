@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Skill } from "@devdigest/shared";
 import { renderWithProviders, type RouteRequest } from "@/test/render-with-providers";
 import { SkillsList } from "./SkillsList";
@@ -63,11 +64,12 @@ describe("SkillsList", () => {
   });
 
   it("the global enabled toggle flips the skill (PUT patch)", async () => {
+    const user = userEvent.setup();
     const { router } = renderWithProviders(<SkillsList />, { routes: skillsApi() });
     const toggle = await screen.findByRole("switch", { name: "branch-coverage-rubric enabled" });
     await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled"));
 
-    fireEvent.click(toggle); // sk1 is enabled → toggling sends enabled: false
+    await user.click(toggle); // sk1 is enabled → toggling sends enabled: false
     await waitFor(() =>
       expect(screen.getByRole("switch", { name: "branch-coverage-rubric enabled" })).toHaveAttribute(
         "aria-checked",
@@ -81,14 +83,16 @@ describe("SkillsList", () => {
   });
 
   it("search filters client-side by name and by type", async () => {
+    const user = userEvent.setup();
     renderWithProviders(<SkillsList />, { routes: skillsApi() });
     await screen.findByText("branch-coverage-rubric");
     const input = screen.getByPlaceholderText("Search skills…");
-    fireEvent.change(input, { target: { value: "mock-overuse" } });
+    await user.type(input, "mock-overuse");
     expect(screen.queryByText("branch-coverage-rubric")).not.toBeInTheDocument();
     expect(screen.getByText("mock-overuse-gate")).toBeInTheDocument();
     // type match
-    fireEvent.change(input, { target: { value: "rubric" } });
+    await user.clear(input);
+    await user.type(input, "rubric");
     expect(screen.getByText("branch-coverage-rubric")).toBeInTheDocument();
     expect(screen.queryByText("mock-overuse-gate")).not.toBeInTheDocument();
   });
@@ -96,11 +100,12 @@ describe("SkillsList", () => {
 
 describe("SkillsList gating (AC-33)", () => {
   it("Member: Add Skill is aria-disabled with an 'Admins only' hint, opens no menu, and the toggles are inert", async () => {
+    const user = userEvent.setup();
     const { router } = renderWithProviders(<SkillsList />, { session: "member", routes: skillsApi() });
 
     const add = await screen.findByRole("button", { name: /Add Skill/i, description: "Admins only" });
     expect(add).toHaveAttribute("aria-disabled", "true");
-    fireEvent.click(add);
+    await user.click(add);
     expect(screen.queryByText("Create manually")).not.toBeInTheDocument();
     expect(push).not.toHaveBeenCalledWith("/skills/new");
 
@@ -109,8 +114,15 @@ describe("SkillsList gating (AC-33)", () => {
     expect(toggles).toHaveLength(2);
     for (const toggle of toggles) {
       expect(toggle).toHaveAttribute("aria-disabled", "true");
-      fireEvent.click(toggle);
+      await user.click(toggle);
     }
+    // Sync point: search is allowed for a Member — narrow, restore, and wait.
+    // Any PUT the gated toggles had sent is recorded (and its re-read rendered) by then.
+    const search = screen.getByPlaceholderText("Search skills…");
+    await user.type(search, "mock-overuse");
+    await waitFor(() => expect(screen.queryByText("branch-coverage-rubric")).not.toBeInTheDocument());
+    await user.clear(search);
+    expect(await screen.findByText("branch-coverage-rubric")).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "branch-coverage-rubric enabled" })).toHaveAttribute(
       "aria-checked",
       "true",
