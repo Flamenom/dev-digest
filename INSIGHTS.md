@@ -23,6 +23,7 @@ Cap ~5 new/session, ~80–100 lines/file (then prune/split). Promote persistent 
 
 ## Decisions — with the why
 
+- Security-sensitive text transforms (escaping for a downstream renderer) must be checked against the REAL downstream parser, not a spec-compliant stand-in. The quick-action neutraliser passed its commonmark.js-based oracle while GitLab's comrak/GLFM still executed commands. Only a scratch-venv `comrak` (PyPI binding, configured with GitLab's options) plus a fuzz harness exposed it. Keep the repo test parser-independent (assert the invariant on raw lines) and use the real parser as an offline fuzz oracle. Also: in `/pr-self-review`, give the security reviewer concrete attack vectors; the generic pass missed this in the first round. Evidence: server/test/comment-body.test.ts; server/test/helpers/fake-gitlab.ts (`rawCommandLines`) (PR #15). Confidence: high. (2026-10-20)
 ## Recurring Errors & Fixes
 
 - Correction to the entry below: the testcontainers `beforeAll` timeout is fixed (Task G7). Every server it-test now shares ONE Postgres, started lazily by a loopback broker in vitest `globalSetup`. Each file gets its own `CREATE DATABASE … TEMPLATE devdigest_template`, migrated once. Hermetic-only runs never start Docker. The full suite was green 3/3, with the critical path now the hermetic `rate-limit-per-user.test.ts` (~120 s). Evidence: server/test/global-setup.ts; server/test/helpers/pg.ts. Confidence: high. (2026-10-20)

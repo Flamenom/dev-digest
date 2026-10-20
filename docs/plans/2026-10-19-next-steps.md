@@ -144,6 +144,8 @@ Candidates (verify each against the code before writing):
 
 ### Task D: GitLab phase 2, posting comments (medium · decide after Task C)
 
+> **Status 2026-10-20:** implemented in PR #15 (`feat/gitlab-comments`). Spec `specs/2026-10-20-gitlab-comments.md` (42 ACs), plan `docs/plans/gitlab-comments.md`. **Breaking:** the GitLab token now requires the `api` scope, and stored `read_api` tokens become invalid. **Pending before merge:** a manual quick-action smoke test on a gitlab.com sandbox MR (AC-13).
+
 **Why:** GitLab PRs are read-only today. Posting inline comments and replies needs:
 - GitLab discussions with a `position` object (`base_sha`/`start_sha`/`head_sha` from `diff_refs`, `new_path`/`old_path`, `new_line`/`old_line`);
 - replies to discussions;
@@ -209,7 +211,7 @@ Task D (GitLab comment posting) is still open. It can start now that C is done: 
 
 ### Task G: follow-ups from the multi-user `/pr-self-review` rounds (small each · ready)
 
-> **Status 2026-10-20:** G1–G8 are implemented on branch `feat/task-g-followups`. G2 was handled by documenting it: README has a pre-0024 upgrade note with a duplicate check, and no migration was added. Left open: Task D, and leftovers listed in the PR description.
+> **Status 2026-10-20:** G1–G8 are merged (PR #14). G2 was handled by documenting it: README has a pre-0024 upgrade note with a duplicate check, and no migration was added. Left open: Task D, and leftovers listed in the PR description.
 
 None of these block the push. Each needs a test.
 
@@ -239,6 +241,28 @@ None of these block the push. Each needs a test.
    - `metadata` for `/sign-in`.
 7. **Known flake (Task E leftover):** under heavy Docker load, a testcontainers `beforeAll` sometimes exceeds 120 s. The fix is a shared Postgres via `globalSetup` with a database per file.
 8. **`vendor/ui`:** add `aria-disabled` support to `Toggle` / `Checkbox` / `IconBtn`. Members currently get *hidden* controls there, not disabled ones.
+
+### Task H: follow-ups from the Task D review (small each · ready after PR #15 merges)
+
+None of these block. Each needs a test.
+
+1. **Token-blocking rule duplicated:** `pulls/page.tsx` and `pulls/[number]/page.tsx` both compute "GitLab repo, blocked, and health ∈ {insufficient_scope, invalid}" and both declare `TOKEN_NOTICE_ID`.
+   - Move the rule into `useGitLabTokenHealth(repo)`, returning a narrowed `BlockingGitLabHealth | null`.
+   - Export one notice id from `components/gitlab-token-notice`.
+   - Move the inline wrapper styles into `styles.ts`.
+2. **`gitlab-health.test.tsx` checks cache keys, not behaviour:** it spies on `invalidateQueries`. Instead, assert a second `GET /settings/secrets-status` in `router.calls`, or that the badge or notice updates.
+3. **`DiffTab.gitlab.test.tsx` mocks `@/lib/hooks/reviews`:** render it through `renderWithProviders` with comment routes instead.
+4. **Whitespace-only comment body is validated twice:** once in the `preValidation` hook (`pulls/routes.ts`) and again in the `HostCommentInput` refine. Keep one.
+5. **`ConnTestResultWithCode.code` is a free string:** make it an enum in a new contract file (extend-only).
+6. **Type-safety nits:**
+   - make `isTextDiffDiscussion` a type predicate;
+   - remove the `id as number` cast in `addDiscussionNote`;
+   - remove the `target!` assertion in `comments-service.ts`;
+   - derive the client `CreateCommentInput` from `HostCommentInput`.
+7. **`GitLabTokenNotice` is not announced:** add `aria-live="polite"`. Optionally move `useCopyToClipboard` to `lib/hooks/` and delete `components/read-only-host`.
+8. **Flaky or non-hermetic server tests:**
+   - `rate-limit-per-user.test.ts` uses a real 60 s window with slow OIDC callbacks (see server/INSIGHTS.md).
+   - `reviews.it.test.ts` makes real `api.github.com` calls: inject `MockGitHubClient`.
 
 ---
 
