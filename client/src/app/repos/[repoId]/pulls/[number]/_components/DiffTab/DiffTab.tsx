@@ -6,8 +6,6 @@ import { SectionLabel, Button, Skeleton, ErrorState } from "@devdigest/ui";
 import { DiffViewer, type DiffCommentApi } from "@/components/diff-viewer";
 import { usePrComments, useCreatePrComment } from "@/lib/hooks/reviews";
 import { usePrSmartDiff } from "@/lib/hooks/smart-diff";
-import { ReadOnlyPostNotice } from "@/components/read-only-host";
-import { notify } from "@/lib/toast";
 import type { ReviewRecord } from "@devdigest/shared";
 import type { PrFileHost } from "@/lib/types";
 import type { HostLabelKey } from "@/lib/host-urls";
@@ -17,22 +15,22 @@ import { styles as s } from "./styles";
 type DiffMode = "smart" | "original";
 
 export interface DiffTabHost {
-  /** The host does not accept posted comments (GitLab): the post control is
-   *  disabled and explained, copying the text is the alternative (AC-43). */
-  readOnly: boolean;
-  /** Names the host in the post-failure toast. */
+  /** Names the host in comment labels and picks the reply field. */
   provider: HostLabelKey;
   /** Files whose patch the host withheld — not reviewable (AC-31 UI). */
   filesOmittedByHost: number;
+  /** Posting is blocked (unusable GitLab token, AC-25): the composer's post
+   *  button is disabled and `aria-describedby` the page notice with this id. */
+  postBlocked: { describedById: string } | null;
 }
 
-const GITHUB_HOST: DiffTabHost = { readOnly: false, provider: "github", filesOmittedByHost: 0 };
+const GITHUB_HOST: DiffTabHost = { provider: "github", filesOmittedByHost: 0, postBlocked: null };
 
 interface DiffTabProps {
   prId: string | null;
   filesCount: number;
   files: PrFileHost[];
-  /** Inline commenting is offered only on open PRs (GitHub rejects otherwise). */
+  /** Inline commenting is offered only on open PRs (the host rejects otherwise). */
   canComment?: boolean;
   /** The PR's repository host. Absent → GitHub, commenting allowed, no notices. */
   host?: DiffTabHost;
@@ -68,11 +66,8 @@ export function DiffTab({
   fileTarget,
   onFileTargetConsumed,
 }: DiffTabProps) {
-  const { readOnly, provider, filesOmittedByHost } = host;
+  const { provider, filesOmittedByHost, postBlocked } = host;
   const t = useTranslations("prReview");
-  // Root translator: the `prHost` key is only resolved on the (rare) failure
-  // path, so GitHub-only callers never need that catalog.
-  const tRoot = useTranslations();
   // Smart order is the DEFAULT when the tab opens (user-confirmed decision).
   const [mode, setMode] = React.useState<DiffMode>("smart");
   const smart = usePrSmartDiff(prId, mode === "smart");
@@ -107,21 +102,17 @@ export function DiffTab({
 
   const commenting: DiffCommentApi = {
     comments: comments ?? [],
-    canComment: !readOnly && !!canComment && !!prId,
-    readOnly,
+    canComment: !!canComment && !!prId,
+    provider,
+    postBlocked,
     showComments,
     posting: create.isPending,
+    // One error channel: a rejection propagates to the composer, which keeps the
+    // draft and shows the reason inline (AC-32) — no toast here.
     onSubmit: async (input) => {
-      try {
-        const res = await create.mutateAsync(input);
-        setShowComments(true); // a just-posted comment shouldn't stay hidden
-        return res;
-      } catch (err) {
-        notify.error(
-          err instanceof Error ? err.message : tRoot("prHost.comments.postFailed", { provider }),
-        );
-        throw err;
-      }
+      const res = await create.mutateAsync(input);
+      setShowComments(true); // a just-posted comment shouldn't stay hidden (AC-37)
+      return res;
     },
   };
 
@@ -165,13 +156,6 @@ export function DiffTab({
         Files changed · {filesCount} files
       </SectionLabel>
 
-      {readOnly && (
-        // Read-only host (GitLab): a disabled post control described by a
-        // VISIBLE note — keyboard/screen-reader reachable (AC-43).
-        <div style={s.notice}>
-          <ReadOnlyPostNotice />
-        </div>
-      )}
       {filesOmittedByHost > 0 && <OmittedFilesNotice count={filesOmittedByHost} />}
 
       {mode === "original" ? (

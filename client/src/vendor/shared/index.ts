@@ -43,3 +43,5 @@ export * from './contracts/auth.js';
 export * from './contracts/actors.js';
 export * from './contracts/secrets-status.js';
 export * from './auth-ports.js';
+export * from './contracts/host-comments.js';
+export * from './host-comments-ports.js';

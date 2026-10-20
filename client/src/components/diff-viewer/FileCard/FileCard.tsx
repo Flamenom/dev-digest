@@ -82,7 +82,7 @@ export function FileCard({
   const lines = React.useMemo(() => parsePatch(file.patch), [file.patch]);
 
   // Group this file's comments into threads, then split into ones we can anchor
-  // to a rendered line vs. "outdated" (GitHub dropped the line / it's not here).
+  // to a rendered line vs. "outdated" (the host dropped the line / it's not here).
   const comments = commenting?.comments;
   const { matched, outdated } = React.useMemo(() => {
     if (!comments) return { matched: new Map<string, CommentThread[]>(), outdated: [] };
@@ -139,7 +139,9 @@ export function FileCard({
               />
             ))
           )}
-          {commenting && commenting.showComments && <OutdatedComments threads={outdated} />}
+          {commenting && commenting.showComments && (
+            <OutdatedComments threads={outdated} provider={commenting.provider} />
+          )}
         </div>
       )}
     </div>

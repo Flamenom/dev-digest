@@ -33,7 +33,7 @@
  *
  * Pure data + pure helpers: no Fastify, no I/O.
  */
-import type { SecretKey } from '@devdigest/shared';
+import type { PrCommentAuditMetadata, SecretKey } from '@devdigest/shared';
 import { SECRET_KEY_BY_PROVIDER } from '../secret-keys.js';
 
 export type RouteAccess = 'public' | 'member' | 'admin';
@@ -86,6 +86,29 @@ const responseId = (ctx: AuditContext): string | null => {
 };
 
 const paramId = (ctx: AuditContext): string | null => str(ctx.params.id);
+
+/**
+ * `pr_comment.create` metadata (spec 2026-10-20 AC-42): ids and flags only —
+ * read from the created comment (response) and the reply markers of the
+ * request body. NEVER the comment body.
+ */
+export function prCommentAuditMetadata(ctx: AuditContext): PrCommentAuditMetadata | undefined {
+  const r = ctx.response();
+  if (!r || typeof r !== 'object') return undefined;
+  const { id, provider, discussion_id } = r as { id?: unknown; provider?: unknown; discussion_id?: unknown };
+  if (typeof id !== 'number' || !Number.isInteger(id)) return undefined;
+  const b = (ctx.body && typeof ctx.body === 'object' ? ctx.body : {}) as {
+    in_reply_to?: unknown;
+    discussion_id?: unknown;
+  };
+  const discussionId = str(discussion_id);
+  return {
+    provider: provider === 'gitlab' ? 'gitlab' : 'github',
+    host_comment_id: id,
+    ...(discussionId ? { discussion_id: discussionId } : {}),
+    is_reply: b.in_reply_to != null || b.discussion_id != null,
+  };
+}
 
 const SIGN_IN_LIMIT = { max: 20, timeWindow: '1 minute' } as const;
 
@@ -160,7 +183,12 @@ export const ROUTE_POLICY: Readonly<Record<string, RoutePolicy>> = Object.freeze
   'GET /pulls/:id/blast': MEMBER,
   'GET /pulls/:id/intent': MEMBER,
   'GET /pulls/:id/brief': MEMBER,
-  'POST /pulls/:id/comments': MEMBER,
+  // AC-41: Members and Admins may post/reply. AC-42: one row per successful
+  // post (hook: status < 400 + principal ⇒ google mode only, never on failure).
+  'POST /pulls/:id/comments': {
+    access: 'member',
+    audit: audit('pr_comment.create', 'pull_request', { metadata: prCommentAuditMetadata }),
+  },
   'POST /pulls/:id/intent': MEMBER,
   'POST /pulls/:id/brief': MEMBER,
 

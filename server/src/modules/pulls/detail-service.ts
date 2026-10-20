@@ -9,7 +9,6 @@ import {
   type PullRequestHost,
   type RepoProvider,
 } from '@devdigest/shared';
-import { AppError } from '../../platform/errors.js';
 import { hostRepoRef, type RepoIdentityRow } from '../_shared/repo-ref.js';
 import type { PersistedCommit, PersistedFile, PullRequestStore } from './repository.js';
 import type { SyncLogger } from './sync-service.js';
@@ -62,8 +61,6 @@ export interface PullDetailDeps {
  */
 export interface PullDetail {
   refresh(pr: DetailPr, repo: DetailRepo, log?: DetailLogger): Promise<PrDetailHost>;
-  isReadOnly(repo: DetailRepo): boolean;
-  assertWritable(repo: DetailRepo): void;
 }
 
 /**
@@ -79,18 +76,6 @@ export interface PullDetail {
  */
 export class PullDetailService implements PullDetail {
   constructor(private deps: PullDetailDeps) {}
-
-  /** true ⇒ the repo's host has no write path in the MVP (GitLab). */
-  isReadOnly(repo: DetailRepo): boolean {
-    return hostRepoRef(repo).provider === 'gitlab';
-  }
-
-  /** Rejects writes (comments) on a read-only host — before any client is resolved (AC-44). */
-  assertWritable(repo: DetailRepo): void {
-    if (this.isReadOnly(repo)) {
-      throw new AppError('provider_read_only', 'Posting to GitLab is not supported yet.', 400);
-    }
-  }
 
   async refresh(pr: DetailPr, repo: DetailRepo, log?: DetailLogger): Promise<PrDetailHost> {
     const ref = hostRepoRef(repo);

@@ -1,6 +1,6 @@
 import type { ActorDirectory, ActorRefValue } from '@devdigest/shared';
 import type { Db } from '../../db/client.js';
-import { UsersRepo, type IdentityTx } from './repository/users.repo.js';
+import { UsersRepo, type DisplayIdentity, type IdentityTx } from './repository/users.repo.js';
 import { MembershipsRepo } from './repository/memberships.repo.js';
 import { SessionsRepo } from './repository/sessions.repo.js';
 import { OAuthFlowsRepo } from './repository/oauth-flows.repo.js';
@@ -40,6 +40,10 @@ export class IdentityRepository implements ActorDirectory {
   readonly lookup = (ids: readonly string[]): Promise<Map<string, ActorRefValue>> =>
     this.users.lookupActors(ids);
 
+  /** Display name + email of one user (GitLab comment footer, AC-16), or null. Arrow: passable unbound. */
+  readonly displayIdentity = (userId: string): Promise<DisplayIdentity | null> =>
+    this.users.displayIdentity(userId);
+
   /**
    * Periodic maintenance (google mode): delete one bounded batch each of
    * expired OIDC flows and expired (absolute or idle) sessions.
@@ -61,7 +65,14 @@ export class IdentityRepository implements ActorDirectory {
   }
 }
 
-export type { IdentityTx, IdentityExecutor, IdentityUser, UserClaims, UpsertUserResult } from './repository/users.repo.js';
+export type {
+  IdentityTx,
+  IdentityExecutor,
+  IdentityUser,
+  UserClaims,
+  UpsertUserResult,
+  DisplayIdentity,
+} from './repository/users.repo.js';
 export type { Membership, MemberListing, EnsureMemberResult } from './repository/memberships.repo.js';
 export type { NewSession, SessionRecord, ActiveSession } from './repository/sessions.repo.js';
 export type { NewOAuthFlow, OAuthFlow } from './repository/oauth-flows.repo.js';

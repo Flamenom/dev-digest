@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hostBlobUrl, hostLabelKey, hostPrUrl, isReadOnlyHost, type HostLinkRepo } from "./host-urls";
+import { hostBlobUrl, hostLabelKey, hostPrUrl, type HostLinkRepo } from "./host-urls";
 import { githubBlobUrl, githubBlobUrlAtRef, githubPrUrl } from "./github-urls";
 
 const GITLAB: HostLinkRepo = {
@@ -91,12 +91,5 @@ describe("host-urls — provider helpers", () => {
   it("hostLabelKey falls back to github for a missing repo", () => {
     expect(hostLabelKey(null)).toBe("github");
     expect(hostLabelKey(undefined)).toBe("github");
-  });
-
-  it("isReadOnlyHost is true only for GitLab", () => {
-    expect(isReadOnlyHost(GITLAB)).toBe(true);
-    expect(isReadOnlyHost(GITHUB)).toBe(false);
-    expect(isReadOnlyHost(null)).toBe(false);
-    expect(isReadOnlyHost(undefined)).toBe(false);
   });
 });

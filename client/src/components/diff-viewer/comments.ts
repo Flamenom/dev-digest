@@ -1,36 +1,51 @@
 /* Inline-comment support for the DiffViewer (Files changed tab).
-   Pure helpers + the API shape the viewer needs; React bits live in
-   DiffComments.tsx. Comments are GitHub PR review comments, proxied live. */
+   Pure helpers + the API shape the viewer needs; React bits live in the
+   sibling component folders. Comments are the PR's host comments (GitHub
+   review comments or GitLab diff notes), proxied live. */
 import type { CSSProperties } from "react";
-import type { PrReviewComment } from "../../lib/types";
+import type { HostComment } from "../../lib/types";
 import type { Line } from "./helpers";
+
+/** The host a PR lives on — names it in labels and picks the reply field. */
+export type CommentProvider = "github" | "gitlab";
+
+/** One post: a new inline comment, or a reply to an existing thread. */
+export interface CommentSubmitInput {
+  path: string;
+  line: number;
+  side: "LEFT" | "RIGHT";
+  body: string;
+  /** GitHub reply: the thread's root comment id. */
+  in_reply_to?: number;
+  /** GitLab reply: the thread's discussion id. */
+  discussion_id?: string;
+}
 
 /** What the viewer needs to read + write inline comments. */
 export interface DiffCommentApi {
-  comments: PrReviewComment[];
+  comments: HostComment[];
   canComment: boolean;
+  /** The PR's host: labels ("View on …", "Posted to …") and the reply field. */
+  provider: CommentProvider;
   /**
-   * The host does not accept posted comments (GitLab in the MVP). The composer
-   * still opens so a reviewer can draft + copy, but its post button is disabled
-   * and explained by a visible note (AC-43). Optional — absent ⇒ false.
+   * Posting is blocked (e.g. the GitLab token is unusable, AC-25): the composer
+   * still opens so a draft can be written, but its post button is disabled and
+   * described by the page-level notice with this id. Absent/null ⇒ not blocked.
    */
-  readOnly?: boolean;
+  postBlocked?: { describedById: string } | null;
   /** When false, existing comment threads are hidden (the "+" still works). */
   showComments: boolean;
   posting: boolean;
-  onSubmit: (input: {
-    path: string;
-    line: number;
-    side: "LEFT" | "RIGHT";
-    body: string;
-    in_reply_to?: number;
-  }) => Promise<unknown>;
+  /** Rejects on failure — the composer keeps the draft and shows the error inline. */
+  onSubmit: (input: CommentSubmitInput) => Promise<unknown>;
 }
 
 /** One review-comment thread anchored to a diff line (or outdated). */
 export interface CommentThread {
   rootId: number;
-  comments: PrReviewComment[];
+  /** GitLab discussion id of the thread (from the root comment); null on GitHub. */
+  discussionId: string | null;
+  comments: HostComment[];
   line: number | null;
   side: "LEFT" | "RIGHT";
   isOutdated: boolean;
@@ -42,8 +57,8 @@ export function lineKey(side: "LEFT" | "RIGHT", line: number | null | undefined)
 }
 
 /** Group flat comments into threads (root + replies), ordered oldest-first. */
-export function buildThreads(comments: PrReviewComment[]): CommentThread[] {
-  const byRoot = new Map<number, PrReviewComment[]>();
+export function buildThreads(comments: HostComment[]): CommentThread[] {
+  const byRoot = new Map<number, HostComment[]>();
   for (const c of comments) {
     const rootId = c.in_reply_to_id ?? c.id;
     const list = byRoot.get(rootId) ?? [];
@@ -56,6 +71,7 @@ export function buildThreads(comments: PrReviewComment[]): CommentThread[] {
     const root = sorted.find((c) => c.id === rootId) ?? sorted[0]!;
     threads.push({
       rootId,
+      discussionId: root.discussion_id ?? null,
       comments: sorted,
       line: root.line,
       side: root.side,
@@ -89,7 +105,7 @@ export function commentTargetFor(ln: Line): { line: number; side: "LEFT" | "RIGH
 
 /**
  * Split threads into those that match a rendered line (keyed) and "outdated"
- * ones GitHub can no longer anchor (or whose line isn't in this patch). The
+ * ones the host can no longer anchor (or whose line isn't in this patch). The
  * outdated bucket is surfaced separately so nothing is silently dropped.
  */
 export function partitionThreads(
@@ -161,6 +177,19 @@ export const cs = {
   } satisfies CSSProperties,
   composerActions: { display: "flex", gap: 8, alignItems: "center", marginTop: 8 } satisfies CSSProperties,
   hint: { fontSize: 11.5, color: "var(--text-muted)" } satisfies CSSProperties,
+  /** "via DevDigest · <name>" next to the host username (AC-39). */
+  attribution: { fontSize: 11.5, color: "var(--text-muted)" } satisfies CSSProperties,
+  /** Inline post-failure message under the composer (AC-32). */
+  postError: {
+    marginTop: 8,
+    padding: "8px 10px",
+    borderRadius: 6,
+    border: "1px solid var(--crit)",
+    background: "var(--crit-bg)",
+    color: "var(--text-primary)",
+    fontSize: 12.5,
+    lineHeight: "18px",
+  } satisfies CSSProperties,
   outdatedWrap: {
     borderTop: "1px solid var(--border)",
     margin: "4px 14px 4px 58px",

@@ -1,42 +1,25 @@
 /* InlineComposer — shared inline comment composer (new comment or reply to a
-   thread). Posts live to the host via the DiffCommentApi. On a read-only host
-   (GitLab) the draft can still be written and copied, but posting is disabled
-   and explained by a visible note (AC-43). */
+   thread). Posts live to the PR's host (GitHub or GitLab) via the
+   DiffCommentApi. A failed post keeps the composer open with the draft, shows
+   the reason in an inline `role="alert"` region and offers "Copy text" (AC-32);
+   the post button is disabled for a blank body, while a post is in flight and
+   while posting is blocked by the host token (AC-14, AC-36, AC-25). */
 "use client";
 
 import React from "react";
 import { useTranslations } from "next-intl";
 import { Textarea, Button } from "@devdigest/ui";
-import { ReadOnlyPostNotice, useCopyToClipboard } from "@/components/read-only-host";
-import { cs, type DiffCommentApi } from "../comments";
+import { useCopyToClipboard } from "@/components/read-only-host";
+import { cs, type CommentSubmitInput, type DiffCommentApi } from "../comments";
 
-/** Read-only host: disabled post + Cancel + Copy + the visible note. Kept in its
- *  own component so a GitHub composer never resolves the `prHost` catalog. */
-function ReadOnlyComposerActions({
-  text,
-  postLabel,
-  children,
-}: {
-  text: string;
-  postLabel: string;
-  children: React.ReactNode;
-}) {
-  const t = useTranslations("prHost");
-  const copy = useCopyToClipboard();
-  return (
-    <ReadOnlyPostNotice label={postLabel} kind="primary" noteStyle={cs.hint}>
-      {children}
-      <Button
-        kind="secondary"
-        size="sm"
-        icon="Copy"
-        disabled={!text.trim()}
-        onClick={() => void copy(text.trim())}
-      >
-        {t("readOnly.copyComment")}
-      </Button>
-    </ReadOnlyPostNotice>
-  );
+/** The reply field for this host: GitLab replies by discussion, GitHub by root id. */
+function replyTarget(
+  commenting: DiffCommentApi,
+  inReplyTo: number | undefined,
+  discussionId: string | null | undefined,
+): Pick<CommentSubmitInput, "in_reply_to" | "discussion_id"> {
+  if (commenting.provider === "gitlab" && discussionId) return { discussion_id: discussionId };
+  return inReplyTo != null ? { in_reply_to: inReplyTo } : {};
 }
 
 export function InlineComposer({
@@ -45,42 +28,67 @@ export function InlineComposer({
   line,
   side,
   inReplyTo,
+  discussionId,
   onClose,
 }: {
   commenting: DiffCommentApi;
   path: string;
   line: number;
   side: "LEFT" | "RIGHT";
+  /** Reply on GitHub: the thread's root comment id. */
   inReplyTo?: number;
+  /** Reply on GitLab: the thread's discussion id. */
+  discussionId?: string | null;
   onClose: () => void;
 }) {
   const t = useTranslations("shell");
-  const readOnly = !!commenting.readOnly;
+  const tHost = useTranslations("prHost");
+  const copy = useCopyToClipboard();
+  const { provider, postBlocked } = commenting;
   const [text, setText] = React.useState("");
+  const [error, setError] = React.useState<string | null>(null);
+  // Local in-flight guard: the mutation's `isPending` only flips after a
+  // re-render, so two rapid clicks must be stopped synchronously (AC-36).
+  const inFlight = React.useRef(false);
+  const [submitting, setSubmitting] = React.useState(false);
+  const wrapRef = React.useRef<HTMLDivElement>(null);
+
+  const busy = submitting || commenting.posting;
+  const canPost = !!text.trim() && !busy && !postBlocked;
+
   const submit = async () => {
     const body = text.trim();
-    if (!body || readOnly) return;
+    if (!body || postBlocked || inFlight.current || commenting.posting) return;
+    inFlight.current = true;
+    setSubmitting(true);
+    setError(null);
     try {
       await commenting.onSubmit({
         path,
         line,
         side,
         body,
-        ...(inReplyTo != null ? { in_reply_to: inReplyTo } : {}),
+        ...replyTarget(commenting, inReplyTo, discussionId),
       });
       setText("");
       onClose();
-    } catch {
-      /* error toast is raised by the caller; keep the draft open */
+    } catch (err) {
+      // Keep the draft; explain inline and keep the cursor in the textarea.
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : tHost("comments.postFailed", { provider }),
+      );
+      wrapRef.current?.querySelector("textarea")?.focus();
+    } finally {
+      inFlight.current = false;
+      setSubmitting(false);
     }
   };
-  const cancel = (
-    <Button kind="ghost" size="sm" onClick={onClose} disabled={commenting.posting}>
-      {t("diffViewer.cancel")}
-    </Button>
-  );
+
   return (
     <div
+      ref={wrapRef}
       style={cs.thread}
       onKeyDown={(e) => {
         if (e.key === "Escape") onClose();
@@ -94,27 +102,38 @@ export function InlineComposer({
         placeholder={t("diffViewer.commentPlaceholder")}
       />
       <div style={cs.composerActions}>
-        {readOnly ? (
-          <ReadOnlyComposerActions text={text} postLabel={t("diffViewer.post")}>
-            {cancel}
-          </ReadOnlyComposerActions>
-        ) : (
-          <>
-            <Button
-              kind="primary"
-              size="sm"
-              icon="MessageSquare"
-              loading={commenting.posting}
-              disabled={commenting.posting || !text.trim()}
-              onClick={() => void submit()}
-            >
-              {t("diffViewer.post")}
-            </Button>
-            {cancel}
-            <span style={cs.hint}>{t("diffViewer.postedToGitHub")}</span>
-          </>
+        <Button
+          kind="primary"
+          size="sm"
+          icon="MessageSquare"
+          loading={busy}
+          disabled={!canPost}
+          aria-describedby={postBlocked?.describedById}
+          onClick={() => void submit()}
+        >
+          {t("diffViewer.post")}
+        </Button>
+        <Button kind="ghost" size="sm" onClick={onClose} disabled={busy}>
+          {t("diffViewer.cancel")}
+        </Button>
+        {error != null && (
+          <Button
+            kind="secondary"
+            size="sm"
+            icon="Copy"
+            disabled={!text.trim()}
+            onClick={() => void copy(text.trim())}
+          >
+            {tHost("comments.copyText")}
+          </Button>
         )}
+        <span style={cs.hint}>{tHost("comments.postsTo", { provider })}</span>
       </div>
+      {error != null && (
+        <div role="alert" style={cs.postError}>
+          {error}
+        </div>
+      )}
     </div>
   );
 }

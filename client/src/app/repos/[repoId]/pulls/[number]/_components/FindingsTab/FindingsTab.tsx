@@ -29,8 +29,8 @@ interface FindingsTabProps {
   /** The PR's repository — finding file:line links are built from it via
    *  `host-urls` (GitHub or GitLab); null until the repo is loaded. */
   repo: HostLinkRepo | null;
-  /** The host rejects posted comments (GitLab): cards offer copy instead (AC-43). */
-  readOnly: boolean;
+  /** Cards offer "Copy finding" (GitLab, AC-38). */
+  offerCopy: boolean;
   headSha?: string | null;
   /** Deep-link target from the Smart Diff view (?finding=…): open the containing
    *  review's accordion and focus that exact FindingCard, then consume. */
@@ -51,7 +51,7 @@ export function FindingsTab({
   prCommits,
   cancelMutation,
   repo,
-  readOnly,
+  offerCopy,
   headSha,
   targetFindingId,
   onFindingTargetConsumed,
@@ -114,7 +114,7 @@ export function FindingsTab({
     return m;
   }, [runs]);
 
-  const findingHost = React.useMemo(() => ({ repo, readOnly }), [repo, readOnly]);
+  const findingHost = React.useMemo(() => ({ repo, offerCopy }), [repo, offerCopy]);
 
   return (
     <FindingHostProvider value={findingHost}>

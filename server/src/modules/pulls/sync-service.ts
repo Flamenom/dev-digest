@@ -1,4 +1,9 @@
-import type { PullRequestHost, RepoProvider } from '@devdigest/shared';
+import {
+  HostCommentErrorCode,
+  HostErrorCode,
+  type PullRequestHost,
+  type RepoProvider,
+} from '@devdigest/shared';
 import { hostRepoRef, type RepoIdentityRow } from '../_shared/repo-ref.js';
 import { redactSecret } from '../../platform/redact.js';
 import type { PullRequestStore } from './repository.js';
@@ -21,14 +26,29 @@ export interface SyncLogger {
 
 const MAX_ERROR_LENGTH = 500;
 
+/** The host error code of `err` (matched by shape), or null when it is not a known host code. */
+function hostErrorCode(err: unknown): string | null {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code !== 'string') return null;
+  return HostErrorCode.safeParse(code).success || HostCommentErrorCode.safeParse(code).success
+    ? code
+    : null;
+}
+
 /**
  * Any sync failure → a redacted, single-line, ≤ 500-char message. Host errors
  * can echo request URLs/headers, so a raw error object is NEVER handed to a
  * logger or persisted — always this string.
+ *
+ * A known host error code (`HostErrorCode` ∪ `HostCommentErrorCode`, e.g.
+ * `gitlab_token_insufficient_scope` from the token gate) is kept as a
+ * `[<code>] ` prefix so the recorded failure names it (spec 2026-10-20 AC-23).
  */
 export function describeSyncError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
-  const oneLine = redactSecret(raw).replace(/\s+/g, ' ').trim() || 'PR sync failed';
+  const code = hostErrorCode(err);
+  const message = redactSecret(raw).replace(/\s+/g, ' ').trim() || 'PR sync failed';
+  const oneLine = code ? `[${code}] ${message}` : message;
   return oneLine.length > MAX_ERROR_LENGTH ? `${oneLine.slice(0, MAX_ERROR_LENGTH - 1)}…` : oneLine;
 }
 

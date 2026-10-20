@@ -7,12 +7,12 @@
 import { useQuery, useMutation, useQueryClient, queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
 import { errorChannelMeta } from "../query-meta";
-import type { SecretsStatusDetailed } from "@devdigest/shared";
 import type {
   Settings,
   SettingsUpdate,
   ConnTestProviderHost,
-  ConnTestResultHost,
+  ConnTestResultWithCode,
+  SecretsStatusWithHealth,
   RepoWithHost,
   PrListPage,
   PrDetailHost,
@@ -37,23 +37,37 @@ export function useUpdateSettings() {
   });
 }
 
+type ConnTestInput = ConnTestProviderHost | { provider: ConnTestProviderHost; key?: string };
+
+function connTestProvider(input: ConnTestInput): ConnTestProviderHost {
+  return typeof input === "string" ? input : input.provider;
+}
+
 export function useTestConnection() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (
-      input: ConnTestProviderHost | { provider: ConnTestProviderHost; key?: string },
-    ) => {
+    mutationFn: (input: ConnTestInput) => {
       const body = typeof input === "string" ? { provider: input } : input;
-      return api.post<ConnTestResultHost>("/settings/test-connection", body);
+      return api.post<ConnTestResultWithCode>("/settings/test-connection", body);
     },
     // The key row shows the result (or the failure) inline under its input.
     ...errorChannelMeta("local"),
     // Saving/validating a provider key can change which models resolve — drop the
     // cached (possibly empty) model lists so the agent picker refetches, and
     // refresh the "Configured / Not set" key-status badges.
-    onSuccess: (res) => {
+    onSuccess: (res, input) => {
       if (res.ok) {
         qc.invalidateQueries({ queryKey: ["provider-models"] });
+        qc.invalidateQueries({ queryKey: ["secrets-status"] });
+      } else if (connTestProvider(input) === "gitlab") {
+        // A rejected GitLab test/save re-checks the token health (AC-24/AC-26),
+        // so the badge must refresh even when `ok` is false.
+        qc.invalidateQueries({ queryKey: ["secrets-status"] });
+      }
+    },
+    // A failed GitLab request can also have changed the token health.
+    onError: (_err, input) => {
+      if (connTestProvider(input) === "gitlab") {
         qc.invalidateQueries({ queryKey: ["secrets-status"] });
       }
     },
@@ -63,12 +77,13 @@ export function useTestConnection() {
 /**
  * Which provider keys are configured — never the values. The booleans are true
  * only for state `set`; `states` adds the per-key `set|unset|undecryptable`
- * state with `updated_at` / `updated_by` (multi-user server mode, AC-38).
+ * state with `updated_at` / `updated_by` (multi-user server mode, AC-38), and
+ * `gitlab_health` the stored GitLab token's health (null ⇒ no GitLab token).
  */
 export function useSecretsStatus() {
   return useQuery({
     queryKey: ["secrets-status"],
-    queryFn: () => api.get<SecretsStatusDetailed>("/settings/secrets-status"),
+    queryFn: () => api.get<SecretsStatusWithHealth>("/settings/secrets-status"),
     staleTime: 30_000,
   });
 }

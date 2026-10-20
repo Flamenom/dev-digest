@@ -59,6 +59,16 @@ export type {
   HostErrorCode,
 } from "@devdigest/shared";
 
+// Host comments — GitLab phase 2: inline comments + replies, GitLab token health
+// (contracts/host-comments.ts, spec 2026-10-20-gitlab-comments).
+export type {
+  HostComment,
+  HostCommentInput,
+  GitLabTokenHealth,
+  SecretsStatusWithHealth,
+  ConnTestResultWithCode,
+} from "@devdigest/shared";
+
 /** UI-only view model for a PR list row (derives display fields from PrMeta). */
 export interface PrRowView {
   number: number;

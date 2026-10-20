@@ -90,15 +90,29 @@ General, Security, Performance, Test Quality, API Contract; create/edit your own
 repo-map context). Each run has a **trace drawer** (prompt assembly, raw output,
 live log).
 
-### GitLab (gitlab.com, read-only)
+### GitLab (gitlab.com)
 
 A workspace can mix GitHub and GitLab repositories — the provider is chosen per
-repo from its URL. Spec: [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merge-requests.md).
+repo from its URL. Specs: [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merge-requests.md),
+[`gitlab-comments`](specs/2026-10-20-gitlab-comments.md).
 
 - **Token** — one GitLab access token per workspace (personal, group or project
   token), set in **Settings → API Keys → GitLab access token** and checked with
-  **Test connection**. Minimal scopes: `read_api` + `read_repository`. It is
-  used for every GitLab call (sync, PR page, clone), whoever triggers it.
+  **Test connection**. **Required scope: `api`** (Reporter role recommended) —
+  DevDigest posts comments with it. It is used for every GitLab call (sync, PR
+  page, clone, comments), whoever triggers it. Save & Test checks the scopes
+  *before* storing: a token without `api` is rejected
+  (`gitlab_token_insufficient_scope`) and the previously stored token stays.
+  The row shows the token health: *Configured*, *Invalid — missing api scope*,
+  *Invalid — rejected by GitLab* or *Configured — not verified yet*.
+- **Upgrading: read-only tokens stop working.** A token saved under the old
+  `read_api` + `read_repository` guidance is **invalid** now: on its first use
+  DevDigest checks its scopes once, then every GitLab operation (add repo,
+  clone/resync, PR sync, PR refresh, comments, issue lookups) fails with
+  `gitlab_token_insufficient_scope` — there is no anonymous fallback. Persisted
+  repos, PRs, reviews and findings stay readable, and the GitLab PR list / PR
+  page show a persistent notice (Admins get a link to Settings → API Keys).
+  Replace the token with one that has the `api` scope.
 - **Add a repo** — paste a gitlab.com URL on the Add repository screen. Nested
   groups work (`https://gitlab.com/space-profit/platform/crm-frontend`), and so
   do a trailing `/`, a `.git` suffix, `/-/…` route suffixes (`/-/tree/main`,
@@ -114,9 +128,39 @@ repo from its URL. Spec: [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merge
   *Couldn't sync — showing data from …* notice.
 - **Everything else works** — review runs, findings, Intent, PR Brief, Smart
   Diff, Blast Radius and eval cases behave as on GitHub.
-- **Read-only comments** — DevDigest does not post to GitLab yet: the comment
-  controls are disabled with a note, and **Copy finding** / **Copy text** is the
-  alternative. Existing GitLab discussions are not imported.
+- **Inline comments** — the Files changed tab shows the MR's diff discussions
+  (system and overview notes are skipped; notes on an older head render as
+  outdated) and lets any Member or Admin post a new inline comment or reply to a
+  thread, as on GitHub. A FindingCard on a GitLab PR also offers **Copy finding**.
+  - **Service account.** Comments are posted **as the GitLab user the workspace
+    token belongs to**. In `google` auth mode every comment and reply gets the
+    footer ``— posted by `<name>` via DevDigest`` (the acting user's display
+    name, sanitised, rendered as inline code so it never mentions anyone);
+    DevDigest strips that footer when reading the note back and shows
+    "via DevDigest · <name>" instead. `local` mode adds no footer.
+  - **Quick actions are neutralised.** Every line shaped like a quick action
+    (`/merge`, `/close`, `/label ~x`, any `/<name>` followed by end of line or
+    a space) is neutralised before posting, wherever it appears, so it never
+    changes the MR's state, labels, approvals or assignees. Outside code the
+    `/` is escaped (`\/merge`, renders as typed); inside a fenced code block an
+    invisible zero-width space (U+200B) is inserted before the `/` instead, so
+    code still looks unchanged. Lines like `/usr/bin/env` or `// comment` are
+    left alone. Line endings are normalised to LF first (GitLab drops `\r`
+    before looking for quick actions).
+  - **Head moved → reload.** Before every post DevDigest reads the MR's current
+    diff refs; if new commits were pushed since the diff was loaded, the post is
+    refused (409 `comment_diff_outdated`, "New commits were pushed — reload the
+    diff") and nothing is written. Reload the PR page and post again.
+  - **No silent duplicates.** A write is retried only on 429; after a 5xx,
+    timeout or network error DevDigest makes no second attempt and says
+    "GitLab didn't confirm the comment — check the MR before posting again".
+    A failed post keeps the draft in the composer and offers **Copy text**.
+  - Each successful post or reply records a `pr_comment.create` audit event
+    (`google` mode; both providers).
+  - Manual check still pending: the quick-action escaping is covered by offline
+    tests only; a one-time smoke on a sandbox gitlab.com MR (post
+    `/label ~smoke\n/shrug\nLGTM` with a Reporter-role `api` token in google
+    mode — no label, no shrug, footer without a mention) has not been run yet.
 
 | Lesson | Feature | What it does | Where in the UI | Spec |
 |--------|---------|--------------|-----------------|------|
@@ -131,7 +175,7 @@ repo from its URL. Spec: [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merge
 | L05 | Project Context | Attach `specs/` / `docs/` / `insights/` markdown from the clone to an agent; injected as untrusted context on every run | `/repos/:repoId/project-context` · agent editor → Context tab | [`project-context`](specs/2026-08-27-project-context.md) |
 | L05 | PR Brief | Why + risk brief for the PR (cached), Risk Areas and a Review Focus block | PR → Overview → PR Brief card | [`pr-brief`](specs/2026-08-27-pr-brief.md) |
 | L06 | Eval Pipeline | In-app regression harness for reviewer agents: accepted findings become `must_find` cases, dismissed ones `must_not_flag`; cases run through the real engine, scored by code | Finding → "Turn into eval case" · `/evals` · `/evals/:agentId` · agent editor → Evals tab | [`06-eval-pipeline`](specs/06-eval-pipeline.md) |
-| — | GitLab (read-only) | gitlab.com repos (nested groups) beside GitHub ones, MR import, sync-on-open PR list, Draft badge, read-only comments — [details](#gitlab-gitlabcom-read-only) | Add repository · Settings → API Keys · PR list | [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merge-requests.md) |
+| — | GitLab | gitlab.com repos (nested groups) beside GitHub ones, MR import, sync-on-open PR list, Draft badge, post/reply inline comments as the token's service account (`api` scope required, Reporter role recommended; "posted by … via DevDigest" footer in google mode), token-health notice — [details](#gitlab-gitlabcom) | Add repository · Settings → API Keys · PR list · PR → Files changed | [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merge-requests.md) · [`gitlab-comments`](specs/2026-10-20-gitlab-comments.md) |
 
 **Two different "evals".** The **Eval Pipeline** above is a product feature
 (server `modules/eval`, Postgres, Eval Dashboard) that evaluates the in-app
@@ -255,6 +299,12 @@ Postgres); everything else is hermetic. The browser e2e flows live in
 - **Adding a gitlab.com repo fails** — *Add a GitLab access token in Settings →
   API Keys* means no token is set; *token was rejected* means it is invalid or
   expired; *project can't be accessed* means the token can't see that project
-  (GitLab answers 404 for projects outside the token's access).
+  (GitLab answers 404 for projects outside the token's access);
+  `gitlab_token_insufficient_scope` means the stored token lacks the `api`
+  scope — save a token with `api` (Reporter role recommended).
+- **Posting a GitLab comment fails with "New commits were pushed — reload the
+  diff"** — the MR head moved since the diff was loaded; reload the PR page and
+  post again. "GitLab didn't confirm the comment" means the outcome is unknown —
+  check the MR before posting again.
 - **Reset everything** — `docker compose down -v` drops the volume, then re-run
   `./scripts/dev.sh`.

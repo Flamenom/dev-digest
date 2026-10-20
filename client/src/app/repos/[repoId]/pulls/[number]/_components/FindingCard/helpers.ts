@@ -9,8 +9,8 @@ export function lineLabel(f: Pick<FindingRecord, "start_line" | "end_line">): st
 }
 
 /**
- * Plain-text form of a finding for the clipboard — the read-only hosts'
- * substitute for posting it as a comment (AC-43). Text only: the rationale and
+ * Plain-text form of a finding for the clipboard — offered on GitLab
+ * cards alongside the review's own comment flow (AC-38). Text only: the rationale and
  * suggestion are model output and are copied verbatim, never rendered as HTML.
  */
 export function findingClipboardText(

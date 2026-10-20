@@ -2,15 +2,15 @@
   "viewOn": "View on {provider, select, gitlab {GitLab} other {GitHub}}",
   "draft": "Draft",
   "readOnly": {
-    "postComment": "Post comment",
-    "note": "Posting comments to GitLab isn't supported yet — copy the text instead.",
     "copyFinding": "Copy finding",
-    "copyComment": "Copy text",
     "copied": "Copied to the clipboard.",
     "copyFailed": "Couldn't copy to the clipboard."
   },
   "comments": {
-    "postFailed": "Couldn't post the comment to {provider, select, gitlab {GitLab} other {GitHub}}."
+    "postFailed": "Couldn't post the comment to {provider, select, gitlab {GitLab} other {GitHub}}.",
+    "attribution": "via DevDigest · {name}",
+    "postsTo": "Posted to {provider, select, gitlab {GitLab} other {GitHub}}",
+    "copyText": "Copy text"
   },
   "files": {
     "renamed": "{from} → {to}",
@@ -20,5 +20,12 @@
   },
   "finding": {
     "suggestedFix": "Suggested fix"
+  },
+  "tokenNotice": {
+    "insufficientScope": "The GitLab token is invalid (missing the api scope). An admin must save a token with the api scope in Settings → API Keys.",
+    "invalid": "The GitLab token is invalid (rejected by GitLab). An admin must save a token with the api scope in Settings → API Keys.",
+    "openSettings": "Open Settings → API Keys",
+    "askAdmin": "Ask an admin to update it.",
+    "postDisabled": "Posting is disabled until the GitLab token is fixed."
   }
 }

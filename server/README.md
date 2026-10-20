@@ -78,11 +78,72 @@ flowchart TB
     repoIntel["repo-intel<br/>/repos/:id/index-state · /resync"]
   end
   subgraph Platform["Platform"]
-    settings["settings<br/>/settings · /providers"]
+    settings["settings<br/>/settings · /settings/secrets-status · /settings/test-connection · /providers"]
     workspace["workspace<br/>/workspace"]
   end
   HEALTH["/health (liveness) · /health/ready (DB ping → 200/503)"]
 ```
+
+### Host comments (GitHub + GitLab)
+
+Spec: [`gitlab-comments`](../specs/2026-10-20-gitlab-comments.md). Routes in
+`modules/pulls/routes.ts`; the use case is `PrCommentsService`
+(`modules/pulls/comments-service.ts`, wired as `container.prComments`).
+
+- **`GET /pulls/:id/comments`** → `HostComment[]` — GitHub review comments or
+  GitLab diff-anchored discussions (system/overview/image notes skipped; a note
+  on an older head is `is_outdated` with `line: null`). GitLab items carry
+  `discussion_id`, `provider`, and — for a service-account note ending in the
+  DevDigest footer — the footer stripped from `body` and the name in
+  `devdigest_attribution`. **Any host failure → `200 []`** with a secret-free
+  warning log.
+- **`POST /pulls/:id/comments`** — body `HostCommentInput` (`body` non-blank;
+  `in_reply_to` for a GitHub reply, `discussion_id` for a GitLab reply — at most
+  one), `bodyLimit` 4 MiB → `HostComment`. Any active Member or Admin; no session
+  → 401. Each success appends one `pr_comment.create` audit event (`google`
+  mode, both providers) with metadata `{ provider, host_comment_id,
+  discussion_id?, is_reply }` — never the body.
+- **GitLab post pipeline** (one write, never retried after it may have landed):
+  blank body → `400 validation_error`; quick-action lines neutralised (`\/`);
+  in `google` mode the footer ``\n\n— posted by `<name>` via DevDigest``
+  is appended (sanitised name; none in `local` mode or on GitHub); text over
+  1,000,000 chars → `400 comment_too_long`; a new comment must hit a line of
+  the **persisted** diff → else `400 comment_position_invalid` (0 host calls);
+  no token → `400 gitlab_token_missing`; the MR's current diff refs are read and
+  a moved head → `409 comment_diff_outdated` ("New commits were pushed — reload
+  the diff", 0 writes); a reply to a missing discussion →
+  `404 comment_thread_not_found`. Host errors: `gitlab_token_invalid` (401,
+  health → `invalid`), `gitlab_token_insufficient_scope`,
+  `gitlab_project_inaccessible` (403/404 on the project),
+  `gitlab_comment_failed` (locked/4xx → 400; 5xx/timeout/network → 502
+  "GitLab didn't confirm the comment — check the MR before posting again").
+  Writes retry on 429 only.
+- **GitHub** is unchanged apart from blank-body rejection, the audit event and
+  the same write rule: 429 retried, 5xx/timeout → `502 github_comment_failed`
+  ("GitHub didn't confirm the comment — …"); other failures
+  `400 github_comment_failed`, no token `400 github_unavailable`.
+
+### GitLab token health (`api` scope required)
+
+- The workspace `GITLAB_TOKEN` must carry the **`api`** scope (Reporter role
+  recommended). Tokens saved under the old `read_api` + `read_repository`
+  guidance become invalid and must be replaced.
+- **`POST /settings/test-connection`** with `provider: "gitlab"`: with a `key`,
+  the candidate's scopes are probed **before** storing — stored only when it has
+  `api` (`ok: true`, "Connected as @user"); otherwise `ok: false` with
+  `code` `gitlab_token_insufficient_scope` / `gitlab_token_unverified`
+  (transient scope-lookup failure) / `gitlab_token_invalid`, and the previously
+  stored token is untouched. Without a `key` it tests the stored token.
+  Response shape: `ConnTestResultWithCode`.
+- **`GET /settings/secrets-status`** adds `gitlab_health`:
+  `ok | insufficient_scope | invalid | unchecked` (`null` when no token).
+- Health is checked on save and, for a stored token of unknown health, once
+  before its first GitLab use; it is memoised in memory (keyed by a token
+  fingerprint, reset on restart or token change) and re-checked on 401 / 403
+  `insufficient_scope`. While it is `insufficient_scope`, **every** GitLab
+  operation (add repo, clone/resync, PR sync, PR refresh, comments, issue
+  lookups) fails with `gitlab_token_insufficient_scope` and no anonymous
+  fallback; persisted data stays readable.
 
 ## Environment
 
@@ -94,6 +155,7 @@ flowchart TB
 | `API_PORT` / `WEB_PORT` | `3001` / `3000` | API port; `WEB_PORT` also sets the allowed CORS origin |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` | — | optional, per-provider; also settable via Settings UI |
 | `GITHUB_TOKEN` | — | optional; PAT with repo scope (`GITHUB_PAT` accepted as a fallback) |
+| `GITLAB_TOKEN` | — | optional; gitlab.com token with the **`api`** scope (Reporter role recommended); usually set via Settings |
 | `EMBEDDINGS_ENABLED` | `false` | memory/RAG embeddings (OpenAI); off → **zero** OpenAI calls |
 | `REPO_INTEL_ENABLED` | `true` | repo skeleton + callers in the prompt; `false` → ripgrep-only |
 | `DEVDIGEST_CLONE_DIR` | `./clones` | imported-repo checkouts (git-ignored) |

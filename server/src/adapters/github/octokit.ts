@@ -12,9 +12,45 @@ import type {
   CommitFilesPayload,
   IssueMeta,
 } from '@devdigest/shared';
-import { withRetry, withTimeout } from '../../platform/resilience.js';
+import { withRetry, withTimeout, TimeoutError } from '../../platform/resilience.js';
+import { AppError } from '../../platform/errors.js';
+import { redactSecret } from '../../platform/redact.js';
 
 const TIMEOUT = 30_000;
+
+/** AC-33: shown when GitHub may or may not have stored the comment. */
+export const GITHUB_COMMENT_UNCONFIRMED =
+  "GitHub didn't confirm the comment — check the PR before posting again.";
+
+export interface OctokitGitHubClientOptions {
+  /** fetch used by every request (tests count requests at this level). */
+  fetch?: typeof fetch;
+  /** Timeout of a comment write; defaults to the adapter-wide 30 s. */
+  writeTimeoutMs?: number;
+  /** Base back-off of the rate-limit-only write retry (tests pass ~1 ms). */
+  writeRetryBaseDelayMs?: number;
+}
+
+function errStatus(err: unknown): number | undefined {
+  const s = (err as { status?: unknown })?.status;
+  return typeof s === 'number' ? s : undefined;
+}
+
+/**
+ * The only failures a comment write may be re-sent after: GitHub rejected the
+ * request before creating anything (primary 429, or a 403 for an exhausted
+ * quota / a secondary rate limit). 5xx, timeouts and network errors are NOT
+ * retryable — the comment may already exist (AC-33).
+ */
+export function isGitHubRateLimited(err: unknown): boolean {
+  const status = errStatus(err);
+  if (status === 429) return true;
+  if (status !== 403) return false;
+  const headers = (err as { response?: { headers?: Record<string, unknown> } })?.response?.headers;
+  if (headers && String(headers['x-ratelimit-remaining'] ?? '') === '0') return true;
+  const message = err instanceof Error ? err.message : String((err as { message?: unknown })?.message ?? '');
+  return /secondary rate limit/i.test(message);
+}
 
 function mapStatus(state: string, merged: boolean | undefined): PrStatus {
   if (merged) return 'merged';
@@ -28,9 +64,28 @@ function mapStatus(state: string, merged: boolean | undefined): PrStatus {
  */
 export class OctokitGitHubClient implements GitHubClient {
   private octokit: Octokit;
+  /**
+   * Comment writes only. The `octokit` package bundles plugin-retry (re-sends
+   * on 5xx, POST included) and plugin-throttling; both are disabled here so a
+   * write is sent exactly once unless GitHub rate-limited it (AC-33).
+   */
+  private writeOctokit: Octokit;
+  private readonly token: string;
+  private readonly writeTimeoutMs: number;
+  private readonly writeRetryBaseDelayMs: number | undefined;
 
-  constructor(token: string) {
-    this.octokit = new Octokit({ auth: token });
+  constructor(token: string, opts: OctokitGitHubClientOptions = {}) {
+    this.token = token;
+    const request = opts.fetch ? { fetch: opts.fetch } : undefined;
+    this.octokit = new Octokit({ auth: token, ...(request ? { request } : {}) });
+    this.writeOctokit = new Octokit({
+      auth: token,
+      retry: { enabled: false },
+      throttle: { enabled: false },
+      ...(request ? { request } : {}),
+    });
+    this.writeTimeoutMs = opts.writeTimeoutMs ?? TIMEOUT;
+    this.writeRetryBaseDelayMs = opts.writeRetryBaseDelayMs;
   }
 
   async listPullRequests(repo: RepoRef): Promise<PrMeta[]> {
@@ -212,20 +267,39 @@ export class OctokitGitHubClient implements GitHubClient {
     n: number,
     input: CreateReviewCommentInput,
   ): Promise<PrReviewComment> {
-    return withRetry(() =>
-      withTimeout(
+    try {
+      return await withRetry(() => this.sendReviewComment(repo, n, input), {
+        isRetryable: isGitHubRateLimited,
+        ...(this.writeRetryBaseDelayMs != null ? { baseDelayMs: this.writeRetryBaseDelayMs } : {}),
+      });
+    } catch (err) {
+      throw this.toCommentError(err);
+    }
+  }
+
+  /** One attempt of a comment write (new comment or reply), on the plugin-free instance. */
+  private async sendReviewComment(
+    repo: RepoRef,
+    n: number,
+    input: CreateReviewCommentInput,
+  ): Promise<PrReviewComment> {
+    const abort = new AbortController();
+    const request = { signal: abort.signal };
+    try {
+      return await withTimeout(
         (async () => {
           if (input.inReplyTo != null) {
-            const res = await this.octokit.rest.pulls.createReplyForReviewComment({
+            const res = await this.writeOctokit.rest.pulls.createReplyForReviewComment({
               owner: repo.owner,
               repo: repo.name,
               pull_number: n,
               comment_id: input.inReplyTo,
               body: input.body,
+              request,
             });
             return this.mapReviewComment(res.data);
           }
-          const res = await this.octokit.rest.pulls.createReviewComment({
+          const res = await this.writeOctokit.rest.pulls.createReviewComment({
             owner: repo.owner,
             repo: repo.name,
             pull_number: n,
@@ -234,12 +308,31 @@ export class OctokitGitHubClient implements GitHubClient {
             line: input.line,
             side: input.side ?? 'RIGHT',
             body: input.body,
+            request,
           });
           return this.mapReviewComment(res.data);
         })(),
-        TIMEOUT,
-      ),
-    );
+        this.writeTimeoutMs,
+      );
+    } catch (err) {
+      // Stop the in-flight request so it does not linger after the timeout.
+      if (err instanceof TimeoutError) abort.abort();
+      throw err;
+    }
+  }
+
+  /**
+   * AC-33: 5xx / timeout / network (no HTTP status) → the write may have landed,
+   * so answer 502 with the "check before posting again" message; any other
+   * rejection (e.g. 422 line not in the diff) → 400 with GitHub's reason, redacted.
+   */
+  private toCommentError(err: unknown): AppError {
+    const status = errStatus(err);
+    if (err instanceof TimeoutError || status == null || status >= 500) {
+      return new AppError('github_comment_failed', GITHUB_COMMENT_UNCONFIRMED, 502);
+    }
+    const raw = err instanceof Error ? err.message : 'Failed to post the comment to GitHub.';
+    return new AppError('github_comment_failed', redactSecret(raw, this.token), 400);
   }
 
   async openPullRequest(repo: RepoRef, payload: OpenPrPayload): Promise<{ url: string }> {

@@ -54,7 +54,8 @@ is shared via **tsconfig path aliases**, not npm.
 - **`specs/04-intent-layer.md`** — when touching the Intent Layer (intent server module, classifier, scope filter in reviewer-core, Overview IntentCard).
 - **`specs/05-smart-diff.md`** — when touching Smart Diff (smart-diff server module, deterministic file classifier, /pulls/:id/smart-diff, SmartDiffViewer in Files changed, finding-click navigation).
 - **`specs/2026-08-27-pr-brief.md`** — when touching PR Brief (POST /pulls/:id/brief, brief cache, PrBriefCard on Overview, Risk Areas in IntentCard, Review Focus block).
-- **`specs/2026-10-16-gitlab-merge-requests.md`** — when touching GitLab support (gitlab.com repos + nested groups, per-repo provider client, MR import, PR sync-on-open for all providers (stale-while-revalidate, single-flight, 60 s TTL), read-only comments, provider-aware deep links).
+- **`specs/2026-10-16-gitlab-merge-requests.md`** — when touching GitLab support (gitlab.com repos + nested groups, per-repo provider client, MR import, PR sync-on-open for all providers (stale-while-revalidate, single-flight, 60 s TTL), provider-aware deep links; its read-only-comments ACs are superseded by the gitlab-comments spec).
+- **`specs/2026-10-20-gitlab-comments.md`** — when touching GitLab comment posting (read/post/reply GitLab diff discussions via `PrCommentsService`, `api`-scope token health gate + notice, quick-action neutralisation, google-mode attribution footer, head-moved 409, no-retry writes on both hosts, `pr_comment.create` audit).
 - **`server/CLAUDE.md` · `client/CLAUDE.md` · `reviewer-core/CLAUDE.md` · `e2e/CLAUDE.md`** — auto-load per folder; read before editing that package.
 - **`INSIGHTS.md`** (root, or the package's own `<package>/INSIGHTS.md`) — on unexpected behavior,
   before debugging: known gotchas are recorded there.

@@ -48,6 +48,12 @@ export interface IdentityUser {
   lastSignInAt: Date | null;
 }
 
+/** How a user is named to the outside (comment attribution): empty strings are reported as null. */
+export interface DisplayIdentity {
+  name: string | null;
+  email: string | null;
+}
+
 /** Verified claims the sign-in flow upserts (never request-supplied data, AC-10). */
 export interface UserClaims {
   subject: string;
@@ -162,6 +168,19 @@ export class UsersRepo {
     if (!isUuid(userId)) return undefined;
     const [row] = await execOf(this.db, tx).select().from(t.users).where(eq(t.users.id, userId));
     return row ? toUser(row) : undefined;
+  }
+
+  /**
+   * The user's display name + email (GitLab comment attribution footer, AC-16),
+   * or null for an unknown / malformed id. Only these two columns are read.
+   */
+  async displayIdentity(userId: string): Promise<DisplayIdentity | null> {
+    if (!isUuid(userId)) return null;
+    const [row] = await this.db
+      .select({ name: t.users.name, email: t.users.email })
+      .from(t.users)
+      .where(eq(t.users.id, userId));
+    return row ? { name: row.name || null, email: row.email || null } : null;
   }
 
   /**

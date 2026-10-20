@@ -109,5 +109,5 @@ a CI artifact by `.github/workflows/e2e-web.yml`).
 | `07-settings` | `/settings/api-keys` + `/settings/models` → section titles render |
 | `08-project-context-invariant` | Security Reviewer Context tab lists the attached spec → PR #482 run trace shows it injected |
 | `09-gitlab-pr-list` | switch to the seeded GitLab repo `space-profit/platform/crm-frontend` → PR #5 + Draft badge, PR #6 unknown stats as `—`, "Synced …" status |
-| `10-gitlab-pr-detail` | GitLab PR #5 → `/pulls/5`, "View on GitLab" targets `/-/merge_requests/5`, Draft, read-only posting note, rename `old → new`, "Diff too large on GitLab", host-omitted notice |
-| `11-settings-gitlab` | `/settings/api-keys` → GitLab access token row with `read_api` + `read_repository` scopes hint |
+| `10-gitlab-pr-detail` | GitLab PR #5 → `/pulls/5`, "View on GitLab" targets `/-/merge_requests/5`, Draft, no "isn't supported yet" read-only note and no GitLab token notice (posting enabled, AC-35/AC-40), rename `old → new`, "Diff too large on GitLab", host-omitted notice |
+| `11-settings-gitlab` | `/settings/api-keys` → GitLab access token row with the "Required scope: api (Reporter role recommended)" hint; no `read_api` text (AC-27) |

@@ -1,32 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { SecretsStatusDetailed } from '../src/vendor/shared/index.js';
-import { gitlabCheckToResult, rowsToSettings, toSecretsStatusDto } from '../src/modules/settings/helpers.js';
-
-describe('gitlabCheckToResult', () => {
-  it('maps every GitLab token-check outcome to the connection-test result (AC-2..AC-5)', () => {
-    expect(gitlabCheckToResult({ ok: false, reason: 'expired' })).toEqual({
-      ok: false,
-      message: 'GitLab token is expired',
-    });
-    expect(
-      gitlabCheckToResult({
-        ok: true,
-        username: 'dev',
-        scopes: ['read_user'],
-        missingScopes: ['read_api', 'read_repository'],
-      }),
-    ).toEqual({ ok: false, message: 'Missing scopes: read_api, read_repository' });
-    expect(
-      gitlabCheckToResult({ ok: true, username: 'dev', scopes: null, missingScopes: [] }),
-    ).toEqual({
-      ok: true,
-      message: 'Connected as @dev (scope sufficiency is verified on first repo access)',
-    });
-    expect(
-      gitlabCheckToResult({ ok: true, username: 'dev', scopes: ['read_api'], missingScopes: [] }),
-    ).toEqual({ ok: true, message: 'Connected as @dev' });
-  });
-});
+import { SecretsStatusDetailed, SecretsStatusWithHealth } from '../src/vendor/shared/index.js';
+import {
+  rowsToSettings,
+  toSecretsStatusDto,
+  toSecretsStatusWithHealth,
+} from '../src/modules/settings/helpers.js';
 
 describe('rowsToSettings', () => {
   it('collapses key/value rows into a flat object (last row wins)', () => {
@@ -58,5 +36,33 @@ describe('toSecretsStatusDto (G1: built per provider, no cast)', () => {
     expect(dto.states.github.state).toBe('undecryptable');
     expect(dto.states.anthropic).toEqual({ state: 'unset', updated_at: null, updated_by: null });
     expect(Object.keys(dto.states).sort()).toEqual(['anthropic', 'github', 'gitlab', 'openai', 'openrouter']);
+  });
+});
+
+describe('toSecretsStatusWithHealth (AC-26, Q2)', () => {
+  const entries = [
+    {
+      provider: 'gitlab' as const,
+      state: 'set' as const,
+      updatedAt: new Date('2026-10-20T10:00:00.000Z'),
+      updatedBy: null,
+      updated_by: null,
+    },
+  ];
+
+  it('adds only the gitlab_health enum on top of the detailed DTO; parses strictly', () => {
+    for (const health of ['ok', 'insufficient_scope', 'invalid', 'unchecked'] as const) {
+      const dto = toSecretsStatusWithHealth(entries, health);
+      expect(SecretsStatusWithHealth.strict().parse(dto)).toEqual(dto);
+      expect(dto.gitlab_health).toBe(health);
+      expect(dto).toEqual({ ...toSecretsStatusDto(entries), gitlab_health: health });
+    }
+  });
+
+  it('null health (no GitLab token) is reported as null', () => {
+    const dto = toSecretsStatusWithHealth([], null);
+    expect(dto.gitlab_health).toBeNull();
+    expect(dto.gitlab).toBe(false);
+    expect(SecretsStatusWithHealth.parse(dto)).toEqual(dto);
   });
 });

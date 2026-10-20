@@ -17,7 +17,10 @@ import {
 import { AppShell } from "@/components/app-shell";
 import { RepoNotFound } from "@/components/repo-not-found";
 import { usePullsSync, useQueryParam, useDebouncedQueryParam } from "@/lib/hooks";
+import { useGitLabTokenHealth } from "@/lib/hooks/gitlab-health";
 import { useActiveRepo, useRepoNotFound } from "@/lib/repo-context";
+import { hostLabelKey } from "@/lib/host-urls";
+import { GitLabTokenNotice } from "@/components/gitlab-token-notice";
 import { ApiError } from "@/lib/api";
 import { COLUMN_KEYS, SKELETON_ROWS } from "./constants";
 import { filterAndSortPulls, countPulls } from "./helpers";
@@ -25,6 +28,11 @@ import { s } from "./styles";
 import { PRRow } from "./_components/PRRow";
 import { FilterBar } from "./_components/FilterBar";
 import { SyncStatus } from "./_components/SyncStatus";
+
+/** Stable id of the GitLab token notice (AC-25). */
+const TOKEN_NOTICE_ID = "gitlab-token-notice";
+/** Lines the notice up with the table card below it. */
+const TOKEN_NOTICE_WRAP: React.CSSProperties = { margin: "4px 32px 0" };
 
 export default function PullsPage() {
   const t = useTranslations("prReview");
@@ -57,6 +65,15 @@ export default function PullsPage() {
   const filtered = filterAndSortPulls(pulls ?? [], { status, query, sort });
   const { open: openCount, needsReview: needsReviewCount } = countPulls(pulls ?? []);
   const repoName = activeRepo?.full_name ?? repoId;
+  // A known-bad GitLab token blocks the list sync: a persistent token notice
+  // replaces the generic "showing data from…" sync-failure note (AC-25).
+  const { health: gitlabHealth, blocked: gitlabBlocked } = useGitLabTokenHealth();
+  const tokenNoticeHealth =
+    hostLabelKey(activeRepo) === "gitlab" &&
+    gitlabBlocked &&
+    (gitlabHealth === "insufficient_scope" || gitlabHealth === "invalid")
+      ? gitlabHealth
+      : null;
 
   // Stale/unknown :repoId → friendly empty state instead of a 404 error.
   if (repoNotFound) {
@@ -79,10 +96,21 @@ export default function PullsPage() {
           </p>
         </div>
         <div style={s.headerActions}>
-          <SyncStatus sync={sync} updating={updating} startFailed={syncError != null} />
+          <SyncStatus
+            sync={sync}
+            updating={updating}
+            startFailed={syncError != null}
+            suppressFailedNotice={tokenNoticeHealth != null}
+          />
           <AutoTriggerStatus on={false} />
         </div>
       </div>
+
+      {tokenNoticeHealth && (
+        <div style={TOKEN_NOTICE_WRAP}>
+          <GitLabTokenNotice id={TOKEN_NOTICE_ID} health={tokenNoticeHealth} />
+        </div>
+      )}
 
       <div style={s.tableCard}>
         <FilterBar

@@ -129,7 +129,7 @@ describe("FindingCard eval case action", () => {
   });
 });
 
-/* --- GitLab: host links + read-only commenting (AC-37/38/43) --------------- */
+/* --- GitLab: host links + copy finding (AC-37/38) ------------------------- */
 
 
 const SHA = "0123abcd";
@@ -147,10 +147,10 @@ const GITHUB: HostLinkRepo = {
   full_name: "acme/payments-api",
 };
 
-function renderHosted(repo: HostLinkRepo, readOnly: boolean) {
+function renderHosted(repo: HostLinkRepo, offerCopy: boolean) {
   return render(
     <NextIntlClientProvider locale="en" messages={{ prReview: messages, prHost }}>
-      <FindingHostProvider value={{ repo, readOnly }}>
+      <FindingHostProvider value={{ repo, offerCopy }}>
         <FindingCard f={RANGE} defaultExpanded headSha={SHA} />
       </FindingHostProvider>
     </NextIntlClientProvider>,
@@ -158,7 +158,7 @@ function renderHosted(repo: HostLinkRepo, readOnly: boolean) {
 }
 
 describe("FindingCard on a host", () => {
-  it("GitLab: blob link, disabled post with a visible note, and copy writes the finding text", async () => {
+  it("GitLab: blob link, Copy finding writes the finding text, no post control or not-supported note", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     stubClipboard(writeText);
     renderHosted(GITLAB, true);
@@ -168,15 +168,10 @@ describe("FindingCard on a host", () => {
       `https://gitlab.com/space-profit/platform/crm-frontend/-/blob/${SHA}/src/config.ts#L10-20`,
     );
 
-    const post = screen.getByRole("button", { name: "Post comment" });
-    expect(post).toBeDisabled();
-    expect(post).toHaveAccessibleDescription(
-      "Posting comments to GitLab isn't supported yet — copy the text instead.",
-    );
-    // The note is visible text, not a hover-only tooltip.
-    expect(
-      screen.getByText("Posting comments to GitLab isn't supported yet — copy the text instead."),
-    ).toBeVisible();
+    // AC-38: the card offers no "Post comment" (enabled or disabled) and no
+    // "not supported" note — GitLab posting lives in the review flow.
+    expect(screen.queryByRole("button", { name: "Post comment" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/isn't supported yet/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Copy finding" }));
     expect(writeText).toHaveBeenCalledTimes(1);
@@ -186,7 +181,7 @@ describe("FindingCard on a host", () => {
     expect(text).toContain("Move the key to an environment variable.");
   });
 
-  it("GitHub: the same blob link as today and no read-only controls", () => {
+  it("GitHub: the same blob link as today, no Copy finding and no Post comment", () => {
     renderHosted(GITHUB, false);
     expect(screen.getByRole("link", { name: "src/config.ts:10-20" })).toHaveAttribute(
       "href",

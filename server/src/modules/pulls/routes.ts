@@ -1,13 +1,8 @@
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import type {
-  PrDetailHost,
-  GitHubClient,
-  PrMetaHost,
-  PrReviewComment,
-  PrSyncDoneEvent,
-} from '@devdigest/shared';
-import { PrCommentInput, PrListPage, PrSyncStartResult } from '@devdigest/shared';
+import { z } from 'zod';
+import type { PrDetailHost, PrMetaHost, PrSyncDoneEvent } from '@devdigest/shared';
+import { HostComment, HostCommentInput, PrListPage, PrSyncStartResult } from '@devdigest/shared';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
 import { AppError, NotFoundError } from '../../platform/errors.js';
@@ -21,8 +16,10 @@ import type { PersistedRepo } from './repository.js';
  *   POST /repos/:id/pulls/sync        → manual list sync → { trigger }
  *   GET  /repos/:id/pulls/sync/events → SSE: ONE `done` event, then close
  *   GET  /pulls/:id                   → full PR detail (diff/files, commits, body, linked issue)
- *   GET  /pulls/:id/comments          → inline review comments (GitHub; GitLab → [])
- *   POST /pulls/:id/comments          → post one (GitHub; GitLab → 400 provider_read_only)
+ *   GET  /pulls/:id/comments          → inline comments (GitHub review comments /
+ *                                        GitLab diff discussions); any host failure → []
+ *   POST /pulls/:id/comments          → post one comment or reply on either host
+ *                                        (GitLab: as the workspace service account)
  *
  * List reads hit the DB only; the host sync runs detached in the container's
  * single-flight `prSync` coordinator (TTL / back-off / join — AC-55..64).
@@ -178,10 +175,10 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
     return container.pullDetail.refresh(pr, repo, req.log);
   });
 
-  // ---- Inline review comments (Files changed tab) -------------------------
-  // Proxied live to GitHub (no local persistence): GET reflects existing PR
-  // comments; POST creates one immediately. Keeps the tab in lock-step with
-  // GitHub and avoids a stale local mirror.
+  // ---- Inline comments (Files changed tab) --------------------------------
+  // Proxied live to the repo's host (no local persistence): GET reflects the
+  // existing PR/MR comments; POST creates one immediately. The use case lives in
+  // `container.prComments` (both hosts); these routes only translate HTTP.
   async function resolvePrAndRepo(id: string, workspaceId: string) {
     const found = await reads.findPrWithRepo(workspaceId, id);
     if (!found) throw new NotFoundError('Pull request not found');
@@ -192,61 +189,43 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
 
   app.get(
     '/pulls/:id/comments',
-    { schema: { params: IdParams } },
-    async (req): Promise<PrReviewComment[]> => {
+    { schema: { params: IdParams, response: { 200: z.array(HostComment) } } },
+    async (req): Promise<HostComment[]> => {
       const { workspaceId } = await getContext(container, req);
       const { pr, repo } = await resolvePrAndRepo(req.params.id, workspaceId);
-      // GitLab (read-only in the MVP): no comments, and no client is resolved (AC-45).
-      if (container.pullDetail.isReadOnly(repo)) return [];
-      let gh: GitHubClient;
-      try {
-        gh = await container.github();
-      } catch (err) {
-        app.log.warn({ err }, 'GitHub client unavailable; serving no PR comments');
-        return [];
-      }
-      try {
-        return await gh.listReviewComments({ owner: repo.owner, name: repo.name }, pr.number);
-      } catch (err) {
-        app.log.warn({ err }, 'GitHub review-comments fetch skipped (offline / error)');
-        return [];
-      }
+      return container.prComments.list(pr, repo, req.log);
     },
   );
 
   app.post(
     '/pulls/:id/comments',
-    { schema: { params: IdParams, body: PrCommentInput } },
-    async (req): Promise<PrReviewComment> => {
-      const { workspaceId } = await getContext(container, req);
+    {
+      schema: { params: IdParams, body: HostCommentInput, response: { 200: HostComment } },
+      // Rec3: a 1,000,000-character comment of multi-byte text exceeds the global
+      // 1 MiB limit; let it reach AC-15's `comment_too_long` instead of a 413.
+      bodyLimit: COMMENT_BODY_LIMIT_BYTES,
+      // AC-14: a whitespace-only body is a 400 validation error on both hosts,
+      // before any host is resolved (an empty string stays a schema failure).
+      preValidation: async (req) => {
+        if (isWhitespaceOnlyBody(req.body)) {
+          throw new AppError('validation_error', 'Comment body must not be empty', 400);
+        }
+      },
+    },
+    async (req): Promise<HostComment> => {
+      // Auth/tenancy first: an unauthenticated request never reaches a host (AC-41).
+      const { workspaceId, userId } = await getContext(container, req);
       const { pr, repo } = await resolvePrAndRepo(req.params.id, workspaceId);
-      // Reject BEFORE any host client is resolved or called (AC-44).
-      container.pullDetail.assertWritable(repo);
-      const input = req.body;
-      let gh: GitHubClient;
-      try {
-        gh = await container.github();
-      } catch {
-        throw new AppError(
-          'github_unavailable',
-          'Connect a GitHub token to post comments.',
-          400,
-        );
-      }
-      try {
-        return await gh.createReviewComment({ owner: repo.owner, name: repo.name }, pr.number, {
-          commitId: pr.headSha,
-          path: input.path,
-          line: input.line,
-          ...(input.side ? { side: input.side } : {}),
-          body: input.body,
-          ...(input.in_reply_to != null ? { inReplyTo: input.in_reply_to } : {}),
-        });
-      } catch (err) {
-        // GitHub rejects comments on lines outside the diff / on closed PRs (422).
-        const msg = err instanceof Error ? err.message : 'Failed to post the comment to GitHub.';
-        throw new AppError('github_comment_failed', msg, 400, { cause: String(err) });
-      }
+      return container.prComments.create(pr, repo, req.body, userId, req.log);
     },
   );
+}
+
+/** POST /pulls/:id/comments body limit (4 MiB, plan Rec3). */
+const COMMENT_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
+
+/** A request body whose `body` field is a non-empty, whitespace-only string. */
+function isWhitespaceOnlyBody(raw: unknown): boolean {
+  const body = (raw as { body?: unknown } | null)?.body;
+  return typeof body === 'string' && body.length > 0 && body.trim().length === 0;
 }

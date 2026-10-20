@@ -27,7 +27,7 @@ export interface RestMergeRequest {
   source_branch?: string | null;
   target_branch?: string | null;
   sha?: string | null;
-  diff_refs?: { head_sha?: string | null } | null;
+  diff_refs?: { base_sha?: string | null; start_sha?: string | null; head_sha?: string | null } | null;
   author?: { username?: string | null } | null;
   created_at?: string | null;
   updated_at?: string | null;

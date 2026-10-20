@@ -1,11 +1,35 @@
 import type { CSSProperties } from "react";
-import type { SecretState } from "@devdigest/shared";
+import type { GitLabTokenHealth, SecretState } from "@devdigest/shared";
 
 const BADGE_COLOR: Record<SecretState, string> = {
   set: "var(--ok)",
   unset: "var(--text-muted)",
   undecryptable: "var(--warn)",
 };
+
+/** GitLab token health → badge colour (AC-26). */
+const HEALTH_COLOR: Record<GitLabTokenHealth, string> = {
+  ok: "var(--ok)",
+  insufficient_scope: "var(--crit)",
+  invalid: "var(--crit)",
+  unchecked: "var(--warn)",
+};
+
+const pill = (color: string): CSSProperties => ({
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  fontSize: 12,
+  fontWeight: 600,
+  color,
+});
+
+const dot = (color: string): CSSProperties => ({
+  width: 7,
+  height: 7,
+  borderRadius: "50%",
+  background: color,
+});
 
 /** Co-located styles for SettingsApiKeys + its KeyRow. */
 export const s = {
@@ -22,20 +46,10 @@ export const s = {
     color: ok ? "var(--ok)" : "var(--crit)",
     fontWeight: 600,
   }),
-  badge: (state: SecretState): CSSProperties => ({
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-    fontSize: 12,
-    fontWeight: 600,
-    color: BADGE_COLOR[state],
-  }),
-  badgeDot: (state: SecretState): CSSProperties => ({
-    width: 7,
-    height: 7,
-    borderRadius: "50%",
-    background: BADGE_COLOR[state],
-  }),
+  badge: (state: SecretState): CSSProperties => pill(BADGE_COLOR[state]),
+  badgeDot: (state: SecretState): CSSProperties => dot(BADGE_COLOR[state]),
+  healthBadge: (health: GitLabTokenHealth): CSSProperties => pill(HEALTH_COLOR[health]),
+  healthBadgeDot: (health: GitLabTokenHealth): CSSProperties => dot(HEALTH_COLOR[health]),
   /** Member view: one bordered row per key (label + hint, badge on the right). */
   readOnlyRow: {
     display: "flex",

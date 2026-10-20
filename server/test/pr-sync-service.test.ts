@@ -7,7 +7,12 @@ import type {
   PullStateInfo,
   RepoProvider,
 } from '@devdigest/shared';
-import { PrListSyncService, type SyncRepo } from '../src/modules/pulls/sync-service.js';
+import {
+  PrListSyncService,
+  describeSyncError,
+  type SyncRepo,
+} from '../src/modules/pulls/sync-service.js';
+import { AppError } from '../src/platform/errors.js';
 import type { PullRequestStore } from '../src/modules/pulls/repository.js';
 import { PrSyncCoordinator } from '../src/modules/pulls/sync-coordinator.js';
 import type { RepoSyncStatus, SyncStatusStore } from '../src/modules/pulls/repository.js';
@@ -235,5 +240,33 @@ describe('PrListSyncService', () => {
     const svc = new PrListSyncService({ hosts: async () => host, store });
     await expect(svc.syncRepo(gitlabRepo)).rejects.toThrow('GitLab 503');
     expect(store.upsertListWithStats).not.toHaveBeenCalled();
+  });
+});
+
+describe('describeSyncError', () => {
+  it('prefixes a known host error code so the recorded failure names it (spec 2026-10-20 AC-23)', () => {
+    const gated = new AppError(
+      'gitlab_token_insufficient_scope',
+      'This token is missing the api scope. Required scope: api (Reporter role recommended).',
+      400,
+    );
+    expect(describeSyncError(gated)).toBe(
+      '[gitlab_token_insufficient_scope] This token is missing the api scope. Required scope: api (Reporter role recommended).',
+    );
+    // HostErrorCode members too (matched by shape, not instanceof).
+    expect(describeSyncError({ code: 'gitlab_token_invalid', message: 'x' })).toMatch(/^\[gitlab_token_invalid\] /);
+    const plain = Object.assign(new Error('boom'), { code: 'gitlab_token_missing' });
+    expect(describeSyncError(plain)).toBe('[gitlab_token_missing] boom');
+  });
+
+  it('leaves other errors unprefixed, redacted and bounded', () => {
+    expect(describeSyncError(new AppError('config_error', 'GITHUB_TOKEN missing', 500))).toBe(
+      'GITHUB_TOKEN missing',
+    );
+    expect(describeSyncError(new Error('GitLab 503'))).toBe('GitLab 503');
+    const long = new AppError('gitlab_token_unverified', 'y'.repeat(800), 503);
+    const out = describeSyncError(long);
+    expect(out.startsWith('[gitlab_token_unverified] ')).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(500);
   });
 });

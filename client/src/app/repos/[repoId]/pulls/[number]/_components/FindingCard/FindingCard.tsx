@@ -33,7 +33,7 @@ import { ActorLabel } from "@/components/actor-label";
 import { SEV_COLOR, SEV_COLOR_FALLBACK } from "./constants";
 import { fileHrefFor, latestJudgement, lineLabel } from "./helpers";
 import { useFindingHost } from "./host-context";
-import { ReadOnlyActions } from "./_components/ReadOnlyActions";
+import { CopyFindingAction } from "./_components/CopyFindingAction";
 import { s } from "./styles";
 
 export function FindingCard({
@@ -67,7 +67,7 @@ export function FindingCard({
   const [expanded, setExpanded] = React.useState(defaultExpanded ?? false);
   const sevColor = SEV_COLOR[f.severity] ?? SEV_COLOR_FALLBACK;
   const fileHref = fileHrefFor(f, headSha, host, repoFullName);
-  const readOnly = !!host?.readOnly;
+  const offerCopy = !!host?.offerCopy;
   const accepted = !!f.accepted_at;
   const dismissed = !!f.dismissed_at;
   const muted = accepted || dismissed;
@@ -175,7 +175,7 @@ export function FindingCard({
                 )}
               </>
             )}
-            {readOnly && <ReadOnlyActions f={f} />}
+            {offerCopy && <CopyFindingAction f={f} />}
           </div>
         </div>
       )}

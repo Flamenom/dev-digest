@@ -4,6 +4,7 @@ import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-libra
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NextIntlClientProvider } from "next-intl";
 import messages from "../../../../../messages/en/prReview.json";
+import prHostMessages from "../../../../../messages/en/prHost.json";
 import type { PrListPage, PrMetaHost } from "@/lib/types";
 
 const push = vi.fn();
@@ -103,7 +104,7 @@ function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <NextIntlClientProvider locale="en" messages={{ prReview: messages }}>
+      <NextIntlClientProvider locale="en" messages={{ prReview: messages, prHost: prHostMessages }}>
         <RepoProvider>
           <PullsPage />
         </RepoProvider>
@@ -258,5 +259,65 @@ describe("PullsPage sync", () => {
     expect(FakeEventSource.instances).toHaveLength(0);
     expect(screen.getByRole("status")).not.toHaveTextContent("Updating…");
     await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
+  });
+});
+
+describe("PullsPage GitLab token notice (AC-25)", () => {
+  const GITLAB_REPOS = [
+    {
+      id: "r1",
+      full_name: "group/proj",
+      provider: "gitlab",
+      host: "gitlab.com",
+      web_url: "https://gitlab.com/group/proj",
+    },
+  ];
+  const FAILED: PrListPage = {
+    pulls: [row(1, "Persisted MR")],
+    sync: {
+      trigger: "fresh",
+      state: "failed",
+      last_synced_at: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+      last_sync_error: "[gitlab_token_insufficient_scope] missing api scope",
+    },
+  };
+
+  function mockGitLabReads(health: string | null) {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/repos") return GITLAB_REPOS;
+      if (path === "/auth/session")
+        return {
+          mode: "google",
+          user: { id: "u1", email: "m@onlytraf.com", name: "Mem", avatar_url: null, role: "member" },
+          workspace: { id: "w1", name: "Team" },
+        };
+      if (path === "/settings/secrets-status") return { gitlab_health: health };
+      if (/^\/pulls\/[^/]+\/reviews$/.test(path)) return [];
+      if (path === PAGE_PATH) return FAILED;
+      throw new Error(`unexpected GET ${path}`);
+    });
+  }
+
+  it("insufficient_scope: persistent notice replaces 'showing data from', persisted rows still render", async () => {
+    mockGitLabReads("insufficient_scope");
+    renderPage();
+
+    expect(await screen.findByText("Persisted MR")).toBeInTheDocument();
+    const note = await screen.findByRole("note");
+    expect(note).toHaveAttribute("id", "gitlab-token-notice");
+    expect(note).toHaveTextContent("The GitLab token is invalid (missing the api scope).");
+    expect(await screen.findByText("Ask an admin to update it.")).toBeInTheDocument();
+    expect(screen.queryByText(/showing data from/)).not.toBeInTheDocument();
+    // The sync age stays.
+    expect(screen.getByRole("status")).toHaveTextContent("Synced 2h ago");
+  });
+
+  it("ok health: no token notice; the generic sync-failure note is shown (AC-35)", async () => {
+    mockGitLabReads("ok");
+    renderPage();
+
+    expect(await screen.findByText("Persisted MR")).toBeInTheDocument();
+    expect(await screen.findByText(/showing data from/)).toBeInTheDocument();
+    expect(screen.queryByText(/The GitLab token is invalid/)).not.toBeInTheDocument();
   });
 });

@@ -8,10 +8,10 @@ import { syncAge } from "./helpers";
 
 afterEach(cleanup);
 
-function renderStatus(sync: PrListSync | undefined, updating: boolean) {
+function renderStatus(sync: PrListSync | undefined, updating: boolean, suppressFailedNotice = false) {
   return render(
     <NextIntlClientProvider locale="en" messages={{ prReview: messages }}>
-      <SyncStatus sync={sync} updating={updating} />
+      <SyncStatus sync={sync} updating={updating} suppressFailedNotice={suppressFailedNotice} />
     </NextIntlClientProvider>,
   );
 }
@@ -49,6 +49,17 @@ describe("SyncStatus", () => {
     renderStatus({ trigger: "fresh", state: "failed", last_synced_at: null }, false);
     expect(screen.getByRole("status")).toHaveTextContent("Never synced");
     expect(screen.getByRole("note")).toHaveTextContent("no synced data yet");
+  });
+
+  it("suppressFailedNotice hides the 'showing data from' note but keeps Updating… and the age (AC-25)", () => {
+    renderStatus(
+      { trigger: "started", state: "failed", last_synced_at: minutesAgo(120), last_sync_error: "x" },
+      true,
+      true,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Updating…");
+    expect(screen.getByRole("status")).toHaveTextContent("Synced 2h ago");
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
   });
 
   it("buckets sync age", () => {

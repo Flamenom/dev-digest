@@ -19,8 +19,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { usePrReviews, useCancelRun, usePrActiveRuns, usePrRuns, useDeleteRun } from "@/lib/hooks/reviews";
 import { useActiveRepo, useRepoNotFound } from "@/lib/repo-context";
 import { ApiError } from "@/lib/api";
-import { hostBlobUrl, hostLabelKey, hostPrUrl, isReadOnlyHost } from "@/lib/host-urls";
+import { hostBlobUrl, hostLabelKey, hostPrUrl } from "@/lib/host-urls";
+import { useGitLabTokenHealth } from "@/lib/hooks/gitlab-health";
+import { GitLabTokenNotice } from "@/components/gitlab-token-notice";
 import type { FindingRecord } from "@devdigest/shared";
+
+/** `aria-describedby` target of the blocked post button (AC-25). */
+const TOKEN_NOTICE_ID = "gitlab-token-notice";
 
 export default function PRDetailPage() {
   const params = useParams<{ repoId: string; number: string }>();
@@ -29,8 +34,15 @@ export default function PRDetailPage() {
   // page is built from it through `host-urls` (AC-36/37/38).
   // Same source as the list page: the active repo is resolved from :repoId.
   const { activeRepo: repo, reposLoading } = useActiveRepo();
-  // GitLab accepts no posted comments in the MVP (server: `provider_read_only`).
-  const readOnly = isReadOnlyHost(repo);
+  const provider = hostLabelKey(repo);
+  const isGitLab = provider === "gitlab";
+  // A known-bad GitLab token (insufficient_scope / invalid) blocks every GitLab
+  // op: persistent notice + disabled post button (AC-25). null ⇒ unchecked.
+  const { health: gitlabHealth, blocked: gitlabBlocked } = useGitLabTokenHealth();
+  const tokenNoticeHealth =
+    isGitLab && gitlabBlocked && (gitlabHealth === "insufficient_scope" || gitlabHealth === "invalid")
+      ? gitlabHealth
+      : null;
   const repoNotFound = useRepoNotFound(repoId);
   // The route is keyed by PR number, but every PR API is keyed by the row's
   // uuid — resolve number → uuid via the (cached) pulls list before fetching.
@@ -141,13 +153,18 @@ export default function PRDetailPage() {
 
   return (
     <AppShell crumb={crumb}>
+      {tokenNoticeHealth && (
+        <div style={{ padding: "16px 32px 0", maxWidth: 1080, margin: "0 auto" }}>
+          <GitLabTokenNotice id={TOKEN_NOTICE_ID} health={tokenNoticeHealth} />
+        </div>
+      )}
       <PrDetailHeader
         pr={pr}
         prId={prId}
         tab={tab}
         findingsCount={findingsCount}
         hostUrl={repo ? hostPrUrl(repo, pr.number) : null}
-        provider={hostLabelKey(repo)}
+        provider={provider}
         onSetTab={setTab}
         onRunStart={() => setTab("findings")}
         onRunsStarted={() => {
@@ -180,7 +197,7 @@ export default function PRDetailPage() {
             prRuns={prRuns}
             prCommits={pr.commits}
             repo={repo}
-            readOnly={readOnly}
+            offerCopy={isGitLab}
             headSha={pr.head_sha}
             targetFindingId={findingTarget || null}
             onFindingTargetConsumed={() => setFindingTarget(null)}
@@ -210,9 +227,9 @@ export default function PRDetailPage() {
             files={pr.files}
             canComment={pr.status === "open"}
             host={{
-              readOnly,
-              provider: hostLabelKey(repo),
+              provider,
               filesOmittedByHost: pr.files_omitted_by_host ?? 0,
+              postBlocked: tokenNoticeHealth ? { describedById: TOKEN_NOTICE_ID } : null,
             }}
             reviews={runs}
             onGoToFinding={goToFinding}
