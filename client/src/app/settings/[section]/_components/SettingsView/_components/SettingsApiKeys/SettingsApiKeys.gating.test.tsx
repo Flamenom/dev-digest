@@ -1,9 +1,9 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, within } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
-import settingsMessages from "../../../../../../../../messages/en/settings.json";
+import { describe, it, expect } from "vitest";
+import { screen, within } from "@testing-library/react";
 import authMessages from "../../../../../../../../messages/en/auth.json";
 import type { SecretsStatusDetailed } from "@devdigest/shared";
+import { renderWithProviders } from "@/test/render-with-providers";
+import { SettingsApiKeys } from "./SettingsApiKeys";
 
 /* AC-33 (Settings → API Keys row) + AC-38/AC-41 UI: a Member gets state badges
    and the read-only notice but no inputs or Test actions; an Admin keeps the
@@ -25,47 +25,36 @@ const status: SecretsStatusDetailed = {
   },
 };
 
-vi.mock("@/lib/hooks", () => ({
-  useSecretsStatus: () => ({ data: status }),
-  useTestConnection: () => ({ mutateAsync: vi.fn(), isPending: false }),
-}));
-
-import { SettingsApiKeys } from "./SettingsApiKeys";
-
-afterEach(cleanup);
-
 function renderKeys(readOnly: boolean) {
-  render(
-    <NextIntlClientProvider locale="en" messages={{ settings: settingsMessages, auth: authMessages }}>
-      <SettingsApiKeys readOnly={readOnly} />
-    </NextIntlClientProvider>,
-  );
+  renderWithProviders(<SettingsApiKeys readOnly={readOnly} />, {
+    session: readOnly ? "member" : "admin",
+    routes: { "GET /settings/secrets-status": status },
+  });
 }
 
 describe("SettingsApiKeys gating", () => {
-  it("Member: badges per key from `states` and the admins-only notice; no inputs or Test buttons", () => {
+  it("Member: badges per key from `states` and the admins-only notice; no inputs or Test buttons", async () => {
     renderKeys(true);
+
+    const openrouter = screen.getByRole("group", { name: "OpenRouter API key" });
+    expect(await within(openrouter).findByText("Needs re-entry")).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "OpenAI API key" })).getByText("Configured")).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Anthropic API key" })).getByText("Not set")).toBeInTheDocument();
 
     expect(screen.getByRole("note")).toHaveTextContent(authMessages.gate.apiKeysReadOnly);
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("OpenAI API key", { selector: "input" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
-
-    expect(within(screen.getByRole("group", { name: "OpenAI API key" })).getByText("Configured")).toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "Anthropic API key" })).getByText("Not set")).toBeInTheDocument();
-    expect(
-      within(screen.getByRole("group", { name: "OpenRouter API key" })).getByText("Needs re-entry"),
-    ).toBeInTheDocument();
   });
 
-  it("Admin: editable form unchanged, plus 'Needs re-entry' for an undecryptable key", () => {
+  it("Admin: editable form unchanged, plus 'Needs re-entry' for an undecryptable key", async () => {
     renderKeys(false);
 
+    const openrouter = screen.getByRole("group", { name: "OpenRouter API key" });
+    expect(await within(openrouter).findByText("Needs re-entry")).toBeInTheDocument();
+    expect(within(openrouter).getByLabelText("OpenRouter API key")).toBeInTheDocument();
     expect(screen.queryByRole("note")).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Test connection" })).toHaveLength(5);
-    const openrouter = screen.getByRole("group", { name: "OpenRouter API key" });
-    expect(within(openrouter).getByLabelText("OpenRouter API key")).toBeInTheDocument();
-    expect(within(openrouter).getByText("Needs re-entry")).toBeInTheDocument();
     expect(screen.getAllByText("Configured")).toHaveLength(2);
   });
 });

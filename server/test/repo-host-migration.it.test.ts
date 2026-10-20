@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
@@ -7,7 +6,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dockerAvailable } from './helpers/pg.js';
+import { dockerAvailable, startEmptyPg, type EmptyPgFixture } from './helpers/pg.js';
 
 /**
  * Migration 0019 (GitLab support) must be purely additive for existing data:
@@ -43,17 +42,13 @@ function migrationsBefore0019(): string {
 }
 
 d('migration 0019 — repo host columns', () => {
-  let container: StartedPostgreSqlContainer;
+  let container: EmptyPgFixture;
   let sql: postgres.Sql;
   let oldDir: string;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer('pgvector/pgvector:pg16')
-      .withDatabase('devdigest')
-      .withUsername('devdigest')
-      .withPassword('devdigest')
-      .start();
-    sql = postgres(container.getConnectionUri(), { max: 1, onnotice: () => {} });
+    container = await startEmptyPg();
+    sql = postgres(container.url, { max: 1, onnotice: () => {} });
     await sql`CREATE EXTENSION IF NOT EXISTS vector`;
     oldDir = migrationsBefore0019();
     await migrate(drizzle(sql), { migrationsFolder: oldDir });

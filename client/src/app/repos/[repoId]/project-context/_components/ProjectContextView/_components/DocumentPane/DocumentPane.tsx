@@ -16,7 +16,7 @@ import { useTranslations } from "next-intl";
 import { Button, Icon, Markdown, Skeleton, Textarea } from "@devdigest/ui";
 import type { DiscoveredDocument } from "@devdigest/shared";
 import { useDocument, useSaveDocument } from "@/lib/hooks/projectContext";
-import { useCan } from "@/lib/permissions";
+import { useCan } from "@/lib/hooks/permissions";
 import { AdminOnly } from "@/components/admin-gate";
 import { splitPath } from "../../helpers";
 import { s } from "./styles";

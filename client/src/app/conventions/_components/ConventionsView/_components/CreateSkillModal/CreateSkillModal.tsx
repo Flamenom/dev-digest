@@ -29,7 +29,8 @@ export function CreateSkillModal({
   const t = useTranslations("conventions");
   const router = useRouter();
   const toast = useToast();
-  const create = useCreateSkill();
+  // The failure is shown inline under the form — not also as a global toast.
+  const create = useCreateSkill({ errorChannel: "local" });
 
   const [name, setName] = React.useState(() => defaultSkillName(repoFullName));
   const [description, setDescription] = React.useState(() =>

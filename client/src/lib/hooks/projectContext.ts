@@ -6,6 +6,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { errorChannelMeta } from "../query-meta";
 import type {
   Agent,
   DiscoveredDocument,
@@ -51,6 +52,8 @@ export function useSaveDocument(repoId: string) {
   return useMutation({
     mutationFn: (body: SaveDocumentBody) =>
       api.put<DocumentContent>(`/repos/${repoId}/project-context/document`, body),
+    // DocumentPane shows "Save failed" inline next to its Save button.
+    ...errorChannelMeta("local"),
     onSuccess: (data) => {
       qc.setQueryData(["project-document", repoId, data.path], data);
     },

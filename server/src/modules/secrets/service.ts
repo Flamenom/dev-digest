@@ -31,8 +31,17 @@ export function envNamesFor(key: SecretKey): readonly string[] {
   return [key, ...(LEGACY_ENV_ALIASES[key] ?? [])];
 }
 
+/**
+ * The `SecretStore` port plus a batched replace — the store shape rotation
+ * needs (consumer-defined: the shared port file is extend-only).
+ */
+export interface BatchSecretStore<Tx = unknown> extends SecretStore<Tx> {
+  /** Replace every record in ONE statement, all-or-nothing; joins `tx` when given. */
+  replaceMany: (records: readonly EncryptedSecretWrite[], tx?: Tx) => Promise<void>;
+}
+
 export interface SecretsMaintenanceDeps<Tx> {
-  store: SecretStore<Tx>;
+  store: BatchSecretStore<Tx>;
   audit: AuditLog<Tx>;
   /** Current 32-byte master key. Never logged. */
   masterKey: Buffer;
@@ -103,6 +112,7 @@ export class SecretsMaintenance<Tx> {
     const result = await store.transaction(async (tx) => {
       const rows = (await store.list(undefined, tx)).filter((r) => r.keyId === previousKeyId);
       const failedKeyNames: string[] = [];
+      const writes: EncryptedSecretWrite[] = [];
       const byWorkspace = new Map<string, string[]>();
       for (const row of rows) {
         const plaintext = tryOpen(row, previousKey);
@@ -111,7 +121,7 @@ export class SecretsMaintenance<Tx> {
           continue;
         }
         const sealed = seal(plaintext, masterKey, aadFor(row.workspaceId, row.keyName));
-        const write: EncryptedSecretWrite = {
+        writes.push({
           workspaceId: row.workspaceId,
           keyName: row.keyName,
           ciphertext: sealed.ciphertext,
@@ -119,12 +129,13 @@ export class SecretsMaintenance<Tx> {
           keyId: this.currentKeyId,
           // Rotation is not an edit: keep who last saved the value.
           updatedBy: row.updatedBy,
-        };
-        await store.upsert(write, tx);
+        });
         const names = byWorkspace.get(row.workspaceId) ?? [];
         names.push(row.keyName);
         byWorkspace.set(row.workspaceId, names);
       }
+      // One batched statement for every re-encrypted row (not a per-row loop).
+      await store.replaceMany(writes, tx);
       for (const [workspaceId, keyNames] of byWorkspace) {
         await audit.record(
           {

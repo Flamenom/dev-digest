@@ -1,9 +1,10 @@
 /* AgentCard — model chip, skills count, enabled toggle. Stats are an A5 mount;
    we render the provider/model + skill count here.
 
-   Multi-user (AC-33): the enabled toggle is an agent edit (PUT /agents/:id) and
-   the delete is destructive, both Admin-only — a Member sees neither (the
-   card's dimmed look still shows a disabled agent). Local mode = Admin. */
+   Multi-user (AC-33): the enabled toggle is an agent edit (PUT /agents/:id),
+   Admin-only — a Member sees it aria-disabled (focusable, announced disabled,
+   clicks ignored). The delete is destructive, so it stays hidden for a Member.
+   Local mode = Admin. */
 "use client";
 
 import React from "react";
@@ -11,7 +12,7 @@ import { useTranslations } from "next-intl";
 import { Icon, Badge, Toggle } from "@devdigest/ui";
 import type { Agent } from "@devdigest/shared";
 import { useDeleteAgent } from "@/lib/hooks/agents";
-import { useCan } from "@/lib/permissions";
+import { useCan } from "@/lib/hooks/permissions";
 import { HiddenForMember } from "@/components/admin-gate";
 import { modelColor } from "./helpers";
 import { s } from "./styles";
@@ -40,9 +41,15 @@ export function AgentCard({
           <Icon.Cpu size={15} />
         </div>
         <span style={s.name}>{ag.name}</span>
-        {onToggle && isAdmin && (
+        {onToggle && (
           <div onClick={(e) => e.stopPropagation()}>
-            <Toggle on={ag.enabled} onChange={onToggle} size={14} />
+            <Toggle
+              on={ag.enabled}
+              onChange={onToggle}
+              size={14}
+              label={t("card.toggleLabel", { name: ag.name })}
+              aria-disabled={!isAdmin}
+            />
           </div>
         )}
         <HiddenForMember>

@@ -45,10 +45,12 @@ export async function bootstrap(db: Db): Promise<BootstrapResult> {
       .orderBy(t.workspaces.createdAt)
       .limit(1);
     if (!ws) {
-      [ws] = await tx
+      const [created] = await tx
         .insert(t.workspaces)
         .values({ name: DEFAULT_WORKSPACE_NAME })
         .returning({ id: t.workspaces.id });
+      if (!created) throw new Error('bootstrap: inserting the default workspace returned no row');
+      ws = created;
       workspaceCreated = true;
     }
 
@@ -60,22 +62,24 @@ export async function bootstrap(db: Db): Promise<BootstrapResult> {
       .orderBy(t.users.createdAt)
       .limit(1);
     if (!user) {
-      [user] = await tx
+      const [created] = await tx
         .insert(t.users)
         .values({ email: SYSTEM_USER_EMAIL, name: 'You' })
         .returning({ id: t.users.id });
+      if (!created) throw new Error('bootstrap: inserting the system user returned no row');
+      user = created;
       userCreated = true;
     }
 
     const inserted = await tx
       .insert(t.workspaceMembers)
-      .values({ workspaceId: ws!.id, userId: user!.id, role: 'admin', joinedAt: new Date() })
+      .values({ workspaceId: ws.id, userId: user.id, role: 'admin', joinedAt: new Date() })
       .onConflictDoNothing()
       .returning({ userId: t.workspaceMembers.userId });
 
     return {
-      workspaceId: ws!.id,
-      userId: user!.id,
+      workspaceId: ws.id,
+      userId: user.id,
       created: { workspace: workspaceCreated, user: userCreated, membership: inserted.length > 0 },
     };
   });

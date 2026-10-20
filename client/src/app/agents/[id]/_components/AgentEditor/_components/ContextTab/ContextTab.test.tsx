@@ -1,39 +1,9 @@
-import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, within, cleanup, fireEvent, waitFor } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, DiscoveredDocument, DiscoverySummary, Repo } from "@devdigest/shared";
-import messages from "../../../../../../../../messages/en/agents.json";
-import authMessages from "../../../../../../../../messages/en/auth.json";
-
-// ContextTab talks to the API through lib/api only — mock it wholesale.
-vi.mock("@/lib/api", () => ({
-  api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn() },
-}));
-
-/* Multi-user gating reads the session probe: mocked as the local-mode Admin
-   (every control enabled, as before); a test may flip `session` to a Member. */
-const session = vi.hoisted(() => ({
-  mode: "local" as "local" | "google",
-  role: "admin" as "admin" | "member",
-  userId: "u-admin",
-}));
-vi.mock("@/lib/hooks/session", () => ({
-  SESSION_QUERY_KEY: ["session"],
-  useSession: () => ({
-    data: {
-      mode: session.mode,
-      user: { id: session.userId, email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: session.role },
-      workspace: { id: "w1", name: "Team" },
-    },
-    isPending: false,
-  }),
-}));
-
-import { api } from "@/lib/api";
+import { describe, it, expect } from "vitest";
+import { screen, within, fireEvent, waitFor } from "@testing-library/react";
+import type { Agent, DiscoveredDocument, DiscoverySummary } from "@devdigest/shared";
+import { useAgent } from "@/lib/hooks/agents";
+import { renderWithProviders, testRepo, type RouteRequest } from "@/test/render-with-providers";
 import { ContextTab } from "./ContextTab";
-
-afterEach(cleanup);
 
 const AGENT: Agent = {
   id: "ag1",
@@ -52,19 +22,7 @@ const AGENT: Agent = {
   attached_doc_paths: ["docs/beta.md", "specs/alpha.md"],
 };
 
-const REPOS: Repo[] = [
-  {
-    id: "r1",
-    workspace_id: "ws1",
-    owner: "acme",
-    name: "widget",
-    full_name: "acme/widget",
-    default_branch: "main",
-    clone_path: "/clones/acme/widget",
-    last_polled_at: null,
-    created_by: null,
-  },
-];
+const REPOS = [testRepo({ name: "widget", full_name: "acme/widget", clone_path: "/clones/acme/widget" })];
 
 const DOCUMENTS: DiscoveredDocument[] = [
   { path: "docs/beta.md", bucket: "docs", estimated_tokens: 200, used_by_agents: 1 },
@@ -81,39 +39,52 @@ const SUMMARY: DiscoverySummary = {
   clone_available: true,
 };
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  (api.get as Mock).mockImplementation((path: string) => {
-    if (path === "/repos") return Promise.resolve(REPOS);
-    if (path === "/repos/r1/project-context")
-      return Promise.resolve({ documents: DOCUMENTS, summary: SUMMARY });
-    return Promise.reject(new Error(`unexpected GET ${path}`));
-  });
-  (api.put as Mock).mockImplementation((_path: string, body: { paths: string[] }) =>
-    Promise.resolve({ ...AGENT, attached_doc_paths: body.paths }),
-  );
-});
-
-function renderTab() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <NextIntlClientProvider locale="en" messages={{ auth: authMessages, agents: messages }}>
-        <ContextTab agent={AGENT} />
-      </NextIntlClientProvider>
-    </QueryClientProvider>,
-  );
+/** Renders the tab from the real agent query, as the editor page does — so a
+    saved attach/reorder shows up once the agent re-reads. */
+function AgentContextFromApi() {
+  const { data } = useAgent("ag1");
+  return data ? <ContextTab agent={data} /> : null;
 }
 
-const rowNames = (rows: HTMLElement[]) =>
-  rows.map((r) => within(r).getByText(/\.md$/).textContent);
+function renderTab(session: "admin" | "member" = "admin") {
+  let agent = AGENT;
+  return renderWithProviders(<AgentContextFromApi />, {
+    session,
+    routes: {
+      "GET /repos": REPOS,
+      "GET /repos/r1/project-context": { documents: DOCUMENTS, summary: SUMMARY },
+      "GET /agents/ag1": () => agent,
+      "GET /agents": [],
+      "PUT /agents/ag1/attached-docs": (req: RouteRequest) => {
+        agent = { ...agent, attached_doc_paths: (req.body as { paths: string[] }).paths };
+        return agent;
+      },
+    },
+  });
+}
+
+const rowNames = () => screen.getAllByRole("listitem").map((r) => within(r).getByText(/\.md$/).textContent);
+
+function rowFor(name: string): HTMLElement {
+  const row = screen.getAllByRole("listitem").find((r) => within(r).queryByText(name));
+  if (!row) throw new Error(`no row for ${name}`);
+  return row;
+}
+
+/** A row's checkbox once the session resolved to Admin (live). */
+async function findLiveCheckbox(name: string) {
+  await screen.findAllByRole("listitem");
+  const box = within(rowFor(name)).getByRole("checkbox");
+  await waitFor(() => expect(box).not.toHaveAttribute("aria-disabled"));
+  return box;
+}
 
 describe("ContextTab", () => {
   it("renders attached docs first with the count, token estimate, per-row tokens, root-dir badges and untrusted note", async () => {
     renderTab();
-    const rows = await screen.findAllByRole("listitem");
+    await screen.findAllByRole("listitem");
     // Attached (beta, alpha — attach order) first, then the rest (gamma, api).
-    expect(rowNames(rows)).toEqual(["beta.md", "alpha.md", "gamma.md", "api.md"]);
+    expect(rowNames()).toEqual(["beta.md", "alpha.md", "gamma.md", "api.md"]);
     expect(screen.getByText("2 of 4 attached")).toBeInTheDocument();
     // Running estimate over the attached set: 200 + 100.
     expect(screen.getByText("≈ 300 tokens attached")).toBeInTheDocument();
@@ -122,85 +93,89 @@ describe("ContextTab", () => {
     ).toBeInTheDocument();
     // Rows show the folder path, a root-dir badge with a text label (not colour
     // alone) and the file's own token count.
-    const gammaRow = rows[2]!;
+    const gammaRow = rowFor("gamma.md");
     expect(within(gammaRow).getByText("insights/deep")).toBeInTheDocument();
     expect(within(gammaRow).getByText("insights")).toBeInTheDocument();
     expect(within(gammaRow).getByText("300 tokens")).toBeInTheDocument();
     // server/docs/api.md → badge "server" (root dir), NOT its bucket "docs".
-    const apiRow = rows[3]!;
+    const apiRow = rowFor("api.md");
     expect(within(apiRow).getByText("server")).toBeInTheDocument();
     expect(within(apiRow).queryByText("docs")).not.toBeInTheDocument();
     expect(within(apiRow).getByText("50 tokens")).toBeInTheDocument();
   });
 
-  it("attaching a document PUTs the full ordered path set with the new path appended", async () => {
-    renderTab();
-    const rows = await screen.findAllByRole("listitem");
-    const gammaRow = rows.find((r) => within(r).queryByText("gamma.md"))!;
-    fireEvent.click(within(gammaRow).getByRole("checkbox"));
-    await waitFor(() =>
-      expect(api.put).toHaveBeenCalledWith("/agents/ag1/attached-docs", {
-        paths: ["docs/beta.md", "specs/alpha.md", "insights/deep/gamma.md"],
-      }),
-    );
+  it("attaching a document appends it to the ordered attached set", async () => {
+    const { router } = renderTab();
+    fireEvent.click(await findLiveCheckbox("gamma.md"));
+    expect(await screen.findByText("3 of 4 attached")).toBeInTheDocument();
+    expect(rowNames().slice(0, 3)).toEqual(["beta.md", "alpha.md", "gamma.md"]);
+    expect(router.calls.find((c) => c.method === "PUT")?.body).toEqual({
+      paths: ["docs/beta.md", "specs/alpha.md", "insights/deep/gamma.md"],
+    });
   });
 
-  it("detaching a document PUTs the full ordered path set without it", async () => {
+  it("detaching a document drops it from the attached set", async () => {
     renderTab();
-    const rows = await screen.findAllByRole("listitem");
-    const betaRow = rows.find((r) => within(r).queryByText("beta.md"))!;
-    fireEvent.click(within(betaRow).getByRole("checkbox"));
-    await waitFor(() =>
-      expect(api.put).toHaveBeenCalledWith("/agents/ag1/attached-docs", {
-        paths: ["specs/alpha.md"],
-      }),
-    );
+    fireEvent.click(await findLiveCheckbox("beta.md"));
+    expect(await screen.findByText("1 of 4 attached")).toBeInTheDocument();
+    expect(within(rowFor("beta.md")).getByRole("checkbox")).not.toBeChecked();
   });
 
   it("search narrows the list by filename/path without changing attach state", async () => {
-    renderTab();
+    const { router } = renderTab();
     await screen.findAllByRole("listitem");
     fireEvent.change(screen.getByPlaceholderText("Filter documents…"), {
       target: { value: "alpha" },
     });
-    const filtered = screen.getAllByRole("listitem");
-    expect(rowNames(filtered)).toEqual(["alpha.md"]);
-    // Attach state is keyed by path — the visible attached row stays checked
-    // and no mutation was fired by filtering.
-    expect(within(filtered[0]!).getByRole("checkbox")).toBeChecked();
-    expect(api.put).not.toHaveBeenCalled();
+    expect(rowNames()).toEqual(["alpha.md"]);
+    // Attach state is keyed by path — the visible attached row stays checked.
+    expect(within(rowFor("alpha.md")).getByRole("checkbox")).toBeChecked();
     // Clearing the filter restores every row with attach state intact.
     fireEvent.change(screen.getByPlaceholderText("Filter documents…"), {
       target: { value: "" },
     });
     expect(screen.getAllByRole("listitem")).toHaveLength(4);
     expect(screen.getByText("2 of 4 attached")).toBeInTheDocument();
+    expect(router.calls.some((c) => c.method === "PUT")).toBe(false);
   });
 
-  it("move buttons (keyboard alternative to drag) persist the reordered path set", async () => {
+  it("move buttons (keyboard alternative to drag) reorder the attached set", async () => {
     renderTab();
-    const rows = await screen.findAllByRole("listitem");
-    const alphaRow = rows.find((r) => within(r).queryByText("alpha.md"))!;
-    fireEvent.click(within(alphaRow).getByRole("button", { name: "Move up" }));
-    await waitFor(() =>
-      expect(api.put).toHaveBeenCalledWith("/agents/ag1/attached-docs", {
-        paths: ["specs/alpha.md", "docs/beta.md"],
-      }),
-    );
+    await findLiveCheckbox("alpha.md");
+    fireEvent.click(within(rowFor("alpha.md")).getByRole("button", { name: "Move up" }));
+    await waitFor(() => expect(rowNames().slice(0, 2)).toEqual(["alpha.md", "beta.md"]));
   });
 
-  it("drag-reordering attached rows persists the new full order", async () => {
+  it("drag-reordering attached rows saves the new full order", async () => {
     renderTab();
-    const rows = await screen.findAllByRole("listitem");
-    const alphaRow = rows.find((r) => within(r).queryByText("alpha.md"))!;
-    const betaRow = rows.find((r) => within(r).queryByText("beta.md"))!;
+    await findLiveCheckbox("alpha.md");
+    const alphaRow = rowFor("alpha.md");
     fireEvent.dragStart(alphaRow);
-    fireEvent.dragOver(betaRow);
+    fireEvent.dragOver(rowFor("beta.md"));
     fireEvent.dragEnd(alphaRow);
-    await waitFor(() =>
-      expect(api.put).toHaveBeenCalledWith("/agents/ag1/attached-docs", {
-        paths: ["specs/alpha.md", "docs/beta.md"],
-      }),
-    );
+    await waitFor(() => expect(rowNames().slice(0, 2)).toEqual(["alpha.md", "beta.md"]));
+  });
+});
+
+/* AC-33: a Member sees the attached set read-only — attach checkboxes and move
+   buttons are shown aria-disabled, described by the visible "Admins only". */
+describe("ContextTab — role gating (AC-33)", () => {
+  it("Member: checkboxes and move buttons are aria-disabled, described by 'Admins only', and inert", async () => {
+    const { router } = renderTab("member");
+    expect(await screen.findByText("Admins only")).toBeVisible();
+
+    const gamma = within(rowFor("gamma.md")).getByRole("checkbox");
+    expect(gamma).toHaveAttribute("aria-disabled", "true");
+    expect(gamma).toHaveAccessibleDescription("Admins only");
+    fireEvent.click(gamma);
+    expect(gamma).not.toBeChecked();
+
+    const moveUp = within(rowFor("alpha.md")).getByRole("button", { name: "Move up" });
+    expect(moveUp).toHaveAttribute("aria-disabled", "true");
+    expect(moveUp).toHaveAccessibleDescription("Admins only");
+    fireEvent.click(moveUp);
+    expect(rowNames().slice(0, 2)).toEqual(["beta.md", "alpha.md"]);
+    expect(screen.getByText("2 of 4 attached")).toBeInTheDocument();
+    expect(router.calls.some((c) => c.method === "PUT")).toBe(false);
   });
 });

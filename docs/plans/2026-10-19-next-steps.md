@@ -209,6 +209,8 @@ Task D (GitLab comment posting) is still open. It can start now that C is done: 
 
 ### Task G: follow-ups from the multi-user `/pr-self-review` rounds (small each · ready)
 
+> **Status 2026-10-20:** G1–G8 are implemented on branch `feat/task-g-followups`. G2 was handled by documenting it: README has a pre-0024 upgrade note with a duplicate check, and no migration was added. Left open: Task D, and leftovers listed in the PR description.
+
 None of these block the push. Each needs a test.
 
 1. **Type-safety pass**, removing `as` casts:

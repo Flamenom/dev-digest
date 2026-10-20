@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import {
   SettingsUpdate,
@@ -18,6 +18,7 @@ import {
   toSecretsStatusDto,
   type ProviderSecretState,
 } from './helpers.js';
+import type { SettingsActor } from './service.js';
 
 /**
  * F1 — settings module.
@@ -29,11 +30,18 @@ import {
  * Secrets are NOT stored here — only non-secret prefs. test-connection reads
  * the key via SecretsProvider and does a cheap live call (listModels / GET user).
  * The key is never echoed back: failure messages pass through `redactSecret`.
- * Access + audit (settings.update / secret.save) are owned by the central
- * route policy (platform/auth/route-policy.ts) — not repeated here.
+ * Access is owned by the central route policy (platform/auth/route-policy.ts).
+ * The `settings.update` / `secret.save` audit rows are written by
+ * `SettingsService` inside the write's own transaction (google mode only —
+ * `audit: null` when no principal, i.e. local mode).
  */
 
 const UNSET: SecretKeyStatus = { state: 'unset', updatedAt: null, updatedBy: null };
+
+/** Audit context for a write: only an authenticated principal (google mode) is audited. */
+function auditContext(req: FastifyRequest): SettingsActor['audit'] {
+  return req.principal ? { ip: req.ip ?? null } : null;
+}
 
 /** AC-41: an undecryptable stored secret is a hard `secret_undecryptable` error, not a failed test. */
 function isSecretUndecryptable(err: unknown): boolean {
@@ -76,8 +84,7 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
 
   app.put('/settings', { schema: { body: SettingsUpdate } }, async (req) => {
     const { workspaceId, userId } = await getContext(container, req);
-    await container.settingsRepo.upsert(workspaceId, userId, req.body);
-    return rowsToSettings(await container.settingsRepo.listRows(workspaceId));
+    return container.settingsService.update({ workspaceId, userId, audit: auditContext(req) }, req.body);
   });
 
   app.post(
@@ -90,16 +97,21 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
       const { provider, key } = req.body;
       // Resolved OUTSIDE the try: an auth/context failure must surface as its
       // own error envelope, not as a `{ ok: false }` connection result.
-      const actorUserId = key ? (await getContext(container, req)).userId : null;
+      let actor: SettingsActor | null = null;
+      if (key) {
+        const { workspaceId, userId } = await getContext(container, req);
+        actor = { workspaceId, userId, audit: auditContext(req) };
+      }
       try {
         // If the UI supplied a key, persist it (BYO key) before testing so the
         // test reflects — and the rest of the app can use — the new value.
         // Google mode records the acting Admin on the encrypted row (AC-40).
-        if (key) {
+        // The `secret.save` audit row is written with the save itself.
+        if (key && actor) {
           if (!container.secrets.set) {
             return { provider, ok: false, message: 'Secrets backend is read-only' };
           }
-          await container.secretsWriter.set(SECRET_KEY_BY_PROVIDER[provider], key, actorUserId);
+          await container.settingsService.saveSecret(actor, SECRET_KEY_BY_PROVIDER[provider], key);
           container.invalidateSecretCaches();
         }
         if (provider === GITLAB_PROVIDER) {

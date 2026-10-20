@@ -16,7 +16,7 @@ import { useBulkConventionStatus, useConventions, useExtractConventions } from "
 import { useToast } from "@/lib/toast";
 import { AppShell } from "@/components/app-shell";
 import { AdminOnly } from "@/components/admin-gate";
-import { useCan } from "@/lib/permissions";
+import { useCan } from "@/lib/hooks/permissions";
 import { ConventionCard } from "./_components/ConventionCard";
 import { CreateSkillModal } from "./_components/CreateSkillModal";
 import { relativeTime } from "./helpers";

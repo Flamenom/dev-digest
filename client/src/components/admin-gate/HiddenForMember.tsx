@@ -4,7 +4,7 @@
 "use client";
 
 import React from "react";
-import { useCan } from "@/lib/permissions";
+import { useCan } from "@/lib/hooks/permissions";
 
 export function HiddenForMember({
   children,

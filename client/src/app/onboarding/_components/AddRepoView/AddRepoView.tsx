@@ -18,7 +18,7 @@ import { useTranslations } from "next-intl";
 import { Button, Icon, IconBtn, Kbd, TextInput, FormField } from "@devdigest/ui";
 import { useAddRepo } from "@/lib/hooks";
 import { AdminOnly } from "@/components/admin-gate";
-import { useCan } from "@/lib/permissions";
+import { useCan } from "@/lib/hooks/permissions";
 import { ApiError } from "@/lib/api";
 import { addRepoErrorCode } from "./helpers";
 import { s } from "./styles";

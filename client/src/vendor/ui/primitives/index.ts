@@ -1,5 +1,7 @@
 export type { Severity, Category, ButtonProps } from "./tokens";
 export { SEV, CAT } from "./tokens";
+export type { AriaDisabledProps } from "./aria-disabled";
+export { isAriaDisabled } from "./aria-disabled";
 export { Button } from "./Button";
 export { IconBtn } from "./IconBtn";
 export { Badge, SeverityBadge, CategoryTag } from "./Badge";

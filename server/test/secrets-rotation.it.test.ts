@@ -129,22 +129,16 @@ d('secrets rotation (Postgres)', () => {
     await p.set('OPENAI_API_KEY', 'synthetic-a');
     await p.set('GITLAB_TOKEN', 'synthetic-b');
 
-    let calls = 0;
-    const failing = new Proxy(store, {
-      get(target, prop, recv) {
-        if (prop === 'upsert') {
-          return async (...args: Parameters<SecretStoreRepository['upsert']>) => {
-            calls++;
-            if (calls === 2) throw new Error('injected failure');
-            return target.upsert(...args);
-          };
-        }
-        return Reflect.get(target, prop, recv);
+    // The batched replace runs first (one statement); the audit write that
+    // follows it in the SAME transaction fails → the replace must roll back.
+    const failingAudit = {
+      record: async () => {
+        throw new Error('injected failure');
       },
-    });
+    };
     const m = new SecretsMaintenance({
-      store: failing,
-      audit,
+      store,
+      audit: failingAudit,
       masterKey: current,
       previousKey: previous,
       managedKeys: MANAGED,

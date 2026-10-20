@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ActorRefValue } from '@devdigest/shared';
-import { withActors } from '../src/modules/_shared/actors.js';
+import { onlyResult, withActors } from '../src/modules/_shared/actors.js';
 
 /** Rec-3 — DTO actor enrichment with one batched lookup. */
 
@@ -71,5 +71,13 @@ describe('withActors', () => {
     expect(out).toEqual([{ id: 'a', by: null, created_by: null }]);
     expect(await withActors([], { created_by: () => 'u-1' }, lookup)).toEqual([]);
     expect(lookup).not.toHaveBeenCalled();
+  });
+});
+
+describe('onlyResult (G1: no `!` on one-element batch results)', () => {
+  it('returns the single element and throws a named error when the 1:1 contract breaks', () => {
+    expect(onlyResult([{ id: 'a' }], 'presentAgent')).toEqual({ id: 'a' });
+    expect(() => onlyResult([], 'presentAgent')).toThrow('presentAgent: expected exactly one result, got 0');
+    expect(() => onlyResult([1, 2], 'withCaseCreator')).toThrow('withCaseCreator: expected exactly one result, got 2');
   });
 });

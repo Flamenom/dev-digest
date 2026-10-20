@@ -37,7 +37,7 @@ import type {
   EvalCaseRecordWithActor,
   EvalRunResult,
 } from "@devdigest/shared";
-import { useCan } from "@/lib/permissions";
+import { useCan } from "@/lib/hooks/permissions";
 import { ActorLabel } from "@/components/actor-label";
 import {
   useCreateEvalCase,

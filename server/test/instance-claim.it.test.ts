@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { dockerAvailable } from './helpers/pg.js';
+import { dockerAvailable, startEmptyPg, type EmptyPgFixture } from './helpers/pg.js';
 import {
   claimInstance,
   INSTANCE_CLAIM_CONFLICT_MESSAGE,
@@ -20,26 +19,27 @@ if (!hasDocker) {
 }
 
 d('claimInstance (single-instance DB claim)', () => {
-  let container: StartedPostgreSqlContainer;
+  let container: EmptyPgFixture;
   let url: string;
   let observer: postgres.Sql;
 
-  /** Advisory locks on our key currently held by any session. */
+  /**
+   * Advisory locks on our key currently held by any session IN THIS DATABASE.
+   * The cluster is shared across test files (one DB each) and pg_locks is
+   * cluster-wide; advisory locks themselves are per-database, so filter by it.
+   */
   async function heldCount(): Promise<number> {
     const rows = await observer<{ count: number }[]>`
       select count(*)::int as count from pg_locks
       where locktype = 'advisory' and granted
+        and database = (select oid from pg_database where datname = current_database())
         and ((classid::bigint << 32) | objid::bigint) = ${INSTANCE_CLAIM_LOCK_KEY}::bigint`;
     return rows[0]!.count;
   }
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer('pgvector/pgvector:pg16')
-      .withDatabase('devdigest')
-      .withUsername('devdigest')
-      .withPassword('devdigest')
-      .start();
-    url = container.getConnectionUri();
+    container = await startEmptyPg();
+    url = container.url;
     observer = postgres(url, { max: 1 });
   });
 
@@ -74,7 +74,7 @@ d('claimInstance (single-instance DB claim)', () => {
     // Simulate the holder process dying: kill its backend from outside.
     await observer`
       select pg_terminate_backend(pid) from pg_stat_activity
-      where application_name = 'devdigest-instance-claim'`;
+      where application_name = 'devdigest-instance-claim' and datname = current_database()`;
     await expect.poll(heldCount, { timeout: 5000 }).toBe(0);
 
     const b = await claimInstance(url);

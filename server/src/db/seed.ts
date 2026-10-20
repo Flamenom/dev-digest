@@ -98,7 +98,8 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
       .values({ name: DEFAULT_WORKSPACE_NAME })
       .returning();
   }
-  const workspaceId = ws!.id;
+  if (!ws) throw new Error('seed: the default workspace could not be created');
+  const workspaceId = ws.id;
 
   let [user] = await db.select().from(t.users).where(eq(t.users.email, SYSTEM_USER_EMAIL));
   if (!user) {
@@ -107,7 +108,8 @@ export async function seed(db: Db): Promise<{ workspaceId: string; userId: strin
       .values({ email: SYSTEM_USER_EMAIL, name: 'You' })
       .returning();
   }
-  const userId = user!.id;
+  if (!user) throw new Error('seed: the system user could not be created');
+  const userId = user.id;
 
   await db
     .insert(t.workspaceMembers)

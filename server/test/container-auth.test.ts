@@ -6,7 +6,6 @@ import type {
   EncryptedSecretRecord,
   EncryptedSecretWrite,
   PrincipalProvider,
-  SecretStore,
 } from '@devdigest/shared';
 import { Container } from '../src/platform/container.js';
 import { loadConfig } from '../src/platform/config.js';
@@ -17,7 +16,7 @@ import { EncryptedSecretsProvider } from '../src/adapters/secrets/encrypted.js';
 import { LocalNoAuthProvider } from '../src/adapters/auth/local.js';
 import { GoogleIdentityProvider } from '../src/adapters/oidc/index.js';
 import { PrincipalService } from '../src/modules/identity/principal-service.js';
-import { SecretsMaintenance } from '../src/modules/secrets/service.js';
+import { SecretsMaintenance, type BatchSecretStore } from '../src/modules/secrets/service.js';
 
 /**
  * T19 — composition-root mode switching (hermetic: no getter here touches the
@@ -38,7 +37,7 @@ const GOOGLE_ENV = {
 } as const;
 
 /** In-memory `SecretStore` (no transactions needed by these tests). */
-class MemorySecretStore implements SecretStore<never> {
+class MemorySecretStore implements BatchSecretStore<never> {
   readonly rows = new Map<string, EncryptedSecretRecord>();
   private k(ws: string, key: string) {
     return `${ws}:${key}`;
@@ -52,6 +51,9 @@ class MemorySecretStore implements SecretStore<never> {
     if (this.rows.has(this.k(r.workspaceId, r.keyName))) return false;
     await this.upsert(r);
     return true;
+  };
+  replaceMany = async (records: readonly EncryptedSecretWrite[]) => {
+    for (const r of records) await this.upsert(r);
   };
   transaction = async <T>(fn: (tx: never) => Promise<T>) => fn(undefined as never);
 }

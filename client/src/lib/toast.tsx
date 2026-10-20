@@ -89,6 +89,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         }}
         role="status"
         aria-live="polite"
+        aria-label="Notifications"
       >
         {items.map((t) => {
           const c = COLORS[t.kind];

@@ -4,7 +4,7 @@ import React from "react";
 import { useTranslations } from "next-intl";
 import { Icon } from "@devdigest/ui";
 import { useMembers } from "@/lib/hooks";
-import { useCan } from "@/lib/permissions";
+import { useCan } from "@/lib/hooks/permissions";
 import { SectionTitle } from "../SectionTitle";
 import { MemberRow } from "./_components/MemberRow";
 import { MEMBER_ACTIONS_COLUMN, MEMBER_COLUMNS } from "./constants";

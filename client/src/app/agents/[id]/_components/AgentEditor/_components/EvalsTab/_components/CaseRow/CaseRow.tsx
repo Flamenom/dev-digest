@@ -100,10 +100,9 @@ export function CaseRow({ record, result, status, busy, onRun, onEdit, onDelete,
       </span>
       <Badge color={kind === "must_not_flag" ? "var(--text-secondary)" : "var(--accent)"}>{kindLabel}</Badge>
       <span style={s.actions}>
-        {/* `IconBtn` has no disabled state (vendored primitive, do-not-touch), so
-            a busy row simply drops the handler — the server would answer 409
-            `batch_already_running` anyway and 4xx stays silent. */}
-        <IconBtn icon="Play" label={t("evalsTab.run")} onClick={busy ? undefined : onRun} />
+        {/* A busy row keeps Run focusable but inert (aria-disabled) — the server
+            would answer 409 `batch_already_running` anyway. */}
+        <IconBtn icon="Play" label={t("evalsTab.run")} onClick={onRun} aria-disabled={busy} />
         {onEdit && <IconBtn icon="Edit" label={t("evalsTab.edit")} onClick={onEdit} />}
         {onDelete && <IconBtn icon="Trash" label={t("evalsTab.delete")} onClick={onDelete} danger />}
       </span>

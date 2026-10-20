@@ -233,6 +233,25 @@ Postgres); everything else is hermetic. The browser e2e flows live in
   data. Nothing is applied (all pending migrations run in one transaction).
   Remove the newer duplicate repository (keep the oldest), then re-run
   `pnpm db:migrate`.
+- **Upgrading a database created before migration `0024` (settings dedupe)** —
+  `0024` makes settings workspace-wide and collapses per-user duplicates of a
+  key to ONE row, keeping the "most recently written" one by `age(xmin)`. That
+  ranking is unreliable after a dump/restore or a `VACUUM FREEZE`, so when the
+  duplicates hold *different* values the wrong one may survive. If
+  `SELECT to_regclass('settings_ws_key_uq');` returns `NULL` (0024 not applied
+  yet), before `pnpm db:migrate`:
+  1. back up: `docker compose exec postgres pg_dump -U devdigest devdigest > devdigest-pre-0024.sql`;
+  2. list the conflicting duplicates:
+     ```sql
+     SELECT workspace_id, key, count(*) AS rows,
+            jsonb_agg(jsonb_build_object('id', id, 'user_id', user_id, 'value', value)) AS candidates
+     FROM settings
+     GROUP BY workspace_id, key
+     HAVING count(DISTINCT coalesce(value::text, '<sql null>')) > 1;
+     ```
+  3. for each row returned, keep the value you want and delete the others
+     (`DELETE FROM settings WHERE id IN (...)`), then run `pnpm db:migrate`.
+  Duplicates with identical values are harmless — `0024` keeps one of them.
 - **Adding a gitlab.com repo fails** — *Add a GitLab access token in Settings →
   API Keys* means no token is set; *token was rejected* means it is invalid or
   expired; *project can't be accessed* means the token can't see that project

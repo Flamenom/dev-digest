@@ -17,12 +17,15 @@ export function SkillCard({
   agentCount,
   onClick,
   onToggle,
+  canToggle = true,
 }: {
   skill: Skill;
   active?: boolean;
   agentCount: number;
   onClick?: () => void;
   onToggle?: (enabled: boolean) => void;
+  /** False → the toggle is shown aria-disabled (Member, AC-33). */
+  canToggle?: boolean;
 }) {
   const t = useTranslations("skills");
   const needsVetting = skill.source !== "manual" && !skill.enabled;
@@ -38,7 +41,13 @@ export function SkillCard({
         </span>
         {onToggle && (
           <div onClick={(e) => e.stopPropagation()}>
-            <Toggle on={skill.enabled} onChange={onToggle} size={14} />
+            <Toggle
+              on={skill.enabled}
+              onChange={onToggle}
+              size={14}
+              label={t("listItem.toggleLabel", { name: skill.name })}
+              aria-disabled={!canToggle}
+            />
           </div>
         )}
       </div>

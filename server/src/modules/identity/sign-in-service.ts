@@ -5,8 +5,9 @@
  * `start` mints a single-use flow (state + nonce + PKCE verifier + browser
  * binding, 10-minute TTL). `callback` runs, in this order and failing closed:
  *
- *   1. consume the flow — missing / mismatched binding / reused / expired
- *      → `auth_state_invalid` (AC-7);
+ *   1. consume the flow, atomically with the binding check — missing /
+ *      mismatched binding / reused / expired → `auth_state_invalid` (AC-7);
+ *      a mismatched binding leaves the flow in place;
  *   2. exchange the code — any failure → `auth_idp_unavailable` (AC-15);
  *   3. verify the ID token — any failure → `auth_token_invalid` (AC-8)
  *      (a JWKS outage stays `auth_idp_unavailable`);
@@ -33,7 +34,6 @@ import {
   codeVerifier,
   newSessionId,
   randomToken,
-  safeEqual,
   sha256Hex,
 } from '../../platform/crypto/tokens.js';
 import type { IdentityRepository, IdentityTx } from './repository.js';
@@ -219,12 +219,16 @@ export class SignInService {
     const now = this.deps.clock.now();
 
     // 1. Single-use, browser-bound, unexpired flow (AC-7).
-    if (!usable(input.state)) throw new Rejection('auth_state_invalid', null);
-    const flow = await this.deps.repo.oauthFlows.consume(sha256Hex(input.state), now);
+    // The binding check is part of the consume itself (one DELETE … WHERE
+    // state_hash AND binding_hash): a callback from another browser matches no
+    // row, so it can't burn the victim's in-flight flow.
+    if (!usable(input.state) || !usable(input.bindingValue)) throw new Rejection('auth_state_invalid', null);
+    const flow = await this.deps.repo.oauthFlows.consume(
+      sha256Hex(input.state),
+      sha256Hex(input.bindingValue),
+      now,
+    );
     if (!flow || flow.expiresAt.getTime() <= now.getTime()) {
-      throw new Rejection('auth_state_invalid', null);
-    }
-    if (!usable(input.bindingValue) || !safeEqual(sha256Hex(input.bindingValue), flow.bindingHash)) {
       throw new Rejection('auth_state_invalid', null);
     }
     // No code with a valid state ⇒ Google returned an error (consent denied, …) (AC-15).

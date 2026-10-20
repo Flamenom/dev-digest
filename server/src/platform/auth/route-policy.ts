@@ -28,7 +28,8 @@
  *    params / the JSON response and key NAMES from the body — never values
  *    (AC-52: no secrets, session ids, tokens or ID tokens in audit metadata).
  *    Events that need data the HTTP edge does not have (sign-in, members,
- *    tokens, rotation, import) are recorded by their services instead.
+ *    tokens, rotation, import) or must commit with their write (settings
+ *    update, secret save) are recorded by their services instead.
  *
  * Pure data + pure helpers: no Fastify, no I/O.
  */
@@ -97,11 +98,6 @@ export function savedSecretKeyName(body: unknown): SecretKey | null {
   // `toString` would otherwise resolve to Object.prototype members.
   if (!Object.hasOwn(SECRET_KEY_BY_PROVIDER, provider)) return null;
   return (SECRET_KEY_BY_PROVIDER as Record<string, SecretKey>)[provider] ?? null;
-}
-
-/** Sorted top-level body keys (settings update: names of the changed keys). */
-function bodyKeys(body: unknown): string[] {
-  return body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : [];
 }
 
 const audit = (
@@ -256,22 +252,14 @@ export const ROUTE_POLICY: Readonly<Record<string, RoutePolicy>> = Object.freeze
   // ── Settings + secrets ─────────────────────────────────────────────────────
   'GET /settings': MEMBER,
   'GET /settings/secrets-status': MEMBER,
-  'PUT /settings': {
-    access: 'admin',
-    audit: audit('settings.update', 'settings', {
-      targetId: () => null,
-      metadata: (ctx) => ({ changed_keys: bodyKeys(ctx.body) }),
-    }),
-  },
+  // `settings.update` / `secret.save` are audited by SettingsService inside the
+  // write's own transaction (durable, and tied to the write — not to the HTTP
+  // status), so these entries carry NO `audit` descriptor: nothing is double-written.
+  'PUT /settings': ADMIN,
   'POST /settings/test-connection': {
     access: 'admin',
     // AC-57: saving a key is a secret write → interactive session only.
     sessionOnly: ({ body }) => savedSecretKeyName(body) !== null,
-    audit: audit('secret.save', 'secret', {
-      when: (ctx) => savedSecretKeyName(ctx.body) !== null,
-      targetId: (ctx) => savedSecretKeyName(ctx.body),
-      metadata: (ctx) => ({ key_name: savedSecretKeyName(ctx.body) }),
-    }),
   },
 });
 

@@ -32,7 +32,12 @@ const inet = customType<{ data: string; driverData: string }>({
   dataType: () => 'inet',
 });
 
-/** Server-side sessions. The cookie carries the raw id; only its SHA-256 is stored. */
+/**
+ * Server-side sessions. The cookie carries the raw id; only its SHA-256 is stored.
+ * Storage: `fillfactor = 90` (migration 0026, SQL only — drizzle-orm 0.38's pgTable
+ * cannot declare table storage parameters) so the request-path `last_seen_at` touch
+ * stays a HOT update.
+ */
 export const sessions = pgTable(
   'sessions',
   {
@@ -85,7 +90,11 @@ export const oauthFlows = pgTable(
   }),
 );
 
-/** Personal API tokens (bearer auth for the MCP server). Only the hash + display prefix are stored. */
+/**
+ * Personal API tokens (bearer auth for the MCP server). Only the hash + display prefix are stored.
+ * Storage: `fillfactor = 90` (migration 0026, SQL only — see `sessions`) for HOT
+ * `last_used_at` updates on every bearer call.
+ */
 export const apiTokens = pgTable(
   'api_tokens',
   {

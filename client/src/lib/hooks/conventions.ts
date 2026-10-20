@@ -9,6 +9,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { errorChannelMeta } from "../query-meta";
 import type {
   Convention,
   ConventionExtractResponse,
@@ -31,6 +32,8 @@ export function useExtractConventions(repoId: string | null | undefined) {
   return useMutation({
     mutationFn: () =>
       api.post<ConventionExtractResponse>(`/repos/${repoId}/conventions/extract`),
+    // ConventionsView raises its own "extraction failed" toast.
+    ...errorChannelMeta("local"),
     onSuccess: (data) => {
       qc.setQueryData<ConventionListResponse>(["conventions", repoId], data);
     },

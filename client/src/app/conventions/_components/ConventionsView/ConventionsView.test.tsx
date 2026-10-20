@@ -1,60 +1,13 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
-import type { ConventionListResponse } from "@devdigest/shared";
-import messages from "../../../../../messages/en/conventions.json";
-import authMessages from "../../../../../messages/en/auth.json";
-
-// Multi-user gating: drive the session-derived role directly ("admin" =
-// today's behaviour, also what local mode resolves to).
-const perm = vi.hoisted(() => ({ role: "admin" as "admin" | "member" }));
-vi.mock("@/lib/permissions", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/permissions")>();
-  const current = () =>
-    actual.buildPermissions({ mode: "google", role: perm.role, userId: "u1", isPending: false });
-  return { ...actual, useCan: current, useIsAdmin: () => current().isAdmin };
-});
-
-vi.mock("@/components/app-shell", () => ({
-  AppShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-}));
-
-vi.mock("@/lib/toast", () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }),
-}));
-
-vi.mock("@/lib/repo-context", () => ({
-  useActiveRepo: () => ({
-    repoId: "r1",
-    activeRepo: { id: "r1", full_name: "acme/payments-api" },
-    repos: [],
-    reposLoaded: true,
-    setRepoId: vi.fn(),
-  }),
-}));
-
-const extractMutate = vi.fn();
-const bulkMutate = vi.fn();
-let queryState: {
-  data?: ConventionListResponse;
-  isLoading: boolean;
-  isError: boolean;
-  refetch: () => void;
-};
-vi.mock("@/lib/hooks/conventions", () => ({
-  useConventions: () => queryState,
-  useExtractConventions: () => ({ mutate: extractMutate, isPending: false }),
-  useBulkConventionStatus: () => ({ mutate: bulkMutate, isPending: false }),
-  useUpdateConvention: () => ({ mutate: vi.fn(), isPending: false }),
-}));
-
+import { describe, it, expect, vi } from "vitest";
+import { screen, fireEvent, waitFor } from "@testing-library/react";
+import type { Convention, ConventionListResponse } from "@devdigest/shared";
+import { apiError, renderWithProviders, testRepo, type RouteRequest, type Routes } from "@/test/render-with-providers";
 import { ConventionsView } from "./ConventionsView";
 
-afterEach(() => {
-  cleanup();
-  extractMutate.mockClear();
-  bulkMutate.mockClear();
-});
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/conventions",
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+}));
 
 const POPULATED: ConventionListResponse = {
   conventions: [
@@ -88,89 +41,105 @@ const POPULATED: ConventionListResponse = {
   stats: { sampledFileCount: 84, droppedCount: 2, lastScanAt: new Date().toISOString() },
 };
 
-function renderView() {
-  render(
-    <NextIntlClientProvider locale="en" messages={{ conventions: messages, auth: authMessages }}>
-      <ConventionsView />
-    </NextIntlClientProvider>,
-  );
+/** In-memory conventions API for repo r1 (extract returns POPULATED; bulk PATCH resets status). */
+function conventionsApi(initial: ConventionListResponse, extra: Routes = {}): Routes {
+  let list = initial;
+  return {
+    "GET /repos": [testRepo()],
+    "GET /repos/r1/conventions": () => list,
+    "POST /repos/r1/conventions/extract": () => {
+      list = POPULATED;
+      return list;
+    },
+    "PATCH /repos/r1/conventions": (req: RouteRequest) => {
+      const { status } = req.body as { status: Convention["status"] };
+      list = { ...list, conventions: list.conventions.map((c) => ({ ...c, status })) };
+      return { updated: list.conventions.length };
+    },
+    ...extra,
+  };
+}
+
+const EMPTY: ConventionListResponse = { conventions: [], stats: null };
+
+function renderView(list: ConventionListResponse, session: "admin" | "member" = "admin", extra: Routes = {}) {
+  return renderWithProviders(<ConventionsView />, {
+    session,
+    routes: conventionsApi(list, extra),
+    repoProvider: true,
+  });
+}
+
+/** Wait until the session resolved to Admin (gated controls live). */
+async function findLive(name: RegExp) {
+  const btn = await screen.findByRole("button", { name });
+  await waitFor(() => expect(btn).not.toHaveAttribute("aria-disabled"));
+  return btn;
 }
 
 describe("ConventionsView", () => {
-  it("empty state: Run extraction CTA triggers the extract mutation", () => {
-    queryState = {
-      data: { conventions: [], stats: null },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    };
-    renderView();
-    expect(screen.getByText("No conventions extracted yet")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Run extraction"));
-    expect(extractMutate).toHaveBeenCalledTimes(1);
+  it("empty state: Run extraction scans and shows the extracted conventions", async () => {
+    renderView(EMPTY);
+    expect(await screen.findByText("No conventions extracted yet")).toBeInTheDocument();
+    fireEvent.click(await findLive(/Run extraction/));
+    expect(await screen.findByText("Redis access goes through the singleton")).toBeInTheDocument();
   });
 
-  it("populated: heading, scan meta, accepted count, cards; Deselect all resets to pending", () => {
-    queryState = { data: POPULATED, isLoading: false, isError: false, refetch: vi.fn() };
-    renderView();
-    expect(screen.getByText("acme/payments-api")).toBeInTheDocument();
-    expect(screen.getByText(/Detected from 84 sample files/)).toBeInTheDocument();
+  it("populated: heading, scan meta, accepted count, cards; Deselect all resets to pending", async () => {
+    renderView(POPULATED);
+    expect(await screen.findByText("acme/payments-api")).toBeInTheDocument();
+    expect(await screen.findByText(/Detected from 84 sample files/)).toBeInTheDocument();
     expect(screen.getByText(/2 ungrounded candidates dropped/)).toBeInTheDocument();
     expect(screen.getByText("1 of 2 accepted")).toBeInTheDocument();
     expect(screen.getByText("Redis access goes through the singleton")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("Deselect all"));
-    expect(bulkMutate).toHaveBeenCalledWith("pending");
-    fireEvent.click(screen.getByText("Re-scan"));
-    expect(extractMutate).toHaveBeenCalled();
+    fireEvent.click(await findLive(/Deselect all/));
+    expect(await screen.findByText("0 of 2 accepted")).toBeInTheDocument();
   });
 
-  it("error state renders the load error with retry", () => {
-    const refetch = vi.fn();
-    queryState = { isLoading: false, isError: true, refetch };
-    renderView();
-    expect(screen.getByText("Could not load conventions.")).toBeInTheDocument();
+  it("a failed extraction raises exactly one toast — the view's own message, not the generic one", async () => {
+    renderView(EMPTY, "admin", {
+      "POST /repos/r1/conventions/extract": () => apiError(500, "internal", "boom from the API"),
+    });
+    fireEvent.click(await findLive(/Run extraction/));
+    expect(await screen.findByText("Extraction failed")).toBeInTheDocument();
+    expect(screen.queryByText("boom from the API")).not.toBeInTheDocument();
+  });
+
+  it("error state renders the load error", async () => {
+    renderView(EMPTY, "admin", { "GET /repos/r1/conventions": () => apiError(404, "not_found") });
+    expect(await screen.findByText("Could not load conventions.")).toBeInTheDocument();
   });
 });
 
 describe("ConventionsView gating (AC-33)", () => {
-  afterEach(() => {
-    perm.role = "admin";
-  });
-
-  it("Member: Run extraction is aria-disabled with an 'Admins only' hint and does not extract", () => {
-    perm.role = "member";
-    queryState = { data: { conventions: [], stats: null }, isLoading: false, isError: false, refetch: vi.fn() };
-    renderView();
-    const run = screen.getByRole("button", { name: /Run extraction/ });
+  it("Member: Run extraction is aria-disabled with an 'Admins only' hint and does not extract", async () => {
+    const { router } = renderView(EMPTY, "member");
+    const run = await screen.findByRole("button", { name: /Run extraction/, description: "Admins only" });
     expect(run).toHaveAttribute("aria-disabled", "true");
-    expect(run).toHaveAccessibleDescription("Admins only");
     fireEvent.click(run);
-    expect(extractMutate).not.toHaveBeenCalled();
+    expect(screen.getByText("No conventions extracted yet")).toBeInTheDocument();
+    expect(router.calls.some((c) => c.method === "POST")).toBe(false);
   });
 
-  it("Member: Re-scan, Deselect all and Create skill are aria-disabled and inert; the list stays readable", () => {
-    perm.role = "member";
-    queryState = { data: POPULATED, isLoading: false, isError: false, refetch: vi.fn() };
-    renderView();
+  it("Member: Re-scan, Deselect all and Create skill are aria-disabled and inert; the list stays readable", async () => {
+    const { router } = renderView(POPULATED, "member");
+    await screen.findByRole("button", { name: /Re-scan/, description: "Admins only" });
     for (const name of [/Re-scan/, /Deselect all/, /Create skill/]) {
       const btn = screen.getByRole("button", { name });
       expect(btn).toHaveAttribute("aria-disabled", "true");
       expect(btn).toHaveAccessibleDescription("Admins only");
       fireEvent.click(btn);
     }
-    expect(extractMutate).not.toHaveBeenCalled();
-    expect(bulkMutate).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByText("1 of 2 accepted")).toBeInTheDocument();
     expect(screen.getByText("Redis access goes through the singleton")).toBeInTheDocument();
+    expect(router.calls.some((c) => c.method !== "GET")).toBe(false);
   });
 
-  it("Admin: the same controls are enabled with no hint", () => {
-    queryState = { data: POPULATED, isLoading: false, isError: false, refetch: vi.fn() };
-    renderView();
-    for (const name of [/Re-scan/, /Deselect all/, /Create skill/]) {
-      expect(screen.getByRole("button", { name })).not.toHaveAttribute("aria-disabled");
-    }
+  it("Admin: the same controls are enabled with no hint", async () => {
+    renderView(POPULATED);
+    for (const name of [/Re-scan/, /Deselect all/, /Create skill/]) await findLive(name);
     expect(screen.queryByText("Admins only")).not.toBeInTheDocument();
   });
 });

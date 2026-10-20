@@ -1,6 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
+import { screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type {
   EvalAgentSummary,
   EvalBatchRecord,
@@ -8,94 +7,21 @@ import type {
   EvalDashboardOverview,
   EvalRunAllResult,
 } from "@devdigest/shared";
-import evalMessages from "../../../../../messages/en/eval.json";
-import authMessages from "../../../../../messages/en/auth.json";
-import agentMessages from "../../../../../messages/en/agents.json";
-
-/* The client test harness has no MSW and no QueryClientProvider, so the data
-   layer is a mutable module-scope state object (the established pattern). */
-const state: {
-  overview: EvalDashboardOverview | undefined;
-  isLoading: boolean;
-  isError: boolean;
-  runAllData: EvalRunAllResult | undefined;
-  caseRecord: EvalCaseRecord | undefined;
-} = {
-  overview: undefined,
-  isLoading: false,
-  isError: false,
-  runAllData: undefined,
-  caseRecord: undefined,
-};
+import { renderWithProviders, type Routes } from "@/test/render-with-providers";
+import { EvalDashboard } from "./EvalDashboard";
 
 const replace = vi.fn();
 const searchParams = { value: new URLSearchParams() };
 vi.mock("next/navigation", () => ({
+  usePathname: () => "/evals",
   useRouter: () => ({ push: vi.fn(), replace }),
   useSearchParams: () => searchParams.value,
   useParams: () => ({}),
 }));
 
-vi.mock("@/components/app-shell", () => ({
-  AppShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-}));
-
-const runAllMutate = vi.fn();
-vi.mock("@/lib/hooks/eval", () => ({
-  useEvalDashboard: () => ({
-    data: state.overview,
-    isLoading: state.isLoading,
-    isError: state.isError,
-    refetch: vi.fn(),
-  }),
-  useRunAllEvals: () => ({
-    mutate: runAllMutate,
-    isPending: false,
-    data: state.runAllData,
-  }),
-  useEvalCase: () => ({ data: state.caseRecord, isLoading: false }),
-  // The deep link always targets an EXISTING case, so the editor never asks
-  // for a from-finding draft here.
-  useEvalCaseDraft: () => ({ data: undefined, isLoading: false }),
-  useCreateEvalCaseFromFinding: () => ({ mutate: vi.fn(), isPending: false }),
-  useRunDraftEvalCase: () => ({ mutate: vi.fn(), isPending: false }),
-  useCreateEvalCase: () => ({ mutate: vi.fn(), isPending: false }),
-  useUpdateEvalCase: () => ({ mutate: vi.fn(), isPending: false }),
-  useDeleteEvalCase: () => ({ mutate: vi.fn(), isPending: false }),
-  useRunEvalCase: () => ({ mutate: vi.fn(), isPending: false }),
-}));
-
-/* Multi-user gating reads the session probe: mocked as the local-mode Admin
-   (every control enabled, as before); a test may flip `session` to a Member. */
-const session = vi.hoisted(() => ({
-  mode: "local" as "local" | "google",
-  role: "admin" as "admin" | "member",
-  userId: "u-admin",
-}));
-vi.mock("@/lib/hooks/session", () => ({
-  SESSION_QUERY_KEY: ["session"],
-  useSession: () => ({
-    data: {
-      mode: session.mode,
-      user: { id: session.userId, email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: session.role },
-      workspace: { id: "w1", name: "Team" },
-    },
-    isPending: false,
-  }),
-}));
-
-import { EvalDashboard } from "./EvalDashboard";
-
 afterEach(() => {
-  cleanup();
-  runAllMutate.mockClear();
   replace.mockClear();
   searchParams.value = new URLSearchParams();
-  state.overview = undefined;
-  state.isLoading = false;
-  state.isError = false;
-  state.runAllData = undefined;
-  state.caseRecord = undefined;
 });
 
 function batch(over: Partial<EvalBatchRecord> = {}): EvalBatchRecord {
@@ -140,20 +66,26 @@ function agent(over: Partial<EvalAgentSummary> = {}): EvalAgentSummary {
   };
 }
 
-function renderDashboard() {
-  render(
-    <NextIntlClientProvider
-      locale="en"
-      messages={{ auth: authMessages, eval: evalMessages, agents: agentMessages }}
-    >
-      <EvalDashboard />
-    </NextIntlClientProvider>,
-  );
+function renderDashboard(overview: EvalDashboardOverview, extra: Routes = {}) {
+  return renderWithProviders(<EvalDashboard />, {
+    routes: { "GET /evals/dashboard": overview, ...extra },
+  });
+}
+
+/** The Run-all summary (the toast region is a `status` too, named "Notifications"). */
+async function findRunAllSummary(): Promise<HTMLElement> {
+  let summary: HTMLElement | undefined;
+  await waitFor(() => {
+    summary = screen.getAllByRole("status").find((el) => el.getAttribute("aria-label") !== "Notifications");
+    expect(summary).toBeDefined();
+  });
+  if (!summary) throw new Error("no run-all summary");
+  return summary;
 }
 
 describe("EvalDashboard (/evals overview)", () => {
-  it("lists agent row-cards with their latest-batch metrics and the all-agents run table", () => {
-    state.overview = {
+  it("lists agent row-cards with their latest-batch metrics and the all-agents run table", async () => {
+    renderDashboard({
       agents: [
         agent(),
         agent({
@@ -179,11 +111,10 @@ describe("EvalDashboard (/evals overview)", () => {
         }),
       ],
       recent_batches: [batch(), batch({ batch_id: "b2", agent_id: "ag2", agent_name: "Test Quality Reviewer" })],
-    };
-    renderDashboard();
+    });
 
     // Row-cards: name, model badge, sub-line, metric columns, chevron link.
-    const card = screen.getByRole("link", { name: "Security Reviewer" });
+    const card = await screen.findByRole("link", { name: "Security Reviewer" });
     expect(card).toHaveAttribute("href", "/evals/ag1");
     expect(within(card).getByText("anthropic/claude-opus-4")).toBeInTheDocument();
     expect(within(card).getByText(/Last run v7 ·/)).toHaveTextContent("17/20 pass");
@@ -197,35 +128,31 @@ describe("EvalDashboard (/evals overview)", () => {
 
     // …and the all-agents table lists both batches.
     expect(screen.getByText("Recent eval runs · all agents")).toBeInTheDocument();
-    const rows = screen.getAllByRole("row");
+    const [, firstBatchRow, ...others] = within(screen.getByRole("table")).getAllByRole("row");
     // 1 header + 2 batch rows
-    expect(rows).toHaveLength(3);
-    expect(within(rows[1]!).getByText("Security Reviewer")).toBeInTheDocument();
+    expect(others).toHaveLength(1);
+    if (!firstBatchRow) throw new Error("no batch row");
+    expect(within(firstBatchRow).getByText("Security Reviewer")).toBeInTheDocument();
   });
 
-  it("shows the empty state and disables Run all agents when no agent has cases (AC-20)", () => {
-    state.overview = { agents: [], recent_batches: [] };
-    renderDashboard();
+  it("shows the empty state and disables Run all agents when no agent has cases (AC-20)", async () => {
+    renderDashboard({ agents: [], recent_batches: [] });
 
-    expect(screen.getByText("No eval cases")).toBeInTheDocument();
+    expect(await screen.findByText("No eval cases")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /run all agents/i })).toBeDisabled();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
-  it("shows an agent with zero cases as 'No eval cases' and keeps Run all disabled (AC-20)", () => {
-    state.overview = {
-      agents: [agent({ cases_total: 0, last_batch: null, sparkline: [] })],
-      recent_batches: [],
-    };
-    renderDashboard();
+  it("shows an agent with zero cases as 'No eval cases' and keeps Run all disabled (AC-20)", async () => {
+    renderDashboard({ agents: [agent({ cases_total: 0, last_batch: null, sparkline: [] })], recent_batches: [] });
 
-    const card = screen.getByRole("link", { name: "Security Reviewer" });
+    const card = await screen.findByRole("link", { name: "Security Reviewer" });
     expect(within(card).getByText("No eval cases")).toBeInTheDocument();
     expect(within(card).getAllByText("—")).toHaveLength(3);
     expect(screen.getByRole("button", { name: /run all agents/i })).toBeDisabled();
   });
 
-  it("shows a progress indicator instead of metric values while a batch runs (AC-22)", () => {
+  it("shows a progress indicator instead of metric values while a batch runs (AC-22)", async () => {
     const running = batch({
       status: "running",
       cases_passed: 5,
@@ -235,14 +162,10 @@ describe("EvalDashboard (/evals overview)", () => {
       precision: 0.99,
       citation_accuracy: 0.99,
     });
-    state.overview = {
-      agents: [agent({ last_batch: running })],
-      recent_batches: [running],
-    };
-    renderDashboard();
+    renderDashboard({ agents: [agent({ last_batch: running })], recent_batches: [running] });
 
     // Both the row-card and the table row swap numbers for progress.
-    const bars = screen.getAllByRole("progressbar");
+    const bars = await screen.findAllByRole("progressbar");
     expect(bars).toHaveLength(2);
     for (const bar of bars) {
       expect(bar).toHaveAttribute("aria-valuenow", "7");
@@ -253,15 +176,8 @@ describe("EvalDashboard (/evals overview)", () => {
     expect(screen.queryByText("99%")).not.toBeInTheDocument();
   });
 
-  it("runs all agents and explains every skipped one (AC-34)", () => {
-    state.overview = { agents: [agent()], recent_batches: [] };
-    renderDashboard();
-
-    fireEvent.click(screen.getByRole("button", { name: /run all agents/i }));
-    expect(runAllMutate).toHaveBeenCalledTimes(1);
-
-    cleanup();
-    state.runAllData = {
+  it("runs all agents and explains every skipped one (AC-34)", async () => {
+    const result: EvalRunAllResult = {
       started: [{ batch_id: "b9", agent_id: "ag1", agent_version: 7, cases_total: 20 }],
       skipped: [
         { agent_id: "ag2", agent_name: "Test Quality Reviewer", reason: "no_cases" },
@@ -269,9 +185,13 @@ describe("EvalDashboard (/evals overview)", () => {
         { agent_id: "ag4", agent_name: "Docs Reviewer", reason: "disabled" },
       ],
     };
-    renderDashboard();
+    renderDashboard({ agents: [agent()], recent_batches: [] }, { "POST /evals/run-all": result });
 
-    const summary = screen.getByRole("status");
+    const runAll = await screen.findByRole("button", { name: /run all agents/i });
+    await waitFor(() => expect(runAll).toBeEnabled());
+    fireEvent.click(runAll);
+
+    const summary = await findRunAllSummary();
     expect(within(summary).getByText("Test Quality Reviewer")).toBeInTheDocument();
     expect(within(summary).getByText("No eval cases")).toBeInTheDocument();
     expect(within(summary).getByText(/a batch is already running/i)).toBeInTheDocument();
@@ -279,9 +199,8 @@ describe("EvalDashboard (/evals overview)", () => {
     expect(within(summary).getByText("disabled")).toBeInTheDocument();
   });
 
-  it("opens the case editor for ?case=<uuid> and clears the param on close", () => {
-    state.overview = { agents: [agent()], recent_batches: [] };
-    state.caseRecord = {
+  it("opens the case editor for ?case=<uuid> and clears the param on close", async () => {
+    const caseRecord: EvalCaseRecord = {
       id: "case-1",
       owner_kind: "agent",
       owner_id: "ag1",
@@ -294,14 +213,14 @@ describe("EvalDashboard (/evals overview)", () => {
       diff_warnings: [],
     };
     searchParams.value = new URLSearchParams("case=case-1");
-    renderDashboard();
+    renderDashboard({ agents: [agent()], recent_batches: [] }, { "GET /eval-cases/case-1": caseRecord });
 
-    const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByDisplayValue("stripe-key-leak")).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByDisplayValue("stripe-key-leak")).toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole("button", { name: /cancel/i }));
     // useQueryParam removes the key by rewriting the URL through router.replace.
     expect(replace).toHaveBeenCalled();
-    expect(String(replace.mock.calls[0]![0])).not.toContain("case=case-1");
+    expect(String(replace.mock.calls.at(0)?.[0])).not.toContain("case=case-1");
   });
 });

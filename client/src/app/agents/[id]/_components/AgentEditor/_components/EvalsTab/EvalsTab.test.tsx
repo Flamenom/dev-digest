@@ -1,73 +1,30 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
+import { describe, it, expect } from "vitest";
+import { screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type {
   Agent,
   EvalAgentDashboard,
   EvalBatchRecord,
   EvalBatchStarted,
-  EvalCaseRecord,
+  EvalCaseRecordWithActor,
   EvalCaseRunRecord,
 } from "@devdigest/shared";
 import messages from "../../../../../../../../messages/en/eval.json";
-import authMessages from "../../../../../../../../messages/en/auth.json";
+import {
+  apiError,
+  renderWithProviders,
+  sessionFor,
+  type RouteRequest,
+  type Routes,
+} from "@/test/render-with-providers";
+import { EvalsTab } from "./EvalsTab";
 
-/* The client test harness has no MSW and no QueryClientProvider, so the whole
-   eval data layer is replaced by a mutable module-scope state object. */
-const state: {
-  cases: EvalCaseRecord[];
-  dashboard: EvalAgentDashboard | undefined;
-  runs: EvalCaseRunRecord[];
-  casesLoading: boolean;
-} = { cases: [], dashboard: undefined, runs: [], casesLoading: false };
-
-type MutateOpts<T> = { onSuccess?: (v: T) => void; onError?: (e: unknown) => void };
-
+/** 202 + `batch_id` — the tab stores it and starts merging that batch's rows. */
 const STARTED: EvalBatchStarted = {
   batch_id: "batch-1",
   agent_id: "ag1",
   agent_version: 7,
   cases_total: 2,
 };
-
-/** 202 + `batch_id` — the tab stores it and starts merging that batch's rows. */
-const startMutate = vi.fn((_v: unknown, opts?: MutateOpts<EvalBatchStarted>) => opts?.onSuccess?.(STARTED));
-const runCaseMutate = vi.fn();
-const deleteMutate = vi.fn();
-
-vi.mock("@/lib/hooks/eval", () => ({
-  useAgentEvalCases: () => ({ data: state.cases, isLoading: state.casesLoading }),
-  useAgentEvalDashboard: () => ({ data: state.dashboard, isLoading: false }),
-  useAgentEvalRuns: () => ({ data: state.runs }),
-  useStartEvalBatch: () => ({ mutate: startMutate, isPending: false }),
-  useRunEvalCase: () => ({ mutate: runCaseMutate, isPending: false }),
-  useDeleteEvalCase: () => ({ mutate: deleteMutate, isPending: false }),
-  // Reached only when the case-editor modal opens (T22 owns its own tests).
-  useEvalCase: () => ({ data: undefined, isLoading: false }),
-  useCreateEvalCase: () => ({ mutate: vi.fn(), isPending: false }),
-  useUpdateEvalCase: () => ({ mutate: vi.fn(), isPending: false }),
-}));
-
-/* Multi-user gating reads the session probe: mocked as the local-mode Admin
-   (every control enabled, as before); a test may flip `session` to a Member. */
-const session = vi.hoisted(() => ({
-  mode: "local" as "local" | "google",
-  role: "admin" as "admin" | "member",
-  userId: "u-admin",
-}));
-vi.mock("@/lib/hooks/session", () => ({
-  SESSION_QUERY_KEY: ["session"],
-  useSession: () => ({
-    data: {
-      mode: session.mode,
-      user: { id: session.userId, email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: session.role },
-      workspace: { id: "w1", name: "Team" },
-    },
-    isPending: false,
-  }),
-}));
-
-import { EvalsTab } from "./EvalsTab";
 
 const AGENT: Agent = {
   id: "ag1",
@@ -85,7 +42,11 @@ const AGENT: Agent = {
   attached_doc_paths: [],
 };
 
-const evalCase = (id: string, name: string, over: Partial<EvalCaseRecord> = {}): EvalCaseRecord => ({
+const evalCase = (
+  id: string,
+  name: string,
+  over: Partial<EvalCaseRecordWithActor> = {},
+): EvalCaseRecordWithActor => ({
   id,
   owner_kind: "agent",
   owner_id: "ag1",
@@ -162,69 +123,78 @@ const runRow = (caseId: string, over: Partial<EvalCaseRunRecord> = {}): EvalCase
   ...over,
 });
 
-afterEach(() => {
-  cleanup();
-  state.cases = [];
-  state.dashboard = undefined;
-  state.runs = [];
-  state.casesLoading = false;
-  vi.clearAllMocks();
-});
-
-function renderTab() {
-  render(
-    <NextIntlClientProvider locale="en" messages={{ auth: authMessages, eval: messages }}>
-      <EvalsTab agent={AGENT} />
-    </NextIntlClientProvider>,
-  );
+interface EvalsApi {
+  cases?: EvalCaseRecordWithActor[];
+  dashboard?: EvalAgentDashboard;
+  /** Rows of the started batch (served once the tab asks for `batch_id`). */
+  runs?: EvalCaseRunRecord[];
+  extra?: Routes;
 }
 
-const rowNamed = (name: string) =>
-  screen.getAllByRole("listitem").find((li) => within(li).queryByText(name))!;
+function evalsApi({ cases = [], dashboard: dash = dashboard([]), runs = [], extra = {} }: EvalsApi): Routes {
+  return {
+    "GET /agents/ag1/eval-cases": cases,
+    "GET /agents/ag1/eval-dashboard": dash,
+    "GET /agents/ag1/eval-runs": (req: RouteRequest) => (req.query.get("batch_id") === STARTED.batch_id ? runs : []),
+    "POST /agents/ag1/eval-runs": STARTED,
+    "POST /eval-cases/:id/run": (req: RouteRequest) => ({ case_id: req.params.id }),
+    ...extra,
+  };
+}
+
+function renderTab(api: EvalsApi = {}, session = sessionFor("admin")) {
+  return renderWithProviders(<EvalsTab agent={AGENT} />, { session, routes: evalsApi(api) });
+}
+
+function rowNamed(name: string): HTMLElement {
+  const row = screen.getAllByRole("listitem").find((li) => within(li).queryByText(name));
+  if (!row) throw new Error(`no row ${name}`);
+  return row;
+}
 
 describe("AgentEditor Evals tab (screen E)", () => {
-  it("disables the Run control and explains the empty set when the agent has no cases (AC-20)", () => {
-    state.dashboard = dashboard([]);
-    renderTab();
+  it("disables the Run control and explains the empty set when the agent has no cases (AC-20)", async () => {
+    renderTab({ dashboard: dashboard([]) });
 
     // AC-20 — the client half: Run disabled + an empty-state message.
+    expect(await screen.findByText(/No eval cases yet/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Run all evals/i })).toBeDisabled();
-    expect(screen.getByText(/No eval cases yet/i)).toBeInTheDocument();
     expect(screen.getByText("0 / 0 passing")).toBeInTheDocument();
     expect(screen.queryAllByRole("listitem")).toHaveLength(0);
 
     // No batch has ever run, so no metric may be shown as a number (AC-21).
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
-    expect(screen.getByText(/No runs yet/i)).toBeInTheDocument();
+    expect(await screen.findByText(/No runs yet/i)).toBeInTheDocument();
   });
 
-  it("flips each case row to its own result as the batch finishes (§19.6)", () => {
-    state.dashboard = dashboard([BATCH]);
-    state.cases = [
-      evalCase("case-1", "stripe-key-leak", {
-        last_run: {
-          run_id: "run-old",
-          ran_at: "2026-09-01T10:00:00Z",
-          pass: false,
-          expected_count: 1,
-          produced_count: 0,
-          duration_ms: 3000,
-          cost_usd: 0.01,
-        },
-      }),
-      evalCase("case-2", "clean-refactor-no-flags", {
-        expected_output: { kind: "must_not_flag", expectations: [{ file: "src/a.ts", start_line: 4 }] },
-      }),
-    ];
-    // The batch's rows: case-1 already finished and passed, case-2 still pending.
-    state.runs = [
-      runRow("case-1", { actual_output: { findings: [{ id: "f1" }] }, pass: true, recall: 1 }),
-      runRow("case-2"),
-    ];
-
-    renderTab();
+  it("flips each case row to its own result as the batch finishes (§19.6)", async () => {
+    const { router } = renderTab({
+      dashboard: dashboard([BATCH]),
+      cases: [
+        evalCase("case-1", "stripe-key-leak", {
+          last_run: {
+            run_id: "run-old",
+            ran_at: "2026-09-01T10:00:00Z",
+            pass: false,
+            expected_count: 1,
+            produced_count: 0,
+            duration_ms: 3000,
+            cost_usd: 0.01,
+          },
+        }),
+        evalCase("case-2", "clean-refactor-no-flags", {
+          expected_output: { kind: "must_not_flag", expectations: [{ file: "src/a.ts", start_line: 4 }] },
+        }),
+      ],
+      // The batch's rows: case-1 already finished and passed, case-2 still pending.
+      runs: [
+        runRow("case-1", { actual_output: { findings: [{ id: "f1" }] }, pass: true, recall: 1 }),
+        runRow("case-2"),
+      ],
+    });
 
     // Before the batch starts the rows show the persisted `last_run` strip.
+    await screen.findAllByRole("listitem");
     expect(within(rowNamed("stripe-key-leak")).getByRole("img", { name: "failed" })).toBeInTheDocument();
     expect(within(rowNamed("stripe-key-leak")).getByText(/expected 1, got none/i)).toBeInTheDocument();
     expect(within(rowNamed("clean-refactor-no-flags")).getByText(/never run/i)).toBeInTheDocument();
@@ -234,11 +204,10 @@ describe("AgentEditor Evals tab (screen E)", () => {
     expect(within(rowNamed("clean-refactor-no-flags")).getByText("must not flag")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Run all evals/i }));
-    expect(startMutate).toHaveBeenCalledWith({ agentId: "ag1" }, expect.anything());
 
     // …and now each row reads the batch row for its own case.
+    expect(await within(rowNamed("stripe-key-leak")).findByRole("img", { name: "passed" })).toBeInTheDocument();
     const finished = rowNamed("stripe-key-leak");
-    expect(within(finished).getByRole("img", { name: "passed" })).toBeInTheDocument();
     expect(within(finished).getByText(/expected 1, got 1/i)).toBeInTheDocument();
     expect(within(finished).getByText(/recall 100%/i)).toBeInTheDocument();
 
@@ -250,15 +219,29 @@ describe("AgentEditor Evals tab (screen E)", () => {
     expect(screen.getByText("1/2")).toBeInTheDocument();
     expect(screen.getByText("1 / 2 passing")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Running…/i })).toBeDisabled();
+    expect(router.calls.find((c) => c.method === "POST")?.path).toBe("/agents/ag1/eval-runs");
   });
 
-  it("links to the full dashboard and reads its metric tiles from the latest complete batch", () => {
-    state.dashboard = dashboard([BATCH]);
-    state.cases = [evalCase("case-1", "stripe-key-leak")];
-    renderTab();
+  it("a failed batch start is explained inline only — no global toast on top", async () => {
+    renderTab({
+      cases: [evalCase("case-1", "stripe-key-leak")],
+      extra: {
+        "POST /agents/ag1/eval-runs": () => apiError(409, "batch_already_running", "raw server text"),
+      },
+    });
 
+    const run = await screen.findByRole("button", { name: /Run all evals/i });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    expect(await screen.findByRole("alert")).toHaveTextContent(messages.errors.batchAlreadyRunning);
+    expect(screen.queryByText("raw server text")).not.toBeInTheDocument();
+  });
+
+  it("links to the full dashboard and reads its metric tiles from the latest complete batch", async () => {
+    renderTab({ dashboard: dashboard([BATCH]), cases: [evalCase("case-1", "stripe-key-leak")] });
+
+    expect(await screen.findByText("80%")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /View full dashboard/i })).toHaveAttribute("href", "/evals/ag1");
-    expect(screen.getByText("80%")).toBeInTheDocument();
     expect(screen.getByText("90%")).toBeInTheDocument();
     expect(screen.getByText("$0.0123")).toBeInTheDocument();
     expect(screen.getByText(/1 \/ 2 cases passed/i)).toBeInTheDocument();
@@ -268,30 +251,18 @@ describe("AgentEditor Evals tab (screen E)", () => {
 /* AC-30 / AC-33: Members run evals and author cases; Edit / Delete appear only
    on cases they created. A legacy case (no recorded creator) is Admin-only. */
 describe("AgentEditor Evals tab — eval-case ownership (AC-30)", () => {
-  afterEach(() => {
-    session.mode = "local";
-    session.role = "admin";
-    session.userId = "u-admin";
-  });
+  const CASES = [
+    evalCase("case-own", "own-case", { created_by: { user_id: "u-a", name: "Ada" } }),
+    evalCase("case-other", "others-case", { created_by: { user_id: "u-b", name: "Bob" } }),
+    evalCase("case-legacy", "legacy-case", { created_by: null }),
+  ];
 
-  const seedCases = () => {
-    state.dashboard = dashboard([]);
-    state.cases = [
-      evalCase("case-own", "own-case", { created_by: { user_id: "u-a", name: "Ada" } } as Partial<EvalCaseRecord>),
-      evalCase("case-other", "others-case", { created_by: { user_id: "u-b", name: "Bob" } } as Partial<EvalCaseRecord>),
-      evalCase("case-legacy", "legacy-case", { created_by: null } as Partial<EvalCaseRecord>),
-    ];
-  };
+  it("Member: Edit/Delete only on their own case; Run, Run all and New case stay enabled", async () => {
+    const { router } = renderTab({ cases: CASES }, sessionFor("member", { userId: "u-a" }));
 
-  it("Member: Edit/Delete only on their own case; Run, Run all and New case stay enabled", () => {
-    session.mode = "google";
-    session.role = "member";
-    session.userId = "u-a";
-    seedCases();
-    renderTab();
-
+    await screen.findAllByRole("listitem");
     const own = rowNamed("own-case");
-    expect(within(own).getByRole("button", { name: "Edit" })).toBeInTheDocument();
+    expect(await within(own).findByRole("button", { name: "Edit" })).toBeInTheDocument();
     expect(within(own).getByRole("button", { name: "Delete" })).toBeInTheDocument();
 
     for (const name of ["others-case", "legacy-case"]) {
@@ -302,16 +273,16 @@ describe("AgentEditor Evals tab — eval-case ownership (AC-30)", () => {
     }
 
     fireEvent.click(within(rowNamed("others-case")).getByRole("button", { name: "Run" }));
-    expect(runCaseMutate).toHaveBeenCalledWith({ caseId: "case-other", agentId: "ag1" });
+    await waitFor(() => expect(router.calls.some((c) => c.path === "/eval-cases/case-other/run")).toBe(true));
     expect(screen.getByRole("button", { name: /Run all evals/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: /New case/i })).toBeEnabled();
   });
 
-  it("Admin: Edit/Delete on every case, including the legacy one", () => {
-    session.mode = "google";
-    seedCases();
-    renderTab();
+  it("Admin: Edit/Delete on every case, including the legacy one", async () => {
+    renderTab({ cases: CASES }, sessionFor("admin"));
 
+    await screen.findAllByRole("listitem");
+    await within(rowNamed("legacy-case")).findByRole("button", { name: "Edit" });
     for (const name of ["own-case", "others-case", "legacy-case"]) {
       const row = rowNamed(name);
       expect(within(row).getByRole("button", { name: "Edit" })).toBeInTheDocument();

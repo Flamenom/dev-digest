@@ -93,8 +93,13 @@ describe("api verb helpers", () => {
 });
 
 describe("credentials + CSRF (multi-user server mode, AC-50)", () => {
-  const headersOf = (i: number) =>
-    (fetchMock.mock.calls[i]![1] as RequestInit).headers as Record<string, string>;
+  /** The RequestInit of the i-th fetch call (explicit guard instead of `!`). */
+  const initOf = (i: number): RequestInit => {
+    const init: unknown = fetchMock.mock.calls.at(i)?.[1];
+    if (typeof init !== "object" || init === null) throw new Error(`fetch call ${i} has no init`);
+    return init;
+  };
+  const headersOf = (i: number) => initOf(i).headers as Record<string, string>;
 
   it("sends the session cookie and the CSRF header on every state-changing verb, none on GET", async () => {
     fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({})));
@@ -105,7 +110,7 @@ describe("credentials + CSRF (multi-user server mode, AC-50)", () => {
     await api.del("/tokens/t1");
 
     for (let i = 0; i < 5; i++) {
-      expect((fetchMock.mock.calls[i]![1] as RequestInit).credentials).toBe("include");
+      expect(initOf(i).credentials).toBe("include");
     }
     expect(headersOf(0)["x-devdigest-csrf"]).toBeUndefined();
     for (const i of [1, 2, 3, 4]) expect(headersOf(i)["x-devdigest-csrf"]).toBe("1");

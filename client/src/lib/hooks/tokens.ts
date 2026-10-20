@@ -11,6 +11,7 @@ import type {
   ApiTokenListItem,
 } from "@devdigest/shared";
 import { api } from "../api";
+import { errorChannelMeta } from "../query-meta";
 
 export const API_TOKENS_QUERY_KEY = ["api-tokens"] as const;
 
@@ -33,6 +34,8 @@ export function useCreateApiToken() {
     // The created value is shown once; don't retain it in the mutation cache
     // after the observer unmounts.
     gcTime: 0,
+    // CreateTokenForm shows the failure inline under the form.
+    ...errorChannelMeta("local"),
     onSuccess: () => void qc.invalidateQueries({ queryKey: API_TOKENS_QUERY_KEY }),
   });
 }
@@ -41,6 +44,8 @@ export function useRevokeApiToken() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (tokenId: string) => api.del<unknown>(`/tokens/${encodeURIComponent(tokenId)}`),
+    // TokenRow shows the failure inline in its row.
+    ...errorChannelMeta("local"),
     onSuccess: () => void qc.invalidateQueries({ queryKey: API_TOKENS_QUERY_KEY }),
   });
 }

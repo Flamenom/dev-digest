@@ -6,7 +6,7 @@ import type {
   SkillVersionEntryWithAuthor,
   SkillWithActors,
 } from '@devdigest/shared';
-import { withActors, type ActorLookup } from '../_shared/actors.js';
+import { onlyResult, withActors, type ActorLookup } from '../_shared/actors.js';
 import type { SkillRow, SkillVersionRow } from './repository.js';
 
 /**
@@ -79,8 +79,7 @@ export async function toSkillResponse(
   dto: SkillDto,
   lookup: ActorLookup,
 ): Promise<SkillWithActors> {
-  const [one] = await toSkillResponses([dto], lookup);
-  return one!;
+  return onlyResult(await toSkillResponses([dto], lookup), 'toSkillResponse');
 }
 
 /** Wire projection for version entries: `author` ref, raw `authorId` dropped. */

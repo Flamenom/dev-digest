@@ -20,13 +20,12 @@ export interface ActorLabelProps {
 
 export function ActorLabel({ actor, verb, maxWidth = DEFAULT_LABEL_MAX_WIDTH, style }: ActorLabelProps) {
   const t = useTranslations("auth");
-  const kind = actorKind(actor);
-
   let text: string;
-  if (kind === "none") {
+  // Narrow on `actor` itself (not on the derived kind) so no `!` is needed.
+  if (actor == null) {
     text = t("actor.none");
   } else {
-    const name = kind === "system" ? t("actor.localUser") : actor!.name;
+    const name = actorKind(actor) === "system" ? t("actor.localUser") : actor.name;
     text = verb ? t(`actor.verbs.${verb}`, { name }) : name;
   }
 

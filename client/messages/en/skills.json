@@ -74,6 +74,7 @@
   },
   "listItem": {
     "needsVetting": "needs vetting",
+    "toggleLabel": "{name} enabled",
     "vettingTitle": "Untrusted source — vet before enabling",
     "type": {
       "rubric": "rubric",

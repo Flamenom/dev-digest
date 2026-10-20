@@ -1,5 +1,6 @@
 import type {
   EncryptedSecretRecord,
+  EncryptedSecretWrite,
   SecretKey,
   SecretKeyStatus,
   SecretStore,
@@ -93,11 +94,16 @@ export class EncryptedSecretsProvider implements SecretsProvider, SecretsWriter,
   }
 
   /**
-   * Encrypt and atomically replace the row (one upsert). Satisfies both the
-   * optional `SecretsProvider.set(key, value)` and `SecretsWriter.set(key,
-   * value, actorUserId)`; the actor defaults to null (no authenticated user).
+   * Validate and encrypt `value` into the row write for `key` — no store I/O
+   * (only the cached team-workspace lookup). A caller that must commit the
+   * row together with something else (the `secret.save` audit row) persists
+   * the result itself, inside its own transaction.
    */
-  async set(key: SecretKey, value: string, actorUserId: string | null = null): Promise<void> {
+  async prepareWrite(
+    key: SecretKey,
+    value: string,
+    actorUserId: string | null = null,
+  ): Promise<EncryptedSecretWrite> {
     if (!this.managed.has(key)) {
       throw new Error(`${key} is not a managed secret key`);
     }
@@ -106,14 +112,23 @@ export class EncryptedSecretsProvider implements SecretsProvider, SecretsWriter,
     }
     const workspaceId = await this.workspaceId();
     const sealed = seal(value, this.masterKey, aadFor(workspaceId, key));
-    await this.store.upsert({
+    return {
       workspaceId,
       keyName: key,
       ciphertext: sealed.ciphertext,
       nonce: sealed.nonce,
       keyId: this.currentKeyId,
       updatedBy: actorUserId,
-    });
+    };
+  }
+
+  /**
+   * Encrypt and atomically replace the row (one upsert). Satisfies both the
+   * optional `SecretsProvider.set(key, value)` and `SecretsWriter.set(key,
+   * value, actorUserId)`; the actor defaults to null (no authenticated user).
+   */
+  async set(key: SecretKey, value: string, actorUserId: string | null = null): Promise<void> {
+    await this.store.upsert(await this.prepareWrite(key, value, actorUserId));
   }
 
   /**

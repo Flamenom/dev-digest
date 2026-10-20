@@ -33,7 +33,7 @@ import {
   useStartEvalBatch,
 } from "@/lib/hooks/eval";
 import { EvalCaseEditorModal } from "@/components/EvalCaseEditorModal";
-import { useCan } from "@/lib/permissions";
+import { useCan } from "@/lib/hooks/permissions";
 import { CaseRow } from "./_components/CaseRow";
 import { EM_DASH, ERROR_CODE_KEYS, METRIC_CARDS } from "./constants";
 import {
@@ -63,14 +63,19 @@ export function EvalsTab({ agent }: { agent: Agent }) {
   // The batch this tab started, if any. Kept after it finishes so the rows keep
   // showing that batch's results until the case list is refetched.
   const [batchId, setBatchId] = React.useState<string | null>(null);
-  const [batchError, setBatchError] = React.useState<string | null>(null);
+  // The ONLY channel for a failed batch start (the global toast is off for it):
+  // a known code maps to its message, anything else shows the API message.
+  const [batchError, setBatchError] = React.useState<{ code: string | null; message: string } | null>(
+    null,
+  );
   const [editor, setEditor] = React.useState<EditorTarget>(null);
   /** Set only by a 409 `case_has_runs`; `null` = no confirmation pending. */
   const [pendingDelete, setPendingDelete] = React.useState<{ caseId: string; runCount: number } | null>(null);
 
   const casesQ = useAgentEvalCases(agent.id);
   const dashQ = useAgentEvalDashboard(agent.id);
-  const startBatch = useStartEvalBatch();
+  // A failed start is shown inline above the case list — not also as a toast.
+  const startBatch = useStartEvalBatch({ errorChannel: "local" });
   const runCase = useRunEvalCase();
   const removeCase = useDeleteEvalCase();
   const { canEditEvalCase } = useCan();
@@ -112,7 +117,8 @@ export function EvalsTab({ agent }: { agent: Agent }) {
       { agentId: agent.id },
       {
         onSuccess: (started) => setBatchId(started.batch_id),
-        onError: (error) => setBatchError(errorCode(error) ?? "noCases"),
+        onError: (error) =>
+          setBatchError({ code: errorCode(error), message: error instanceof Error ? error.message : "" }),
       },
     );
   };
@@ -130,10 +136,11 @@ export function EvalsTab({ agent }: { agent: Agent }) {
     );
   };
 
+  const batchErrorKey = batchError?.code != null ? ERROR_CODE_KEYS[batchError.code] : undefined;
   const batchErrorText = batchError
-    ? ERROR_CODE_KEYS[batchError]
-      ? t(ERROR_CODE_KEYS[batchError]!)
-      : batchError
+    ? batchErrorKey
+      ? t(batchErrorKey)
+      : batchError.message || t("errors.noCases")
     : null;
 
   return (

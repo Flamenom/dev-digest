@@ -19,7 +19,6 @@ import type {
   IdentityProvider,
   PrincipalProvider,
   SecretKeyStatus,
-  SecretStore,
   SecretsInspector,
   SecretsWriter,
 } from '@devdigest/shared';
@@ -74,7 +73,8 @@ import { EvalRunner } from '../modules/eval/runner.js';
 import { EvalDashboardService } from '../modules/eval/dashboard.js';
 import { EvalService } from '../modules/eval/service.js';
 import { resolveFeatureModel } from '../modules/settings/feature-models.js';
-import { SettingsRepository } from '../modules/settings/repository.js';
+import { SettingsRepository, type SettingsTx } from '../modules/settings/repository.js';
+import { SettingsService } from '../modules/settings/service.js';
 import { SECRET_KEY_BY_PROVIDER } from './secret-keys.js';
 import { IdentityRepository } from '../modules/identity/repository.js';
 import { PrincipalService } from '../modules/identity/principal-service.js';
@@ -83,7 +83,7 @@ import { MembersService } from '../modules/identity/members-service.js';
 import { TokensService } from '../modules/identity/tokens-service.js';
 import { AuditRepository, type AuditTx } from '../modules/audit/repository.js';
 import { SecretStoreRepository, type SecretsTx } from '../modules/secrets/repository.js';
-import { SecretsMaintenance, type SecretsLogger } from '../modules/secrets/service.js';
+import { SecretsMaintenance, type BatchSecretStore, type SecretsLogger } from '../modules/secrets/service.js';
 import { type DepGraph, DepCruiseGraph } from '../adapters/depgraph/index.js';
 import { type Tokenizer, TiktokenTokenizer } from '../adapters/tokenizer/index.js';
 
@@ -155,7 +155,7 @@ export interface ContainerOverrides {
   /** Wall clock for sessions/tokens/audit — tests inject a fixed clock. */
   clock?: Clock;
   /** Encrypted-secret row store (google mode) — tests inject an in-memory fake. */
-  secretStore?: SecretStore<SecretsTx>;
+  secretStore?: BatchSecretStore<SecretsTx>;
 }
 
 /** Q8 — which secret authenticates git network ops for each provider, and as whom. */
@@ -193,6 +193,7 @@ export class Container {
   private _pullRequestRepo?: PullRequestRepository;
   private _pullsReadRepo?: PullsReadRepository;
   private _settingsRepo?: SettingsRepository;
+  private _settingsService?: SettingsService<SettingsTx>;
   private _prSync?: PrSyncCoordinator<SyncRepo>;
   private _pullDetail?: PullDetail;
   private _pullList?: PullListService;
@@ -208,7 +209,7 @@ export class Container {
   private _priceBook?: PriceBook;
   private _identityRepo?: IdentityRepository;
   private _audit?: AuditLog<AuditTx>;
-  private _secretStore?: SecretStore<SecretsTx>;
+  private _secretStore?: BatchSecretStore<SecretsTx>;
   private _identityProvider?: IdentityProvider;
   private _principals?: PrincipalProvider;
   private _signIn?: SignInService;
@@ -287,7 +288,7 @@ export class Container {
   }
 
   /** Encrypted-secret rows (`encrypted_secrets`); used by google-mode secrets + the import CLI. */
-  get secretStore(): SecretStore<SecretsTx> {
+  get secretStore(): BatchSecretStore<SecretsTx> {
     if (this.overrides.secretStore) return this.overrides.secretStore;
     return (this._secretStore ??= new SecretStoreRepository(this.db));
   }
@@ -462,6 +463,33 @@ export class Container {
   /** Workspace prefs (key/value rows): settings routes + per-feature model resolution. */
   get settingsRepo(): SettingsRepository {
     return (this._settingsRepo ??= new SettingsRepository(this.db));
+  }
+
+  /**
+   * Audited settings writes (`settings.update`, `secret.save`): each audit row
+   * commits in the transaction of its write. The encrypted path is used only
+   * when `secrets` is the provider built here over `secretStore` (an injected
+   * `secrets` override may sit on a different backend → plain writer path).
+   */
+  get settingsService(): SettingsService<SettingsTx> {
+    if (!this._settingsService) {
+      const secrets = this.secrets;
+      const encrypted =
+        !this.overrides.secrets && secrets instanceof EncryptedSecretsProvider
+          ? {
+              prepareWrite: (key: SecretKey, value: string, actorUserId: string | null) =>
+                secrets.prepareWrite(key, value, actorUserId),
+              store: this.secretStore,
+            }
+          : null;
+      this._settingsService = new SettingsService<SettingsTx>({
+        settings: this.settingsRepo,
+        audit: this.audit,
+        secretsWriter: this.secretsWriter,
+        encryptedSecrets: encrypted,
+      });
+    }
+    return this._settingsService;
   }
 
   /**

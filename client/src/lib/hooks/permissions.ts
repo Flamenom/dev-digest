@@ -9,7 +9,7 @@
 "use client";
 
 import type { ActorRef, AuthMode, Role } from "@devdigest/shared";
-import { useSession } from "./hooks/session";
+import { useSession } from "./session";
 
 /** Anything carrying the run initiator (`RunSummaryWithActor`, `ReviewRecordWithActor`). */
 export interface StartedByLike {

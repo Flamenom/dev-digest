@@ -1,35 +1,8 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { describe, it, expect, vi } from "vitest";
+import { screen, fireEvent } from "@testing-library/react";
 import type { Agent } from "@devdigest/shared";
-import messages from "../../../../../messages/en/agents.json";
-
-/* Multi-user gating reads the session probe: mocked as the local-mode Admin
-   (every control enabled, as before); a test may flip `session` to a Member. */
-const session = vi.hoisted(() => ({
-  mode: "local" as "local" | "google",
-  role: "admin" as "admin" | "member",
-}));
-vi.mock("@/lib/hooks/session", () => ({
-  SESSION_QUERY_KEY: ["session"],
-  useSession: () => ({
-    data: {
-      mode: session.mode,
-      user: { id: "u1", email: "a@onlytraf.com", name: "Ann", avatar_url: null, role: session.role },
-      workspace: { id: "w1", name: "Team" },
-    },
-    isPending: false,
-  }),
-}));
-
+import { renderWithProviders } from "@/test/render-with-providers";
 import { AgentCard } from "./AgentCard";
-
-afterEach(() => {
-  cleanup();
-  session.mode = "local";
-  session.role = "admin";
-});
 
 const AGENT: Agent = {
   id: "ag1",
@@ -47,46 +20,43 @@ const AGENT: Agent = {
   attached_doc_paths: [],
 };
 
-function renderWithIntl(ui: React.ReactElement) {
-  const qc = new QueryClient();
-  return render(
-    <QueryClientProvider client={qc}>
-      <NextIntlClientProvider locale="en" messages={{ agents: messages }}>
-        {ui}
-      </NextIntlClientProvider>
-    </QueryClientProvider>,
-  );
-}
-
 describe("AgentCard (smoke)", () => {
   it("renders the agent name, model chip and skill count", () => {
-    renderWithIntl(<AgentCard ag={AGENT} skillCount={3} />);
+    renderWithProviders(<AgentCard ag={AGENT} skillCount={3} />);
     expect(screen.getByText("Security Reviewer")).toBeInTheDocument();
     expect(screen.getByText("gpt-4.1")).toBeInTheDocument();
     expect(screen.getByText("3 skills")).toBeInTheDocument();
   });
 
   it("falls back to a translated placeholder when description is empty", () => {
-    renderWithIntl(<AgentCard ag={{ ...AGENT, description: "" }} />);
+    renderWithProviders(<AgentCard ag={{ ...AGENT, description: "" }} />);
     expect(screen.getByText("No description")).toBeInTheDocument();
   });
 });
 
-/* AC-33: the enabled toggle (an agent edit) and Delete agent are Admin-only —
-   a Member sees neither; local mode (Admin) keeps both. */
+/* AC-33: the enabled toggle (an agent edit) is Admin-only — a Member sees it
+   aria-disabled and inert; Delete agent (destructive) stays hidden for them. */
 describe("AgentCard — role gating (AC-33)", () => {
-  it("Admin sees the enabled toggle and Delete agent", () => {
-    renderWithIntl(<AgentCard ag={AGENT} onToggle={() => {}} />);
-    expect(screen.getByRole("switch")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Delete agent" })).toBeInTheDocument();
+  it("Admin: the enabled toggle works and Delete agent is offered", async () => {
+    const onToggle = vi.fn();
+    renderWithProviders(<AgentCard ag={AGENT} onToggle={onToggle} />, { session: "admin" });
+
+    expect(await screen.findByRole("button", { name: "Delete agent" })).toBeInTheDocument();
+    const toggle = screen.getByRole("switch", { name: "Security Reviewer enabled" });
+    expect(toggle).not.toHaveAttribute("aria-disabled");
+    fireEvent.click(toggle);
+    expect(onToggle).toHaveBeenCalledWith(false);
   });
 
-  it("Member sees neither the toggle nor Delete agent", () => {
-    session.mode = "google";
-    session.role = "member";
-    renderWithIntl(<AgentCard ag={AGENT} onToggle={() => {}} />);
-    expect(screen.getByText("Security Reviewer")).toBeInTheDocument();
-    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+  it("Member: the toggle is shown aria-disabled and inert; Delete agent is hidden", async () => {
+    const onToggle = vi.fn();
+    renderWithProviders(<AgentCard ag={AGENT} onToggle={onToggle} />, { session: "member" });
+
+    const toggle = await screen.findByRole("switch", { name: "Security Reviewer enabled" });
+    expect(toggle).toHaveAttribute("aria-disabled", "true");
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(toggle);
+    expect(onToggle).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Delete agent" })).not.toBeInTheDocument();
   });
 });
