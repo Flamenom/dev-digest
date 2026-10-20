@@ -1,4 +1,4 @@
-/* useCopyToClipboard — write text to the clipboard and confirm with a toast
+/* hooks/clipboard.ts — useCopyToClipboard: write text to the clipboard and confirm with a toast
    (success or failure). Shared by FindingCard ("Copy finding") and the inline
    diff composer ("Copy text" after a failed post, AC-32). */
 "use client";

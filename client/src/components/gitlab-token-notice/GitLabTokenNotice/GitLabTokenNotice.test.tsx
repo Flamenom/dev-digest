@@ -29,6 +29,8 @@ describe("GitLabTokenNotice (AC-25)", () => {
 
     const note = screen.getByRole("note");
     expect(note).toHaveAttribute("id", "gitlab-token-notice");
+    // Announced politely when it appears mid-session (e.g. after a rejected post).
+    expect(note).toHaveAttribute("aria-live", "polite");
     expect(note).toHaveTextContent(SCOPE_TEXT);
     const link = await screen.findByRole("link", { name: "Open Settings → API Keys" });
     expect(link).toHaveAttribute("href", "/settings/api-keys");

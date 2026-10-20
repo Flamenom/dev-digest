@@ -244,6 +244,8 @@ None of these block the push. Each needs a test.
 
 ### Task H: follow-ups from the Task D review (small each · ready after PR #15 merges)
 
+> **Status 2026-10-20:** H1–H8 are implemented on branch `fix/task-h-followups`. H8 also removed real `openrouter.ai` calls from `reviews.it`.
+
 None of these block. Each needs a test.
 
 1. **Token-blocking rule duplicated:** `pulls/page.tsx` and `pulls/[number]/page.tsx` both compute "GitLab repo, blocked, and health ∈ {insufficient_scope, invalid}" and both declare `TOKEN_NOTICE_ID`.

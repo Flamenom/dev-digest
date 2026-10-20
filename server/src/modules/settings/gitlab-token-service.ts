@@ -14,7 +14,7 @@
  * Application ring: no Fastify, Drizzle or container imports. Result messages
  * never contain the key (they are fixed strings plus the GitLab username).
  */
-import type { ConnTestResultWithCode, GitLabScopeCheck } from '@devdigest/shared';
+import type { ConnTestResultWithTypedCode, GitLabScopeCheck } from '@devdigest/shared';
 import {
   GITLAB_INSUFFICIENT_SCOPE_MESSAGE,
   GITLAB_UNVERIFIED_MESSAGE,
@@ -22,7 +22,7 @@ import {
 } from './gitlab-token-health.js';
 
 /** The outcome without the `provider` field (the route adds it). */
-export type GitLabTokenTestResult = Omit<ConnTestResultWithCode, 'provider'>;
+export type GitLabTokenTestResult = Omit<ConnTestResultWithTypedCode, 'provider'>;
 
 export interface GitLabTokenServiceDeps<Actor> {
   /** Scope lookup for a candidate token (a token-specific adapter's `checkTokenScopes`). */

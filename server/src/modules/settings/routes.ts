@@ -4,7 +4,7 @@ import {
   SettingsUpdate,
   ConnTestRequestHost,
   SecretsStatusWithHealth,
-  type ConnTestResultWithCode,
+  ConnTestResultWithTypedCode,
   type SecretKeyStatus,
   type SecretsStatusProvider,
 } from '@devdigest/shared';
@@ -89,10 +89,10 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
   app.post(
     '/settings/test-connection',
     {
-      schema: { body: ConnTestRequestHost },
+      schema: { body: ConnTestRequestHost, response: { 200: ConnTestResultWithTypedCode } },
       config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
     },
-    async (req): Promise<ConnTestResultWithCode> => {
+    async (req): Promise<ConnTestResultWithTypedCode> => {
       const { provider, key } = req.body;
       // Resolved OUTSIDE the try: an auth/context failure must surface as its
       // own error envelope, not as a `{ ok: false }` connection result.

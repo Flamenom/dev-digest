@@ -69,6 +69,19 @@ export type {
   ConnTestResultWithCode,
 } from "@devdigest/shared";
 
+import type { HostCommentInput } from "@devdigest/shared";
+
+/** The reply field of a host comment post: a GitHub reply sets `in_reply_to`
+ *  (root comment id), a GitLab reply sets `discussion_id` — never both (the
+ *  `HostCommentInput` refine, enforced here at the type level). Neither ⇒ a new thread. */
+export type HostCommentReplyTarget =
+  | { in_reply_to?: HostCommentInput["in_reply_to"]; discussion_id?: never }
+  | { discussion_id?: HostCommentInput["discussion_id"]; in_reply_to?: never };
+
+/** Client-side body of POST /pulls/:id/comments, derived from the shared `HostCommentInput`. */
+export type HostCommentPostInput = Omit<HostCommentInput, "in_reply_to" | "discussion_id"> &
+  HostCommentReplyTarget;
+
 /** UI-only view model for a PR list row (derives display fields from PrMeta). */
 export interface PrRowView {
   number: number;

@@ -11,7 +11,6 @@ import type {
   Settings,
   SettingsUpdate,
   ConnTestProviderHost,
-  ConnTestResultWithCode,
   SecretsStatusWithHealth,
   RepoWithHost,
   PrListPage,
@@ -20,6 +19,7 @@ import type {
   SpecFile,
   IndexStatus,
 } from "../types";
+import type { ConnTestResultWithTypedCode } from "@devdigest/shared";
 
 // ---- Settings (F1: GET/PUT /settings, POST /settings/test-connection) ----
 export function useSettings() {
@@ -48,7 +48,7 @@ export function useTestConnection() {
   return useMutation({
     mutationFn: (input: ConnTestInput) => {
       const body = typeof input === "string" ? { provider: input } : input;
-      return api.post<ConnTestResultWithCode>("/settings/test-connection", body);
+      return api.post<ConnTestResultWithTypedCode>("/settings/test-connection", body);
     },
     // The key row shows the result (or the failure) inline under its input.
     ...errorChannelMeta("local"),

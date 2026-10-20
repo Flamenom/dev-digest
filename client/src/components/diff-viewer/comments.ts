@@ -3,23 +3,16 @@
    sibling component folders. Comments are the PR's host comments (GitHub
    review comments or GitLab diff notes), proxied live. */
 import type { CSSProperties } from "react";
-import type { HostComment } from "../../lib/types";
+import type { HostComment, HostCommentPostInput } from "../../lib/types";
 import type { Line } from "./helpers";
 
 /** The host a PR lives on — names it in labels and picks the reply field. */
 export type CommentProvider = "github" | "gitlab";
 
-/** One post: a new inline comment, or a reply to an existing thread. */
-export interface CommentSubmitInput {
-  path: string;
-  line: number;
-  side: "LEFT" | "RIGHT";
-  body: string;
-  /** GitHub reply: the thread's root comment id. */
-  in_reply_to?: number;
-  /** GitLab reply: the thread's discussion id. */
-  discussion_id?: string;
-}
+/** One post: a new inline comment, or a reply to an existing thread — the
+   client `HostCommentPostInput` (derived from the shared `HostCommentInput`,
+   reply fields mutually exclusive) with the diff side always set. */
+export type CommentSubmitInput = HostCommentPostInput & { side: "LEFT" | "RIGHT" };
 
 /** What the viewer needs to read + write inline comments. */
 export interface DiffCommentApi {

@@ -1,5 +1,6 @@
 import type { ConnTestProviderHost } from "@/lib/types";
 import type { GitLabTokenHealth, SecretState } from "@devdigest/shared";
+import { GITLAB_TOKEN_ERROR_CODE } from "@/lib/hooks/gitlab-health";
 
 /** One configurable provider key row in the API Keys section. */
 export interface KeyRowSpec {
@@ -35,4 +36,4 @@ export const GITLAB_HEALTH_LABEL_KEY: Readonly<Record<GitLabTokenHealth, string>
 };
 
 /** Test-connection result code for a GitLab token without the `api` scope — always shown as an error (AC-21). */
-export const GITLAB_SCOPE_ERROR_CODE = "gitlab_token_insufficient_scope";
+export const GITLAB_SCOPE_ERROR_CODE = GITLAB_TOKEN_ERROR_CODE.insufficientScope;

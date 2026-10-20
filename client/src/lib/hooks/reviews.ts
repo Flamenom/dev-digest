@@ -7,7 +7,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, API_BASE, ApiError } from "../api";
 import { notify } from "../toast";
 import { errorChannelMeta } from "../query-meta";
-import type { HostComment } from "../types";
+import type { HostComment, HostCommentPostInput } from "../types";
+import { GITLAB_TOKEN_HEALTH_ERROR_CODES } from "./gitlab-health";
 import type {
   FindingActionKind,
   ReviewRecord,
@@ -99,22 +100,10 @@ export function usePrComments(prId: string | null | undefined) {
   });
 }
 
-export interface CreateCommentInput {
-  path: string;
-  line: number;
-  side?: "LEFT" | "RIGHT";
-  body: string;
-  /** GitHub reply: the root comment id. */
-  in_reply_to?: number;
-  /** GitLab reply: the discussion (thread) id. */
-  discussion_id?: string;
-}
-
-/** Error codes meaning the stored GitLab token's health just changed (AC-25). */
-const GITLAB_TOKEN_HEALTH_CODES = new Set([
-  "gitlab_token_invalid",
-  "gitlab_token_insufficient_scope",
-]);
+/** Body of POST /pulls/:id/comments — the shared `HostCommentInput`, with the
+   reply fields mutually exclusive at the type level (GitHub `in_reply_to` XOR
+   GitLab `discussion_id`). */
+export type CreateCommentInput = HostCommentPostInput;
 
 /** Post one inline comment (or reply) to the PR's host; refreshes the thread list. */
 export function useCreatePrComment(prId: string | null | undefined) {
@@ -129,7 +118,7 @@ export function useCreatePrComment(prId: string | null | undefined) {
     onError: (err) => {
       // The server re-checked the GitLab token — refresh its health so the
       // token notice shows on the next render (AC-25).
-      if (err instanceof ApiError && err.code && GITLAB_TOKEN_HEALTH_CODES.has(err.code)) {
+      if (err instanceof ApiError && err.code && GITLAB_TOKEN_HEALTH_ERROR_CODES.has(err.code)) {
         qc.invalidateQueries({ queryKey: ["secrets-status"] });
       }
     },

@@ -1,26 +1,27 @@
-import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+/* DiffTab × GitLab comment posting (spec 2026-10-20-gitlab-comments): the real
+   comment + smart-diff hooks over the shared fetch router — no hook mocks. The
+   POST body is asserted from `router.calls`; everything else from the DOM. */
+import React from "react";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { NextIntlClientProvider } from "next-intl";
 import type { HostComment, PrFileHost } from "@/lib/types";
+import {
+  renderWithProviders,
+  apiError,
+  type FetchRouter,
+  type Routes,
+} from "@/test/render-with-providers";
 import type { DiffTabHost } from "./DiffTab";
-import prReview from "../../../../../../../../messages/en/prReview.json";
-import shell from "../../../../../../../../messages/en/shell.json";
-import prHost from "../../../../../../../../messages/en/prHost.json";
-
-// Hook-module mocking (suite pattern, see DiffTab.test.tsx): no QueryClient /
-// fetch. `mutateAsync` is the boundary the composer posts through.
-const mutateAsync = vi.fn();
-let comments: HostComment[] = [];
-vi.mock("@/lib/hooks/reviews", () => ({
-  usePrComments: () => ({ data: comments }),
-  useCreatePrComment: () => ({ mutateAsync, isPending: false }),
-}));
-vi.mock("@/lib/hooks/smart-diff", () => ({
-  usePrSmartDiff: () => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() }),
-}));
-
 import { DiffTab } from "./DiffTab";
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), prefetch: vi.fn() }),
+  usePathname: () => "/repos/r1/pulls/7",
+  useSearchParams: () => new URLSearchParams("tab=diff"),
+}));
+
+afterEach(cleanup);
 
 const FILES: PrFileHost[] = [
   {
@@ -52,20 +53,30 @@ const GITLAB_NOTE: HostComment = {
 
 const GITLAB_HOST: DiffTabHost = { provider: "gitlab", filesOmittedByHost: 0, postBlocked: null };
 
-beforeEach(() => {
-  mutateAsync.mockReset();
-  comments = [];
-});
-afterEach(cleanup);
+/** Comment routes for PR "pr1"; the smart-diff view is irrelevant here (4xx → inline error). */
+function commentRoutes(
+  comments: () => HostComment[],
+  post: Routes[string] = () => apiError(500, "unexpected_post"),
+): Routes {
+  return {
+    "GET /pulls/:id/comments": () => comments(),
+    "POST /pulls/:id/comments": post,
+    "GET /pulls/:id/smart-diff": apiError(404, "not_found"),
+  };
+}
 
-function renderTab(host: DiffTabHost = GITLAB_HOST) {
-  return render(
-    <NextIntlClientProvider locale="en" messages={{ prReview, shell, prHost }}>
+function renderTab(routes: Routes, host: DiffTabHost = GITLAB_HOST) {
+  return renderWithProviders(
+    <>
       <p id="gitlab-token-notice">The GitLab token is invalid.</p>
       <DiffTab prId="pr1" filesCount={FILES.length} files={FILES} canComment host={host} />
-    </NextIntlClientProvider>,
+    </>,
+    { routes },
   );
 }
+
+const posts = (router: FetchRouter) =>
+  router.calls.filter((c) => c.method === "POST" && c.path === "/pulls/pr1/comments");
 
 /** Original order → hover the added line → "+" → the composer opens. */
 async function openComposer(user: ReturnType<typeof userEvent.setup>) {
@@ -81,13 +92,23 @@ async function openComposer(user: ReturnType<typeof userEvent.setup>) {
   };
 }
 
+/** Original order → wait for the routed thread → reveal it. */
+async function showThreads(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Original order" }));
+  await user.click(await screen.findByRole("button", { name: /Show comments/ }));
+}
+
 describe("DiffTab on GitLab (posting enabled)", () => {
   it("AC-14/35/36/37: blank body disables post; one request for two rapid clicks; success reveals comments", async () => {
-    comments = [GITLAB_NOTE];
+    let comments: HostComment[] = [GITLAB_NOTE];
     let resolvePost!: (v: unknown) => void;
-    mutateAsync.mockImplementation(() => new Promise((r) => (resolvePost = r)));
     const user = userEvent.setup();
-    renderTab();
+    const { router } = renderTab(
+      commentRoutes(
+        () => comments,
+        () => new Promise((r) => (resolvePost = r)),
+      ),
+    );
 
     // AC-35/40: no read-only notice anywhere.
     expect(screen.queryByText(/isn't supported yet/)).not.toBeInTheDocument();
@@ -104,27 +125,39 @@ describe("DiffTab on GitLab (posting enabled)", () => {
     // AC-36: two rapid clicks → exactly one request (button disables in flight).
     await user.click(post);
     await user.click(post);
-    expect(mutateAsync).toHaveBeenCalledTimes(1);
-    expect(mutateAsync).toHaveBeenCalledWith({
+    expect(post).toBeDisabled();
+    await waitFor(() => expect(posts(router)).toHaveLength(1));
+    expect(posts(router)[0]!.body).toEqual({
       path: "src/new-name.ts",
       line: 2,
       side: "RIGHT",
       body: "Please add a test",
     });
-    expect(post).toBeDisabled();
 
-    // AC-37: success closes the composer and reveals the (hidden) comments.
-    resolvePost({ ...GITLAB_NOTE, id: 502 });
+    // AC-37: success closes the composer and reveals the (hidden) comments,
+    // including the just-posted one from the refreshed thread list.
+    const created: HostComment = { ...GITLAB_NOTE, id: 502, body: "Please add a test" };
+    comments = [GITLAB_NOTE, created];
+    resolvePost(created);
     expect(await screen.findByRole("button", { name: /Hide comments/ })).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(await screen.findByText("Please add a test")).toBeInTheDocument();
+    expect(posts(router)).toHaveLength(1);
   });
 
   it("AC-32: a rejected post keeps the draft, shows an inline alert and offers Copy text", async () => {
-    mutateAsync.mockRejectedValue(
-      new Error("GitLab didn't confirm the comment — check the MR before posting again."),
-    );
     const user = userEvent.setup();
-    renderTab();
+    renderTab(
+      commentRoutes(
+        () => [],
+        () =>
+          apiError(
+            502,
+            "gitlab_comment_failed",
+            "GitLab didn't confirm the comment — check the MR before posting again.",
+          ),
+      ),
+    );
 
     const { textbox, post } = await openComposer(user);
     await user.type(textbox, "Consider renaming back");
@@ -144,7 +177,10 @@ describe("DiffTab on GitLab (posting enabled)", () => {
 
   it("AC-25: postBlocked disables post and describes it by the page notice", async () => {
     const user = userEvent.setup();
-    renderTab({ ...GITLAB_HOST, postBlocked: { describedById: "gitlab-token-notice" } });
+    const { router } = renderTab(commentRoutes(() => []), {
+      ...GITLAB_HOST,
+      postBlocked: { describedById: "gitlab-token-notice" },
+    });
 
     const { textbox, post } = await openComposer(user);
     await user.type(textbox, "Draft while blocked");
@@ -152,17 +188,20 @@ describe("DiffTab on GitLab (posting enabled)", () => {
     expect(post).toHaveAttribute("aria-describedby", "gitlab-token-notice");
     expect(post).toHaveAccessibleDescription("The GitLab token is invalid.");
     await user.click(post);
-    expect(mutateAsync).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox")).toHaveValue("Draft while blocked");
+    expect(posts(router)).toHaveLength(0);
   });
 
   it("AC-19/35/39: a GitLab thread renders with attribution and replies by discussion_id", async () => {
-    comments = [GITLAB_NOTE];
-    mutateAsync.mockResolvedValue({ ...GITLAB_NOTE, id: 503, in_reply_to_id: 501 });
     const user = userEvent.setup();
-    renderTab();
+    const { router } = renderTab(
+      commentRoutes(
+        () => [GITLAB_NOTE],
+        () => ({ ...GITLAB_NOTE, id: 503, in_reply_to_id: 501, body: "Agreed" }),
+      ),
+    );
 
-    await user.click(screen.getByRole("button", { name: "Original order" }));
-    await user.click(screen.getByRole("button", { name: /Show comments/ }));
+    await showThreads(user);
     expect(screen.getByText("Why rename?")).toBeInTheDocument();
     expect(screen.getByText("via DevDigest · Ann Admin")).toBeInTheDocument();
 
@@ -170,26 +209,38 @@ describe("DiffTab on GitLab (posting enabled)", () => {
     await user.type(screen.getByRole("textbox"), "Agreed");
     await user.click(screen.getByRole("button", { name: "Comment" }));
 
-    expect(mutateAsync).toHaveBeenCalledTimes(1);
-    const sent = mutateAsync.mock.calls[0]![0] as Record<string, unknown>;
+    // The composer closes once the host confirmed the reply.
+    await waitFor(() => expect(screen.queryByRole("textbox")).not.toBeInTheDocument());
+    expect(posts(router)).toHaveLength(1);
+    const sent = posts(router)[0]!.body as Record<string, unknown>;
     expect(sent).toMatchObject({ body: "Agreed", discussion_id: "disc-abc", line: 2 });
     expect(sent).not.toHaveProperty("in_reply_to");
   });
 
   it("GitHub replies keep in_reply_to", async () => {
-    comments = [{ ...GITLAB_NOTE, discussion_id: null, provider: "github", devdigest_attribution: null }];
-    mutateAsync.mockResolvedValue({});
+    const githubNote: HostComment = {
+      ...GITLAB_NOTE,
+      discussion_id: null,
+      provider: "github",
+      devdigest_attribution: null,
+    };
     const user = userEvent.setup();
-    renderTab({ provider: "github", filesOmittedByHost: 0, postBlocked: null });
+    const { router } = renderTab(
+      commentRoutes(
+        () => [githubNote],
+        () => ({ ...githubNote, id: 504, in_reply_to_id: 501, body: "Ok" }),
+      ),
+      { provider: "github", filesOmittedByHost: 0, postBlocked: null },
+    );
 
-    await user.click(screen.getByRole("button", { name: "Original order" }));
-    await user.click(screen.getByRole("button", { name: /Show comments/ }));
+    await showThreads(user);
     expect(screen.getByRole("link", { name: "View on GitHub" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Reply" }));
     await user.type(screen.getByRole("textbox"), "Ok");
     await user.click(screen.getByRole("button", { name: "Comment" }));
 
-    const sent = mutateAsync.mock.calls[0]![0] as Record<string, unknown>;
+    await waitFor(() => expect(screen.queryByRole("textbox")).not.toBeInTheDocument());
+    const sent = posts(router)[0]!.body as Record<string, unknown>;
     expect(sent).toMatchObject({ body: "Ok", in_reply_to: 501 });
     expect(sent).not.toHaveProperty("discussion_id");
   });

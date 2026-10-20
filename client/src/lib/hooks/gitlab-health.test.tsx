@@ -1,24 +1,39 @@
+/* GitLab token health (spec 2026-10-20-gitlab-comments, AC-25): the blocking
+   rule of `useGitLabTokenHealth(repo)` and the secrets-status refresh after a
+   GitLab write — asserted through what the user sees (the token notice) and
+   the requests that reach the shared fetch router, not through cache keys. */
 import React from "react";
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, act, cleanup, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { SecretsStatusWithHealth } from "../types";
-
-vi.mock("../api", async () => {
-  const actual = await vi.importActual<typeof import("../api")>("../api");
-  return {
-    API_BASE: "http://api.test",
-    ApiError: actual.ApiError,
-    api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn() },
-  };
-});
-
-import { api, ApiError } from "../api";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { screen, cleanup, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { RepoWithHost, SecretsStatusWithHealth } from "../types";
+import {
+  renderWithProviders,
+  testRepo,
+  apiError,
+  type FetchRouter,
+} from "@/test/render-with-providers";
+import { GitLabTokenNotice, GITLAB_TOKEN_NOTICE_ID } from "@/components/gitlab-token-notice";
 import { useGitLabTokenHealth } from "./gitlab-health";
 import { useCreatePrComment } from "./reviews";
-import { useTestConnection } from "./core";
+import { useSecretsStatus, useTestConnection } from "./core";
 
-function status(gitlab_health: SecretsStatusWithHealth["gitlab_health"]): SecretsStatusWithHealth {
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), prefetch: vi.fn() }),
+  usePathname: () => "/repos/r1/pulls",
+  useSearchParams: () => new URLSearchParams(),
+}));
+
+afterEach(cleanup);
+
+type Health = SecretsStatusWithHealth["gitlab_health"];
+
+const GITLAB_REPO = testRepo({ provider: "gitlab", host: "gitlab.com" });
+const GITHUB_REPO = testRepo();
+
+const SCOPE_TEXT = /The GitLab token is invalid \(missing the api scope\)/;
+
+function status(gitlab_health: Health): SecretsStatusWithHealth {
   return {
     openai: false,
     anthropic: false,
@@ -29,89 +44,93 @@ function status(gitlab_health: SecretsStatusWithHealth["gitlab_health"]): Secret
   } as SecretsStatusWithHealth;
 }
 
-function makeWrapper() {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  const wrapper = ({ children }: { children: React.ReactNode }) => (
-    <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+/** Renders what the PR pages render from the hook: the blocking value and the notice. */
+function Probe({ repo }: { repo: RepoWithHost }) {
+  const blocking = useGitLabTokenHealth(repo);
+  const { isSuccess } = useSecretsStatus();
+  const comment = useCreatePrComment("pr-1");
+  const test = useTestConnection();
+  return (
+    <>
+      <p>{isSuccess ? "status loaded" : "status pending"}</p>
+      <p>blocking: {blocking ?? "none"}</p>
+      {blocking && <GitLabTokenNotice id={GITLAB_TOKEN_NOTICE_ID} health={blocking} />}
+      <button onClick={() => comment.mutate({ path: "a.ts", line: 1, body: "hi" })}>Post</button>
+      {comment.isError && <p role="alert">{comment.error.message}</p>}
+      <button onClick={() => test.mutate({ provider: "gitlab", key: "glpat-x" })}>Test</button>
+      {test.data && <p>tested</p>}
+    </>
   );
-  return { qc, wrapper };
 }
 
-beforeEach(() => {
-  vi.mocked(api.get).mockReset();
-  vi.mocked(api.post).mockReset();
-});
-afterEach(() => cleanup());
+const statusCalls = (router: FetchRouter) =>
+  router.calls.filter((c) => c.method === "GET" && c.path === "/settings/secrets-status").length;
 
-describe("useGitLabTokenHealth", () => {
-  it("is blocked for a known-bad token and not blocked when no token is configured", async () => {
-    vi.mocked(api.get).mockResolvedValue(status("insufficient_scope"));
-    const bad = renderHook(() => useGitLabTokenHealth(), { wrapper: makeWrapper().wrapper });
-    await waitFor(() => expect(bad.result.current.health).toBe("insufficient_scope"));
-    expect(bad.result.current.blocked).toBe(true);
-    expect(api.get).toHaveBeenCalledWith("/settings/secrets-status");
-
-    vi.mocked(api.get).mockResolvedValue(status("invalid"));
-    const invalid = renderHook(() => useGitLabTokenHealth(), { wrapper: makeWrapper().wrapper });
-    await waitFor(() => expect(invalid.result.current.health).toBe("invalid"));
-    expect(invalid.result.current.blocked).toBe(true);
-
-    vi.mocked(api.get).mockResolvedValue(status(null));
-    const none = renderHook(() => useGitLabTokenHealth(), { wrapper: makeWrapper().wrapper });
-    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(3));
-    await waitFor(() => expect(none.result.current).toEqual({ health: null, blocked: false }));
-  });
-
-  it("treats ok and unchecked as usable", async () => {
-    vi.mocked(api.get).mockResolvedValue(status("unchecked"));
-    const { result } = renderHook(() => useGitLabTokenHealth(), { wrapper: makeWrapper().wrapper });
-    await waitFor(() => expect(result.current.health).toBe("unchecked"));
-    expect(result.current.blocked).toBe(false);
+describe("useGitLabTokenHealth(repo)", () => {
+  it.each<[string, RepoWithHost, Health, string]>([
+    ["GitLab repo + insufficient_scope", GITLAB_REPO, "insufficient_scope", "insufficient_scope"],
+    ["GitLab repo + invalid", GITLAB_REPO, "invalid", "invalid"],
+    ["GitLab repo + ok", GITLAB_REPO, "ok", "none"],
+    ["GitLab repo + unchecked", GITLAB_REPO, "unchecked", "none"],
+    ["GitLab repo + no token", GITLAB_REPO, null, "none"],
+    ["GitHub repo + a bad GitLab token", GITHUB_REPO, "insufficient_scope", "none"],
+  ])("%s → blocking: %s", async (_label, repo, health, expected) => {
+    renderWithProviders(<Probe repo={repo} />, {
+      routes: { "GET /settings/secrets-status": status(health) },
+    });
+    await screen.findByText("status loaded");
+    expect(screen.getByText(`blocking: ${expected}`)).toBeInTheDocument();
+    if (expected === "none") expect(screen.queryByRole("note")).not.toBeInTheDocument();
+    else expect(screen.getByRole("note")).toHaveAttribute("id", GITLAB_TOKEN_NOTICE_ID);
   });
 });
 
 describe("GitLab token health refresh after a write", () => {
-  it("a comment rejected for a bad GitLab token refreshes secrets-status; other failures don't", async () => {
-    const { qc, wrapper } = makeWrapper();
-    const invalidate = vi.spyOn(qc, "invalidateQueries");
-    const { result } = renderHook(() => useCreatePrComment("pr-1"), { wrapper });
-
-    vi.mocked(api.post).mockRejectedValueOnce(
-      new ApiError("missing api scope", 403, "gitlab_token_insufficient_scope"),
-    );
-    await act(async () => {
-      await expect(
-        result.current.mutateAsync({ path: "a.ts", line: 1, body: "hi" }),
-      ).rejects.toBeInstanceOf(ApiError);
+  it("a comment rejected for a bad GitLab token re-reads secrets-status and shows the notice; other failures don't", async () => {
+    let health: Health = "ok";
+    let postFailure = apiError(409, "comment_diff_outdated", "The diff moved on");
+    const user = userEvent.setup();
+    const { router } = renderWithProviders(<Probe repo={GITLAB_REPO} />, {
+      routes: {
+        "GET /settings/secrets-status": () => status(health),
+        "POST /pulls/:id/comments": () => postFailure,
+      },
     });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["secrets-status"] });
+    await screen.findByText("status loaded");
+    expect(statusCalls(router)).toBe(1);
 
-    invalidate.mockClear();
-    vi.mocked(api.post).mockRejectedValueOnce(
-      new ApiError("outdated", 409, "comment_diff_outdated"),
-    );
-    await act(async () => {
-      await expect(
-        result.current.mutateAsync({ path: "a.ts", line: 1, body: "hi" }),
-      ).rejects.toBeInstanceOf(ApiError);
-    });
-    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["secrets-status"] });
+    // A non-token failure: shown inline, token health is NOT re-read.
+    await user.click(screen.getByRole("button", { name: "Post" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The diff moved on");
+    expect(statusCalls(router)).toBe(1);
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+
+    // The server re-checked the token and rejected the post for its scope.
+    health = "insufficient_scope";
+    postFailure = apiError(403, "gitlab_token_insufficient_scope", "missing api scope");
+    await user.click(screen.getByRole("button", { name: "Post" }));
+    expect(await screen.findByRole("note")).toHaveTextContent(SCOPE_TEXT);
+    expect(statusCalls(router)).toBe(2);
+    expect(screen.getByText("blocking: insufficient_scope")).toBeInTheDocument();
   });
 
-  it("a failed GitLab connection test still refreshes secrets-status", async () => {
-    const { qc, wrapper } = makeWrapper();
-    const invalidate = vi.spyOn(qc, "invalidateQueries");
-    vi.mocked(api.post).mockResolvedValueOnce({
-      ok: false,
-      code: "gitlab_token_insufficient_scope",
-      message: "missing api scope",
+  it("a failed GitLab connection test re-reads secrets-status and shows the notice", async () => {
+    let health: Health = "ok";
+    const user = userEvent.setup();
+    const { router } = renderWithProviders(<Probe repo={GITLAB_REPO} />, {
+      routes: {
+        "GET /settings/secrets-status": () => status(health),
+        "POST /settings/test-connection": () => {
+          health = "invalid";
+          return { ok: false, code: "gitlab_token_invalid", message: "rejected by GitLab" };
+        },
+      },
     });
-    const { result } = renderHook(() => useTestConnection(), { wrapper });
-    await act(async () => {
-      await result.current.mutateAsync({ provider: "gitlab", key: "glpat-x" });
-    });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["secrets-status"] });
+    await screen.findByText("status loaded");
+
+    await user.click(screen.getByRole("button", { name: "Test" }));
+    await screen.findByText("tested");
+    expect(await screen.findByRole("note")).toHaveTextContent(/rejected by GitLab/);
+    await waitFor(() => expect(statusCalls(router)).toBe(2));
   });
 });
