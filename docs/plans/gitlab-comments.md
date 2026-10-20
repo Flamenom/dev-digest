@@ -100,6 +100,7 @@ of Unicode spaces or zero-width characters (U+00A0, U+2000–U+200B, U+202F, U+2
 - CommonMark treats `\/` as an escaped ASCII punctuation character, so it renders as `/` and the visible text is unchanged.
 - Lines inside a fenced block are byte-identical. Fence rules: ```` ``` ```` or `~~~` of length 3 or more, with 0–3 leading spaces. A fence closes only on the same character with a length at least as long. An unclosed fence runs to the end of the document, exactly as GitLab treats it.
 - Lines indented 4 or more spaces or with a tab are left alone. They are either an indented code block, where a backslash would show, or a paragraph continuation, which the raw-line regex cannot match because of the leading whitespace.
+- **Hardening (2026-10-20, after verified bypasses):** line endings are normalised first (`\r\n` → `\n`, then lone `\r` → `\n`), so the text sent is exactly the text analysed and GitLab's own `\r` deletion cannot re-shape lines (CRLF is not preserved). A `/` line is left unescaped only if BOTH the fence heuristic above AND a real CommonMark parse (`commonmark`, source positions) place it inside a code block; a fence-looking line inside an HTML block, block quote or list therefore no longer shields the lines after it. The offline oracle models the extractor: delete `\r` → CommonMark parse → top-level paragraphs' source lines (+1 trailing blank) → command regex.
 - Rejected alternatives:
   - zero-width characters change the stored bytes, copy/paste and search;
   - inline code and indentation change the rendering.

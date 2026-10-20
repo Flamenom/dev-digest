@@ -1,3 +1,4 @@
+import { Parser } from 'commonmark';
 import type { FetchLike } from '../../src/adapters/gitlab/index.js';
 
 /**
@@ -400,15 +401,42 @@ const QUICK_ACTIONS = [
   'spend', 'estimate',
 ];
 
+/** GitLab's command regex (`commands_regex`, flags m + i), command alternative only. */
+const COMMAND_RE = new RegExp(
+  `^\\/(?<cmd>${QUICK_ACTIONS.join('|')})(?:[ ](?<arg>[^\\n]*))?(?:\\s*\\n|$)`,
+  'gmi',
+);
+
 /**
- * GitLab's extractor regex (flags m + i), ported verbatim — the commands it would
- * run. Stricter than GitLab: 0–3 leading spaces are stripped per line first (a
- * Markdown paragraph may start indented), so an indented `/cmd` also counts.
+ * Model of GitLab's quick-action extractor (`lib/gitlab/quick_actions/extractor.rb`
+ * + `lib/banzai/filter/quick_action_filter.rb`, master 2026-10-20) — the commands
+ * GitLab would run for `text`:
+ *
+ * 1. `content.delete!("\r")`;
+ * 2. Markdown parse (CommonMark via `commonmark`, standing in for Banzai's
+ *    MarkdownFilter) → TOP-LEVEL paragraphs only, with their source lines;
+ * 3. per paragraph: raw lines `start..end`, plus the next line when it is blank;
+ * 4. the command regex over that slice.
+ *
+ * Deliberately CONSERVATIVE (it may report more than GitLab, never less): it
+ * skips the filter's "paragraph text starts with `/`" check and the extractor's
+ * EXCLUSION_REGEX (inline code / HTML block spans), both of which only remove
+ * matches.
  */
 export function quickActionMatches(text: string): string[] {
-  const re = new RegExp(`^\\/(?<cmd>${QUICK_ACTIONS.join('|')})(?:[ ](?<arg>[^\\n]*))?(?:\\s*\\n|$)`, 'gmi');
-  const normalised = text.replace(/\r/g, '').replace(/^ {0,3}/gm, '');
-  return [...normalised.matchAll(re)].map((m) => m.groups!.cmd!);
+  const content = text.replace(/\r/g, '');
+  const lines = content.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const doc = new Parser().parse(content);
+  const found: string[] = [];
+  for (let node = doc.firstChild; node; node = node.next) {
+    if (node.type !== 'paragraph') continue;
+    const start = node.sourcepos[0][0] - 1;
+    let end = node.sourcepos[1][0] - 1;
+    if (lines[end + 1] === '\n') end += 1;
+    const paragraph = lines.slice(start, end + 1).join('');
+    for (const m of paragraph.matchAll(COMMAND_RE)) found.push(m.groups!.cmd!);
+  }
+  return found;
 }
 
 // ---------- internals ----------

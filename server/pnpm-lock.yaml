@@ -35,6 +35,9 @@ importers:
       '@vscode/ripgrep':
         specifier: ^1.15.9
         version: 1.18.0
+      commonmark:
+        specifier: 0.31.2
+        version: 0.31.2
       dependency-cruiser:
         specifier: ^17.4.3
         version: 17.4.3
@@ -90,6 +93,9 @@ importers:
       '@testcontainers/postgresql':
         specifier: ^10.16.0
         version: 10.28.0(supports-color@7.2.0)
+      '@types/commonmark':
+        specifier: ^0.27.10
+        version: 0.27.10
       '@types/node':
         specifier: ^22.10.0
         version: 22.19.19
@@ -1134,6 +1140,9 @@ packages:
   '@types/aws-lambda@8.10.161':
     resolution: {integrity: sha512-rUYdp+MQwSFocxIOcSsYSF3YYYC/uUpMbCY/mbO21vGqfrEYvNSoPyKYDj6RhXXpPfS0KstW9RwG3qXh9sL7FQ==}
 
+  '@types/commonmark@0.27.10':
+    resolution: {integrity: sha512-iEZobUnvlM+UX5fXWCmC4eQXwCs01Z8Xa1W0VjiWUF/XsNy4BHtskqJ9MyLZVMHbA0ezhyonCDqz3hMvsCm6Hg==}
+
   '@types/docker-modem@3.0.6':
     resolution: {integrity: sha512-yKpAGEuKRSS8wwx0joknWxsmLha78wNMe9R2S3UNsVOkZded8UqOrV8KoeDXoXsjndxwyF3eIhyClGbO1SEhEg==}
 
@@ -1482,6 +1491,10 @@ packages:
     resolution: {integrity: sha512-H+y0Jo/T1RZ9qPP4Eh1pkcQcLRglraJaSLoyOtHxu6AapkjWVCy2Sit1QQ4x3Dng8qDlSsZEet7g5Pq06MvTgw==}
     engines: {node: '>=20'}
 
+  commonmark@0.31.2:
+    resolution: {integrity: sha512-2fRLTyb9r/2835k5cwcAwOj0DEc44FARnMp5veGsJ+mEAZdi52sNopLu07ZyElQUz058H43whzlERDIaaSw4rg==}
+    hasBin: true
+
   compress-commons@6.0.2:
     resolution: {integrity: sha512-6FqVXeETqWPoGcfzrXb37E50NP0LXT8kAMu5ooZayhWWdgEY4lBEEcbQNXtkuKQsGduxiIcI4gOTsxTmuq/bSg==}
     engines: {node: '>= 14'}
@@ -1674,6 +1687,10 @@ packages:
   enhanced-resolve@5.22.1:
     resolution: {integrity: sha512-6QEuw3zoX1SJQc7b87aBXke/no+mG2bTBgw29gWMQonLmpEkWoCAVkl+M49e48AZlWzxiDzDZzYdp6kobcyLww==}
     engines: {node: '>=10.13.0'}
+
+  entities@3.0.1:
+    resolution: {integrity: sha512-WiyBqoomrwMdFG1e0kqvASYfnlb0lp8M5o5Fw2OFq1hNZxxcNk8Ik0Xm7LxzBhuidnZB/UtBqVCgUz3kBOP51Q==}
+    engines: {node: '>=0.12'}
 
   env-paths@3.0.0:
     resolution: {integrity: sha512-dtJUTepzMW3Lm/NPxRf3wP4642UWhjL2sQxc+ym2YMj1m/H2zDNQOlezafzkHwn6sMstjHTwG6iQQsctDW/b1A==}
@@ -2045,6 +2062,9 @@ packages:
   math-intrinsics@1.1.0:
     resolution: {integrity: sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g==}
     engines: {node: '>= 0.4'}
+
+  mdurl@1.0.1:
+    resolution: {integrity: sha512-/sKlQJCBYVY9Ers9hqzKou4H6V5UWc/M59TH2dvkt+84itfnq7uFOMLpOiOS4ujvHP4etln18fmIxA5R5fll0g==}
 
   mime-db@1.52.0:
     resolution: {integrity: sha512-sPU4uV7dYlvtWJxwwxHD0PuihVNiE7TyAbQ5SWxDCB9mUYvOgroQOwYQQOKPJ8CIbE+1ETVlOoK1UC2nU3gYvg==}
@@ -3393,6 +3413,8 @@ snapshots:
 
   '@types/aws-lambda@8.10.161': {}
 
+  '@types/commonmark@0.27.10': {}
+
   '@types/docker-modem@3.0.6':
     dependencies:
       '@types/node': 22.19.19
@@ -3734,6 +3756,12 @@ snapshots:
 
   commander@14.0.3: {}
 
+  commonmark@0.31.2:
+    dependencies:
+      entities: 3.0.1
+      mdurl: 1.0.1
+      minimist: 1.2.8
+
   compress-commons@6.0.2:
     dependencies:
       crc-32: 1.2.2
@@ -3863,6 +3891,8 @@ snapshots:
     dependencies:
       graceful-fs: 4.2.11
       tapable: 2.3.3
+
+  entities@3.0.1: {}
 
   env-paths@3.0.0: {}
 
@@ -4325,6 +4355,8 @@ snapshots:
       '@jridgewell/sourcemap-codec': 1.5.5
 
   math-intrinsics@1.1.0: {}
+
+  mdurl@1.0.1: {}
 
   mime-db@1.52.0: {}
 

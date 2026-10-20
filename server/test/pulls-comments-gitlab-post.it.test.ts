@@ -231,10 +231,10 @@ d('GitLab MR comments: post + reply (fake GitLab, Testcontainers pg)', () => {
     expect(res.statusCode).toBe(200);
 
     const sent = (fake.writes[0]!.body as { body: string }).body;
-    // Outside the fence: no command the extractor would run.
-    const outsideFence = sent.split('```')[0]!;
-    expect(quickActionMatches(outsideFence)).toEqual([]);
-    expect(quickActionMatches(typed.split('```')[0]!)).toEqual(['merge', 'close', 'label']);
+    // The oracle models GitLab's extractor (top-level paragraphs only, fences
+    // excluded): the typed text runs commands, the sent text runs none.
+    expect(quickActionMatches(typed)).toEqual(['merge', 'close']);
+    expect(quickActionMatches(sent)).toEqual([]);
     // Fenced content is byte-identical.
     expect(sent.endsWith('```\n/approve\n```')).toBe(true);
     expect(sent.replace(/\\\//g, '/')).toBe(typed);

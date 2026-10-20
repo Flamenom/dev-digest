@@ -140,8 +140,11 @@ repo from its URL. Specs: [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merg
     "via DevDigest · <name>" instead. `local` mode adds no footer.
   - **Quick actions are neutralised.** A line such as `/merge`, `/close` or
     `/label` is escaped (`\/merge`) before posting, so it renders as typed and
-    never changes the MR's state, labels, approvals or assignees. Text inside
-    fenced code blocks is sent unchanged.
+    never changes the MR's state, labels, approvals or assignees. Line endings
+    are normalised to LF first (GitLab drops `\r` before looking for quick
+    actions). Text inside fenced code blocks is sent unchanged; a `/` line is
+    left unescaped only when both a line scan and a full CommonMark parse agree
+    it is inside a code block.
   - **Head moved → reload.** Before every post DevDigest reads the MR's current
     diff refs; if new commits were pushed since the diff was loaded, the post is
     refused (409 `comment_diff_outdated`, "New commits were pushed — reload the
