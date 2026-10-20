@@ -40,10 +40,9 @@ export function CodeLine({
   }
 
   const sign = ln.kind === "add" ? "+" : ln.kind === "del" ? "−" : "";
-  // Read-only hosts still get the composer (disabled post + copy), so the
-  // affordance is offered for them too.
-  const target =
-    commenting?.canComment || commenting?.readOnly ? commentTargetFor(ln) : null;
+  // A blocked host (postBlocked) still gets the composer — its post button is
+  // disabled and described by the page notice — so only canComment gates it.
+  const target = commenting?.canComment ? commentTargetFor(ln) : null;
   const showAdd = hover && !!target && !composing;
 
   return (

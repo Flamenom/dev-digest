@@ -13,9 +13,11 @@ import {
 } from '../src/adapters/mocks.js';
 
 /**
- * T12 — inline comments on a GitLab MR are read-only in the MVP (Q3):
- * POST → 400 `provider_read_only` with no host call (AC-44), GET → `[]` without
- * resolving any client (AC-45).
+ * GitLab MR comments without a configured GitLab token (spec
+ * 2026-10-20-gitlab-comments; supersedes the read-only MVP AC-44/AC-45):
+ * GET → `200 []` with no GitLab request (AC-6/AC-29), POST →
+ * `400 gitlab_token_missing` with no GitLab request (AC-29). `provider_read_only`
+ * is no longer emitted for comments.
  */
 
 const hasDocker = await dockerAvailable();
@@ -25,7 +27,7 @@ if (!hasDocker) {
   console.warn('[pulls-comments-gitlab] Docker not available — skipping Testcontainers tests.');
 }
 
-d('GitLab MR comments are read-only (Testcontainers pg)', () => {
+d('GitLab MR comments without a GitLab token (Testcontainers pg)', () => {
   let pg: PgFixture;
   let workspaceId: string;
   let seq = 0;
@@ -49,7 +51,8 @@ d('GitLab MR comments are read-only (Testcontainers pg)', () => {
       db: pg.handle.db,
       overrides: {
         git: new MockGitClient(),
-        secrets: new MockSecretsProvider({ GITHUB_TOKEN: 'x', GITLAB_TOKEN: 'y' }),
+        // No GITLAB_TOKEN: the token gate answers "none configured".
+        secrets: new MockSecretsProvider({ GITHUB_TOKEN: 'x' }),
         gitlab,
         github,
       },
@@ -84,12 +87,21 @@ d('GitLab MR comments are read-only (Testcontainers pg)', () => {
         deletions: 0,
         filesCount: 1,
         status: 'open',
+        detailHeadSha: 'f00dbabe5',
       })
       .returning();
+    // The persisted diff the comment targets (line 2 is an added line).
+    await pg.handle.db.insert(t.prFiles).values({
+      prId: pr!.id,
+      path: 'src/import.ts',
+      additions: 2,
+      deletions: 0,
+      patch: '@@ -0,0 +1,2 @@\n+export const a = 1;\n+export const b = 2;',
+    });
     return { app, gitlab, github, pr: pr! };
   }
 
-  it('POST → 400 provider_read_only and no host call (AC-44)', async () => {
+  it('POST → 400 gitlab_token_missing and no host call (AC-29)', async () => {
     const { app, gitlab, github, pr } = await setup();
     const res = await app.inject({
       method: 'POST',
@@ -98,13 +110,13 @@ d('GitLab MR comments are read-only (Testcontainers pg)', () => {
     });
     expect(res.statusCode).toBe(400);
     const body = res.json() as { error: { code: string; message: string } };
-    expect(body.error.code).toBe('provider_read_only');
-    expect(body.error.message).toBe('Posting to GitLab is not supported yet.');
+    expect(body.error.code).toBe('gitlab_token_missing');
     expect(gitlab.calls).toEqual([]);
+    expect(gitlab.posted).toEqual([]);
     expect(github.createdComments).toEqual([]);
   });
 
-  it('GET → 200 [] without resolving any client (AC-45)', async () => {
+  it('GET → 200 [] with no GitLab request (AC-6/AC-29)', async () => {
     const { app, gitlab, github, pr } = await setup();
     const res = await app.inject({ method: 'GET', url: `/pulls/${pr.id}/comments` });
     expect(res.statusCode).toBe(200);

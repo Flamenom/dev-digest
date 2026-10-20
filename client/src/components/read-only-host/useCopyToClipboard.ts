@@ -1,7 +1,6 @@
-/* useCopyToClipboard — the read-only hosts' substitute for posting (AC-43):
-   write text to the clipboard and confirm with a toast (success or failure).
-   Shared by FindingCard, the inline diff composer and anything else that offers
-   "copy instead of post". */
+/* useCopyToClipboard — write text to the clipboard and confirm with a toast
+   (success or failure). Shared by FindingCard ("Copy finding") and the inline
+   diff composer ("Copy text" after a failed post, AC-32). */
 "use client";
 
 import { useTranslations } from "next-intl";

@@ -1,4 +1,5 @@
-/* read-only-host — shared UI for hosts that accept no posted comments (GitLab
-   in the MVP): the disabled post control + visible note, and copy-to-clipboard. */
-export { ReadOnlyPostNotice } from "./ReadOnlyPostNotice";
+/* read-only-host — "copy instead of post" helpers shared by the PR page: the
+   copy-to-clipboard hook used by the FindingCard's "Copy finding" and the
+   inline composer's "Copy text" after a failed post. (The former disabled
+   post control + read-only note are gone — GitLab posts now.) */
 export { useCopyToClipboard } from "./useCopyToClipboard";

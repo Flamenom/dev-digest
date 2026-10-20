@@ -29,14 +29,6 @@ export function hostLabelKey(repo: Pick<RepoWithHost, "provider"> | null | undef
   return repo?.provider === "gitlab" ? "gitlab" : "github";
 }
 
-/**
- * The host accepts no posted comments — GitLab in the MVP (server answers
- * `provider_read_only`). An unknown/unloaded repo is NOT read-only.
- */
-export function isReadOnlyHost(repo: Pick<RepoWithHost, "provider"> | null | undefined): boolean {
-  return repo?.provider === "gitlab";
-}
-
 /** Encode a repo-relative path (or ref) for a URL while keeping "/" separators. */
 function encPath(file: string): string {
   return file.split("/").map(encodeURIComponent).join("/");

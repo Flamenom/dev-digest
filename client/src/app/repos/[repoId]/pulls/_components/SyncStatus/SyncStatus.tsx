@@ -1,7 +1,9 @@
 /* SyncStatus — PR-list sync indicator: "Updating…" while a sync runs (AC-59),
    the last successful sync time at all times, and a "showing data from …"
    notice when the last attempt failed — the list itself stays visible (AC-25) —
-   and an alert when a manual Refresh could not start a sync. */
+   and an alert when a manual Refresh could not start a sync. The failure note
+   is suppressed while a more specific notice (the GitLab token notice, AC-25)
+   explains the failure instead; "Updating…" and the age stay. */
 "use client";
 
 import React from "react";
@@ -16,6 +18,7 @@ export function SyncStatus({
   sync,
   updating,
   startFailed = false,
+  suppressFailedNotice = false,
 }: {
   /** Sync status from the list page; undefined while the page is loading. */
   sync: PrListSync | undefined;
@@ -23,10 +26,12 @@ export function SyncStatus({
   updating: boolean;
   /** True when the manual Refresh's `POST /pulls/sync` failed. */
   startFailed?: boolean;
+  /** Hide the "showing data from …" note — another notice explains the failure. */
+  suppressFailedNotice?: boolean;
 }) {
   const t = useTranslations("prReview.list.sync");
   const age = syncAge(sync?.last_synced_at);
-  const failed = sync?.state === "failed";
+  const failed = sync?.state === "failed" && !suppressFailedNotice;
   const failedTime = formatSyncTime(sync?.last_synced_at);
 
   return (

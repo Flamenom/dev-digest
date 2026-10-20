@@ -77,7 +77,7 @@ function FindingsTabWithCancel({ onDelete }: { onDelete: (runId: string) => void
       prCommits={[]}
       cancelMutation={cancel}
       repo={null}
-      readOnly={false}
+      offerCopy={false}
       onOpenTrace={() => {}}
       onDelete={onDelete}
       onRunDone={() => {}}

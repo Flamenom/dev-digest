@@ -3,8 +3,8 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import {
   SettingsUpdate,
   ConnTestRequestHost,
-  SecretsStatusDetailed,
-  type ConnTestResultHost,
+  SecretsStatusWithHealth,
+  type ConnTestResultWithCode,
   type SecretKeyStatus,
   type SecretsStatusProvider,
 } from '@devdigest/shared';
@@ -12,24 +12,23 @@ import { redactSecret } from '../../platform/redact.js';
 import { getContext } from '../_shared/context.js';
 import { withActors } from '../_shared/actors.js';
 import { GITHUB_PROVIDER, GITLAB_PROVIDER, SECRET_KEY_BY_PROVIDER } from './constants.js';
-import {
-  gitlabCheckToResult,
-  rowsToSettings,
-  toSecretsStatusDto,
-  type ProviderSecretState,
-} from './helpers.js';
+import { rowsToSettings, toSecretsStatusWithHealth, type ProviderSecretState } from './helpers.js';
 import type { SettingsActor } from './service.js';
 
 /**
  * F1 — settings module.
  *   GET  /settings                 → current non-secret prefs (workspace-wide)
  *   GET  /settings/secrets-status  → per-provider booleans + `states` (AC-38)
+ *                                     + `gitlab_health` (token scope health, never a token-derived value)
  *   PUT  /settings                 → set prefs workspace-wide (Q8)
  *   POST /settings/test-connection → test a provider key (OpenAI/Anthropic/OpenRouter/GitHub/GitLab)
  *
  * Secrets are NOT stored here — only non-secret prefs. test-connection reads
  * the key via SecretsProvider and does a cheap live call (listModels / GET user).
  * The key is never echoed back: failure messages pass through `redactSecret`.
+ * GitLab is the exception to "save, then test": `GitLabTokenService` probes the
+ * candidate's scopes FIRST and stores it only when it carries `api` (spec
+ * 2026-10-20 AC-21/22/28), so a rejected key is neither stored nor audited.
  * Access is owned by the central route policy (platform/auth/route-policy.ts).
  * The `settings.update` / `secret.save` audit rows are written by
  * `SettingsService` inside the write's own transaction (google mode only —
@@ -63,7 +62,7 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
   // strict response schema rejects any extra (length/prefix) field.
   app.get(
     '/settings/secrets-status',
-    { schema: { response: { 200: SecretsStatusDetailed } } },
+    { schema: { response: { 200: SecretsStatusWithHealth } } },
     async (req) => {
       await getContext(container, req);
       const providers = Object.entries(SECRET_KEY_BY_PROVIDER) as [
@@ -78,7 +77,7 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
       const withActor = await withActors(entries, { updated_by: (e) => e.updatedBy }, (ids) =>
         container.actorDirectory.lookup(ids),
       );
-      return toSecretsStatusDto(withActor);
+      return toSecretsStatusWithHealth(withActor, await container.gitlabTokenHealth.current());
     },
   );
 
@@ -93,7 +92,7 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
       schema: { body: ConnTestRequestHost },
       config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
     },
-    async (req): Promise<ConnTestResultHost> => {
+    async (req): Promise<ConnTestResultWithCode> => {
       const { provider, key } = req.body;
       // Resolved OUTSIDE the try: an auth/context failure must surface as its
       // own error envelope, not as a `{ ok: false }` connection result.
@@ -103,6 +102,16 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
         actor = { workspaceId, userId, audit: auditContext(req) };
       }
       try {
+        // GitLab: probe the candidate (or stored) token's scopes before any save.
+        if (provider === GITLAB_PROVIDER) {
+          if (key && actor) {
+            if (!container.secrets.set) {
+              return { provider, ok: false, message: 'Secrets backend is read-only' };
+            }
+            return { provider, ...(await container.gitlabToken.save(key, actor)) };
+          }
+          return { provider, ...(await container.gitlabToken.testStored()) };
+        }
         // If the UI supplied a key, persist it (BYO key) before testing so the
         // test reflects — and the rest of the app can use — the new value.
         // Google mode records the acting Admin on the encrypted row (AC-40).
@@ -113,10 +122,6 @@ export default async function settingsRoutes(appBase: FastifyInstance) {
           }
           await container.settingsService.saveSecret(actor, SECRET_KEY_BY_PROVIDER[provider], key);
           container.invalidateSecretCaches();
-        }
-        if (provider === GITLAB_PROVIDER) {
-          const gl = await container.gitlab();
-          return { provider, ...gitlabCheckToResult(await gl.checkToken()) };
         }
         if (provider === GITHUB_PROVIDER) {
           const gh = await container.github();

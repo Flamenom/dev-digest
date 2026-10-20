@@ -33,6 +33,12 @@ import type {
   SecretsProvider,
   SecretKey,
   GitLabClient,
+  GitLabCommentsHost,
+  GitLabDiffNote,
+  GitLabDiffRefs,
+  GitLabDiscussionRef,
+  GitLabScopeCheck,
+  GitLabTextPosition,
   GitLabProjectInfo,
   GitLabTokenCheck,
   HostRepoRef,
@@ -52,6 +58,7 @@ import type {
 } from '@devdigest/shared';
 import { parseUnifiedDiff } from './git/diff-parser.js';
 import { AuthFlowError } from '../platform/auth-errors.js';
+import { AppError } from '../platform/errors.js';
 
 /**
  * Deterministic MOCK adapters for tests/dev — NO real network. Each mirrors the
@@ -273,7 +280,12 @@ export type MockGitLabCallKind =
   | 'diffs' //            GET /merge_requests/:iid/diffs (one per page)
   | 'commits' //          GET /merge_requests/:iid/commits (one per page)
   | 'closes_issues' //    GET /merge_requests/:iid/closes_issues
-  | 'issue'; //           GET /issues/:iid
+  | 'issue' //            GET /issues/:iid
+  | 'discussions' //      GET /merge_requests/:iid/discussions (one per page)
+  | 'diff_refs' //        GET /merge_requests/:iid (diff_refs read before a post)
+  | 'discussion' //       GET /merge_requests/:iid/discussions/:id
+  | 'create_discussion' // POST /merge_requests/:iid/discussions
+  | 'add_note'; //        POST /merge_requests/:iid/discussions/:id/notes
 
 export interface MockGitLabCall {
   kind: MockGitLabCallKind;
@@ -299,6 +311,19 @@ export interface MockGitLabOptions {
   /** Project returned by `getProject` (default: `path_with_namespace` = the requested path). */
   project?: Partial<GitLabProjectInfo>;
   tokenCheck?: GitLabTokenCheck;
+  /**
+   * `checkTokenScopes` result (default `{kind:'ok', username:'devdigest-bot', scopes:['api']}`).
+   * Records one `user` call, plus one `token_scopes` call unless the result is
+   * `invalid` (mirrors the real two-request probe).
+   */
+  scopeCheck?: GitLabScopeCheck;
+  /**
+   * Diff notes per MR iid returned by `listDiffNotes` (default: none). Posted notes
+   * are appended here, so a later list sees them.
+   */
+  diffNotes?: Record<number, GitLabDiffNote[]>;
+  /** Current diff refs per iid (default: base/start fixed, head = the MR's head_sha). */
+  diffRefs?: Record<number, Partial<GitLabDiffRefs>>;
   /** Throw this error from the first call of the given kind(s) — and every later one. */
   errors?: Partial<Record<MockGitLabCallKind, Error>>;
 }
@@ -325,10 +350,20 @@ const MOCK_GITLAB_DEFAULT_MR: PrMetaHost = {
  * (move a head SHA, un-draft an MR, inject an error) between calls. `calls`
  * records one entry per simulated host request, by endpoint kind.
  */
-export class MockGitLabClient implements GitLabClient {
+export class MockGitLabClient implements GitLabClient, GitLabCommentsHost {
   readonly provider = 'gitlab' as const;
-  readonly readOnly = true;
+  readonly readOnly = false;
   public calls: MockGitLabCall[] = [];
+  /** Every write accepted by the mock, in order (body exactly as sent). */
+  public posted: {
+    kind: 'create_discussion' | 'add_note';
+    iid: number;
+    discussionId: string;
+    body: string;
+    position: GitLabTextPosition | null;
+  }[] = [];
+  private nextNoteId = 9000;
+  private nextDiscussionSeq = 1;
 
   constructor(public opts: MockGitLabOptions = {}) {}
 
@@ -440,6 +475,108 @@ export class MockGitLabClient implements GitLabClient {
   async getLinkedIssueNumber(ref: HostRepoRef, n: number): Promise<number | null> {
     this.record('closes_issues', ref.fullName, n);
     return this.opts.linkedIssues?.[n] ?? null;
+  }
+
+  // ---------- GitLabCommentsHost ----------
+
+  checkTokenScopes = async (): Promise<GitLabScopeCheck> => {
+    this.record('user');
+    const check = this.opts.scopeCheck ?? { kind: 'ok', username: 'devdigest-bot', scopes: ['api'] };
+    if (check.kind !== 'invalid') this.record('token_scopes');
+    return check;
+  };
+
+  listDiffNotes = async (ref: HostRepoRef, iid: number): Promise<GitLabDiffNote[]> => {
+    this.record('discussions', ref.fullName, iid);
+    return (this.opts.diffNotes?.[iid] ?? []).map((n) => ({ ...n, position: { ...n.position } }));
+  };
+
+  getDiffRefs = async (ref: HostRepoRef, iid: number): Promise<GitLabDiffRefs> => {
+    this.record('diff_refs', ref.fullName, iid);
+    return this.currentRefs(iid);
+  };
+
+  /** Explicit `null` for an unknown discussion id (never an empty "found"). */
+  getDiscussion = async (
+    ref: HostRepoRef,
+    iid: number,
+    discussionId: string,
+  ): Promise<GitLabDiscussionRef | null> => {
+    this.record('discussion', ref.fullName, iid);
+    const notes = (this.opts.diffNotes?.[iid] ?? []).filter((n) => n.discussionId === discussionId);
+    const root = notes.find((n) => n.id === n.rootNoteId) ?? notes[0];
+    if (!root) return null;
+    return { id: discussionId, rootNoteId: root.rootNoteId, position: { ...root.position } };
+  };
+
+  createDiffDiscussion = async (
+    ref: HostRepoRef,
+    iid: number,
+    input: { body: string; position: GitLabTextPosition },
+  ): Promise<GitLabDiffNote> => {
+    this.record('create_discussion', ref.fullName, iid);
+    const id = this.nextNoteId++;
+    const discussionId = `mockdiscussion${String(this.nextDiscussionSeq++).padStart(8, '0')}`;
+    const note: GitLabDiffNote = {
+      id,
+      discussionId,
+      rootNoteId: id,
+      author: this.serviceAccount(),
+      body: input.body,
+      createdAt: '2026-10-20T00:00:00Z',
+      position: {
+        headSha: input.position.headSha,
+        oldPath: input.position.oldPath,
+        newPath: input.position.newPath,
+        oldLine: input.position.oldLine,
+        newLine: input.position.newLine,
+      },
+    };
+    this.posted.push({ kind: 'create_discussion', iid, discussionId, body: input.body, position: input.position });
+    this.storeNote(iid, note);
+    return { ...note, position: { ...note.position } };
+  };
+
+  addDiscussionNote = async (
+    ref: HostRepoRef,
+    iid: number,
+    discussionId: string,
+    body: string,
+  ): Promise<GitLabDiffNote> => {
+    this.record('add_note', ref.fullName, iid);
+    const thread = (this.opts.diffNotes?.[iid] ?? []).filter((n) => n.discussionId === discussionId);
+    const root = thread.find((n) => n.id === n.rootNoteId) ?? thread[0];
+    if (!root) throw new AppError('gitlab_comment_failed', 'GitLab rejected the comment: 404 Not found', 400);
+    const id = this.nextNoteId++;
+    const note: GitLabDiffNote = {
+      id,
+      discussionId,
+      rootNoteId: root.rootNoteId,
+      author: this.serviceAccount(),
+      body,
+      createdAt: '2026-10-20T00:00:00Z',
+      position: { ...root.position },
+    };
+    this.posted.push({ kind: 'add_note', iid, discussionId, body, position: null });
+    this.storeNote(iid, note);
+    return { ...note, position: { ...note.position } };
+  };
+
+  private currentRefs(iid: number): GitLabDiffRefs {
+    const meta = this.pulls().find((p) => p.number === iid);
+    const head =
+      this.opts.details?.[iid]?.head_sha ?? this.opts.detail?.head_sha ?? meta?.head_sha ?? MOCK_GITLAB_DEFAULT_MR.head_sha;
+    return { baseSha: 'b45e0000', startSha: 'b45e0000', headSha: head, ...this.opts.diffRefs?.[iid] };
+  }
+
+  private serviceAccount(): string {
+    const check = this.opts.scopeCheck;
+    return check && check.kind === 'ok' ? check.username : 'devdigest-bot';
+  }
+
+  private storeNote(iid: number, note: GitLabDiffNote): void {
+    this.opts.diffNotes ??= {};
+    (this.opts.diffNotes[iid] ??= []).push(note);
   }
 }
 

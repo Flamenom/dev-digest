@@ -1,11 +1,12 @@
 import type {
   ActorRef,
-  GitLabTokenCheck,
+  GitLabTokenHealth,
   SecretState,
   SecretStatusEntry,
   SecretsStatusDetailed,
   SecretsStatusProvider,
   SecretsStatusStates,
+  SecretsStatusWithHealth,
   Settings,
 } from '@devdigest/shared';
 
@@ -20,22 +21,6 @@ export function rowsToSettings(rows: SettingsRow[]): Settings {
   const out: Record<string, unknown> = {};
   for (const r of rows) out[r.key] = r.value;
   return out as Settings;
-}
-
-/** Translate a GitLab token check into the connection-test outcome (AC-2..AC-5). */
-export function gitlabCheckToResult(check: GitLabTokenCheck): { ok: boolean; message: string } {
-  if (!check.ok) return { ok: false, message: `GitLab token is ${check.reason}` };
-  if (check.missingScopes.length > 0) {
-    return { ok: false, message: `Missing scopes: ${check.missingScopes.join(', ')}` };
-  }
-  const connected = `Connected as @${check.username}`;
-  if (check.scopes === null) {
-    return {
-      ok: true,
-      message: `${connected} (scope sufficiency is verified on first repo access)`,
-    };
-  }
-  return { ok: true, message: connected };
 }
 
 /** One provider's secret state with the raw updater id (pre actor enrichment). */
@@ -85,4 +70,16 @@ export function toSecretsStatusDto(entries: readonly ProviderSecretStateWithActo
     };
   });
   return { ...perProvider((provider) => states[provider].state === 'set'), states };
+}
+
+/**
+ * GET /settings/secrets-status plus the GitLab token health (AC-26). `null`
+ * health ⇒ no GitLab token configured (plan Q2). Only the health ENUM is added —
+ * nothing derived from the token value (no fingerprint, length or prefix).
+ */
+export function toSecretsStatusWithHealth(
+  entries: readonly ProviderSecretStateWithActor[],
+  gitlabHealth: GitLabTokenHealth | null,
+): SecretsStatusWithHealth {
+  return { ...toSecretsStatusDto(entries), gitlab_health: gitlabHealth };
 }

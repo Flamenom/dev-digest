@@ -4,11 +4,12 @@
 
 import React from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, API_BASE } from "../api";
+import { api, API_BASE, ApiError } from "../api";
 import { notify } from "../toast";
+import { errorChannelMeta } from "../query-meta";
+import type { HostComment } from "../types";
 import type {
   FindingActionKind,
-  PrReviewComment,
   ReviewRecord,
   ReviewRunResponse,
   RunEvent,
@@ -86,12 +87,14 @@ export function useDeleteReview(prId: string | null | undefined) {
   });
 }
 
-// ---- Inline review comments on the "Files changed" tab (proxied to GitHub) --
-/** Existing GitHub PR review comments, fetched live. */
+// ---- Inline review comments on the "Files changed" tab (GitHub + GitLab) ----
+/** Existing PR/MR inline comments, fetched live from the repo's host. GitLab
+   notes carry `discussion_id` and, when posted via DevDigest, the attributed
+   user (`devdigest_attribution`). */
 export function usePrComments(prId: string | null | undefined) {
   return useQuery({
     queryKey: ["pr-comments", prId],
-    queryFn: () => api.get<PrReviewComment[]>(`/pulls/${prId}/comments`),
+    queryFn: () => api.get<HostComment[]>(`/pulls/${prId}/comments`),
     enabled: !!prId,
   });
 }
@@ -101,16 +104,35 @@ export interface CreateCommentInput {
   line: number;
   side?: "LEFT" | "RIGHT";
   body: string;
+  /** GitHub reply: the root comment id. */
   in_reply_to?: number;
+  /** GitLab reply: the discussion (thread) id. */
+  discussion_id?: string;
 }
 
-/** Post one inline comment (or reply) to GitHub; refreshes the thread list. */
+/** Error codes meaning the stored GitLab token's health just changed (AC-25). */
+const GITLAB_TOKEN_HEALTH_CODES = new Set([
+  "gitlab_token_invalid",
+  "gitlab_token_insufficient_scope",
+]);
+
+/** Post one inline comment (or reply) to the PR's host; refreshes the thread list. */
 export function useCreatePrComment(prId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateCommentInput) =>
-      api.post<PrReviewComment>(`/pulls/${prId}/comments`, input),
+      api.post<HostComment>(`/pulls/${prId}/comments`, input),
+    // The composer keeps the draft and shows the failure inline (AC-32) —
+    // one error channel, no global toast.
+    ...errorChannelMeta("local"),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["pr-comments", prId] }),
+    onError: (err) => {
+      // The server re-checked the GitLab token — refresh its health so the
+      // token notice shows on the next render (AC-25).
+      if (err instanceof ApiError && err.code && GITLAB_TOKEN_HEALTH_CODES.has(err.code)) {
+        qc.invalidateQueries({ queryKey: ["secrets-status"] });
+      }
+    },
   });
 }
 

@@ -7,7 +7,12 @@ import { redactSecret } from '../../platform/redact.js';
  * Resilience policy (spec NFR "Rate limiting / resilience") — deliberately NOT
  * `platform/resilience.withRetry` (its 250 ms base / 8 s cap does not match):
  *  - per-attempt timeout 15 s (`AbortSignal.timeout`);
- *  - retry only 429 / 5xx, at most 3 times, backoff 1 s / 2 s / 4 s ± 20 % jitter;
+ *  - reads (`rest()` GET, `graphql()`): retry 429 / 5xx, at most 3 times,
+ *    backoff 1 s / 2 s / 4 s ± 20 % jitter;
+ *  - writes (`post()`, comment creation): retry ONLY 429 inside the same budget.
+ *    A 5xx may mean the write landed, so it is never re-sent (AC-31);
+ *  - network errors and timeouts are NEVER retried (reads or writes) — writes
+ *    rely on this: a request that may have reached GitLab is sent exactly once;
  *  - `Retry-After` (seconds or HTTP-date) honoured, capped at 30 s;
  *  - total extra wait per call ≤ 60 s.
  *
@@ -33,6 +38,13 @@ const MAX_ERROR_DETAIL = 300;
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
+/**
+ * Auth failure classification of a GitLab response (AC-24/AC-29):
+ * `invalid` ⇐ 401; `insufficient_scope` ⇐ 403 whose `WWW-Authenticate` header or
+ * JSON `error` says `insufficient_scope`.
+ */
+export type GitLabAuthFailure = 'invalid' | 'insufficient_scope';
+
 export interface GitLabHttpOptions {
   /** Optional: anonymous access works for public projects. */
   token?: string | null;
@@ -41,6 +53,12 @@ export interface GitLabHttpOptions {
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
   timeoutMs?: number;
+  /**
+   * Called once per response classified as an auth failure (401, or 403
+   * `insufficient_scope`) so token health can be re-checked (AC-24). A throwing
+   * hook never masks the request's own error.
+   */
+  onAuthFailure?: (kind: GitLabAuthFailure) => void;
 }
 
 /** Upstream GitLab failure. `upstreamStatus` 0 ⇒ network error / timeout. */
@@ -50,6 +68,8 @@ export class GitLabHttpError extends ExternalServiceError {
     public readonly upstreamStatus: number,
     /** Redacted OAuth `error_description` / `error` / `message`, when the body had one. */
     public readonly upstreamDetail: string | null = null,
+    /** Auth failure classification of the response (null ⇒ not an auth failure). */
+    public readonly authFailure: GitLabAuthFailure | null = null,
   ) {
     super(message);
     this.name = 'GitLabHttpError';
@@ -71,6 +91,7 @@ export class GitLabHttp {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
   private readonly timeoutMs: number;
+  private readonly onAuthFailure: ((kind: GitLabAuthFailure) => void) | null;
 
   constructor(opts: GitLabHttpOptions = {}) {
     this.token = opts.token ? opts.token : null;
@@ -78,6 +99,7 @@ export class GitLabHttp {
     this.sleep = opts.sleep ?? defaultSleep;
     this.random = opts.random ?? Math.random;
     this.timeoutMs = opts.timeoutMs ?? GITLAB_TIMEOUT_MS;
+    this.onAuthFailure = opts.onAuthFailure ?? null;
   }
 
   get hasToken(): boolean {
@@ -91,6 +113,22 @@ export class GitLabHttp {
     if (this.token) headers['PRIVATE-TOKEN'] = this.token;
     const res = await this.send('GET', url, headers);
     return { data: (await this.readJson(res, 'GET', path)) as T, headers: res.headers };
+  }
+
+  /**
+   * Write: POST `/api/v4<path>` with a JSON body. Same origin pin, token header
+   * and `redirect:'manual'` as reads. Retries ONLY 429 (AC-31); a 5xx, timeout or
+   * network error is surfaced after exactly one attempt — never re-sent.
+   */
+  async post<T>(path: string, body: unknown): Promise<GitLabRestResponse<T>> {
+    const url = this.buildUrl(`${REST_PREFIX}${path}`, {});
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    };
+    if (this.token) headers['PRIVATE-TOKEN'] = this.token;
+    const res = await this.send('POST', url, headers, JSON.stringify(body), false);
+    return { data: (await this.readJson(res, 'POST', path)) as T, headers: res.headers };
   }
 
   /** POST `/api/graphql`. Throws on HTTP failure or a non-empty `errors` array. */
@@ -138,6 +176,8 @@ export class GitLabHttp {
     url: string,
     headers: Record<string, string>,
     body?: string,
+    /** false ⇒ write policy: only 429 is retried (a 5xx may have landed). */
+    retryServerErrors = true,
   ): Promise<Response> {
     const label = `${method} ${new URL(url).pathname}`;
     let extraWaitMs = 0;
@@ -152,6 +192,7 @@ export class GitLabHttp {
           signal: AbortSignal.timeout(this.timeoutMs),
         });
       } catch (err) {
+        // Network error / timeout: never retried. Writes depend on this (AC-31).
         const name = (err as { name?: string } | null)?.name;
         const reason =
           name === 'TimeoutError' || name === 'AbortError'
@@ -177,12 +218,14 @@ export class GitLabHttp {
         );
       }
 
-      if (isRetryable(res.status) && attempt < GITLAB_MAX_RETRIES) {
+      if (isRetryable(res.status, retryServerErrors) && attempt < GITLAB_MAX_RETRIES) {
         const remaining = GITLAB_MAX_EXTRA_WAIT_MS - extraWaitMs;
-        const delay = Math.min(this.retryDelay(res, attempt), remaining);
-        if (delay > 0) {
+        const wanted = this.retryDelay(res, attempt);
+        // `Retry-After: 0` ⇒ retry immediately; otherwise retry while wait budget remains.
+        if (wanted === 0 || remaining > 0) {
+          const delay = Math.min(wanted, remaining);
           discard(res);
-          await this.sleep(delay);
+          if (delay > 0) await this.sleep(delay);
           extraWaitMs += delay;
           continue;
         }
@@ -202,16 +245,32 @@ export class GitLabHttp {
   }
 
   private async toHttpError(res: Response, label: string): Promise<GitLabHttpError> {
-    let detail: string | null = null;
+    let text = '';
     try {
-      const text = await res.text();
-      detail = extractErrorDetail(text);
+      text = await res.text();
     } catch {
-      detail = null;
+      text = '';
     }
+    const detail = extractErrorDetail(text);
     const safe = detail ? this.redact(detail) : null;
     const suffix = safe ? `: ${truncate(safe)}` : '';
-    return new GitLabHttpError(this.redact(`GitLab ${label} → ${res.status}${suffix}`), res.status, safe);
+    const authFailure = classifyAuthFailure(res.status, res.headers.get('www-authenticate'), text);
+    if (authFailure) this.notifyAuthFailure(authFailure);
+    return new GitLabHttpError(
+      this.redact(`GitLab ${label} → ${res.status}${suffix}`),
+      res.status,
+      safe,
+      authFailure,
+    );
+  }
+
+  private notifyAuthFailure(kind: GitLabAuthFailure): void {
+    if (!this.onAuthFailure) return;
+    try {
+      this.onAuthFailure(kind);
+    } catch {
+      // A failing health hook must never replace the request's own error.
+    }
   }
 
   private async readJson(res: Response, method: string, path: string): Promise<unknown> {
@@ -226,8 +285,27 @@ export class GitLabHttp {
   }
 }
 
-function isRetryable(status: number): boolean {
-  return status === 429 || (status >= 500 && status <= 599);
+function isRetryable(status: number, retryServerErrors: boolean): boolean {
+  if (status === 429) return true;
+  return retryServerErrors && status >= 500 && status <= 599;
+}
+
+/** 401 ⇒ `invalid`; 403 + `insufficient_scope` (header or JSON `error`) ⇒ `insufficient_scope`. */
+export function classifyAuthFailure(
+  status: number,
+  wwwAuthenticate: string | null,
+  bodyText: string,
+): GitLabAuthFailure | null {
+  if (status === 401) return 'invalid';
+  if (status !== 403) return null;
+  if (wwwAuthenticate && /insufficient_scope/i.test(wwwAuthenticate)) return 'insufficient_scope';
+  try {
+    const json = JSON.parse(bodyText) as { error?: unknown } | null;
+    if (json && typeof json === 'object' && json.error === 'insufficient_scope') return 'insufficient_scope';
+  } catch {
+    // not JSON
+  }
+  return null;
 }
 
 /** `Retry-After` as delta-seconds or an HTTP-date → ms (≥ 0); null when absent/invalid. */

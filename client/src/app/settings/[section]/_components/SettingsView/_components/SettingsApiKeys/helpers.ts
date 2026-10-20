@@ -1,4 +1,4 @@
-import type { SecretState, SecretsStatusDetailed } from "@devdigest/shared";
+import type { GitLabTokenHealth, SecretState, SecretsStatusWithHealth } from "@devdigest/shared";
 import type { ConnTestProviderHost } from "@/lib/types";
 
 /**
@@ -7,7 +7,7 @@ import type { ConnTestProviderHost } from "@/lib/types";
  * boolean when `states` is absent (older server). `undefined` while loading.
  */
 export function keyState(
-  status: Partial<SecretsStatusDetailed> | undefined,
+  status: Partial<SecretsStatusWithHealth> | undefined,
   provider: ConnTestProviderHost,
 ): SecretState | undefined {
   if (!status) return undefined;
@@ -16,4 +16,13 @@ export function keyState(
   const configured = status[provider];
   if (configured === undefined) return undefined;
   return configured ? "set" : "unset";
+}
+
+/** The GitLab row's token health (AC-26); null for other providers or when the server
+ *  does not report it (then the plain configured-state badge is shown). */
+export function gitlabHealth(
+  status: Partial<SecretsStatusWithHealth> | undefined,
+  provider: ConnTestProviderHost,
+): GitLabTokenHealth | null {
+  return provider === "gitlab" ? (status?.gitlab_health ?? null) : null;
 }

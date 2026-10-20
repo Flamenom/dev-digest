@@ -256,11 +256,13 @@ describe('route-driven audit descriptors (AC-52, google mode)', () => {
 
       // G4: the save itself fails → test-connection still answers 200 { ok: false },
       // but nothing was written, so nothing is audited (not keyed on the HTTP status).
+      // GitHub, not GitLab: a GitLab key is scope-probed on gitlab.com BEFORE any
+      // save (spec 2026-10-20 AC-21), which would make this test hit the network.
       const failed = await t.app.inject(
         asSession(admin, {
           method: 'POST',
           url: '/settings/test-connection',
-          payload: { provider: 'gitlab', key: 'ghp_write_fails' },
+          payload: { provider: 'github', key: 'ghp_write_fails' },
         }),
       );
       expect(failed.statusCode).toBe(200);

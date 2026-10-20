@@ -14,7 +14,6 @@
     "githubLabel": "GitHub PAT (fine-grained)",
     "githubHint": "Contents (read), Pull requests (read+write), Metadata (read), Actions (read).",
     "gitlabLabel": "GitLab access token",
-    "gitlabHint": "gitlab.com personal, group or project token. Minimal scopes: read_api + read_repository.",
     "placeholder": "•••• stored via SecretsProvider (.env)",
     "testConnection": "Test connection",
     "testing": "Testing…",
@@ -22,7 +21,14 @@
     "configured": "Configured",
     "notSet": "Not set",
     "needsReentry": "Needs re-entry",
-    "readOnlyBody": "Status of the provider keys configured for this workspace."
+    "readOnlyBody": "Status of the provider keys configured for this workspace.",
+    "gitlabHintApi": "Required scope: api (Reporter role recommended)",
+    "gitlabHealth": {
+      "ok": "Configured",
+      "insufficient_scope": "Invalid — missing api scope",
+      "invalid": "Invalid — rejected by GitLab",
+      "unchecked": "Configured — not verified yet"
+    }
   },
   "models": {
     "title": "Feature Models",

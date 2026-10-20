@@ -1,7 +1,7 @@
 /* DiffViewer — basic GitHub-style unified diff viewer. Renders real PrFile.patch
    (unified-diff text from the F1 API) as a list of collapsible FileCards.
    Optional inline comments (Files changed tab): hover a line → "+" → comment,
-   posted live to GitHub; existing GitHub review comments render inline. */
+   posted live to the PR's host; existing host comments render inline. */
 "use client";
 
 import React from "react";

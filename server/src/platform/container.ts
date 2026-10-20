@@ -7,6 +7,8 @@ import type {
   Embedder,
   LLMProvider,
   GitLabClient,
+  GitLabCommentsHost,
+  GitLabScopeCheck,
   GitCredential,
   GitCredentialResolver,
   HostRepoRef,
@@ -34,7 +36,7 @@ import { OctokitGitHubClient } from '../adapters/github/octokit.js';
 import { GitHubPullRequestHost } from '../adapters/github/host.js';
 // The gitlab barrel is imported directly (not via adapters/index.ts): only the
 // composition root may construct the concrete client.
-import { RestGitLabClient } from '../adapters/gitlab/index.js';
+import { RestGitLabClient, type FetchLike } from '../adapters/gitlab/index.js';
 import { SimpleGitClient } from '../adapters/git/simple-git.js';
 import { RipgrepCodeIndex } from '../adapters/codeindex/ripgrep.js';
 import { OpenAIProvider } from '../adapters/llm/openai.js';
@@ -57,6 +59,7 @@ import { PrListSyncService, type SyncLogger, type SyncRepo } from '../modules/pu
 import { PrSyncCoordinator } from '../modules/pulls/sync-coordinator.js';
 import { PullDetailService, type PullDetail } from '../modules/pulls/detail-service.js';
 import { PullListService } from '../modules/pulls/list-service.js';
+import { PrCommentsService, type PrComments } from '../modules/pulls/comments-service.js';
 import type { RepoIntel } from '../modules/repo-intel/types.js';
 import { RepoIntelService } from '../modules/repo-intel/service.js';
 import { INDEX_JOB_KIND, REFRESH_JOB_KIND } from '../modules/repo-intel/constants.js';
@@ -74,7 +77,12 @@ import { EvalDashboardService } from '../modules/eval/dashboard.js';
 import { EvalService } from '../modules/eval/service.js';
 import { resolveFeatureModel } from '../modules/settings/feature-models.js';
 import { SettingsRepository, type SettingsTx } from '../modules/settings/repository.js';
-import { SettingsService } from '../modules/settings/service.js';
+import { SettingsService, type SettingsActor } from '../modules/settings/service.js';
+import {
+  GitLabTokenHealthService,
+  type UsableGitLabToken,
+} from '../modules/settings/gitlab-token-health.js';
+import { GitLabTokenService } from '../modules/settings/gitlab-token-service.js';
 import { SECRET_KEY_BY_PROVIDER } from './secret-keys.js';
 import { IdentityRepository } from '../modules/identity/repository.js';
 import { PrincipalService } from '../modules/identity/principal-service.js';
@@ -119,8 +127,17 @@ export interface ContainerOverrides {
   secrets?: SecretsProvider;
   auth?: AuthProvider;
   github?: GitHubClient;
-  /** gitlab.com read-side client — tests inject `MockGitLabClient`. */
-  gitlab?: GitLabClient;
+  /**
+   * gitlab.com client (read side + diff discussions) — tests inject
+   * `MockGitLabClient`. Also answers the token scope check (`checkTokenScopes`).
+   */
+  gitlab?: GitLabClient & GitLabCommentsHost;
+  /** fetch used by the real GitLab client (it-tests run a fake GitLab over it). */
+  gitlabFetch?: FetchLike;
+  /** fetch used by the real GitHub client (it-tests count requests at this level). */
+  githubFetch?: typeof fetch;
+  /** PR/MR inline comments use case (`/pulls/:id/comments`) — tests inject a fake. */
+  prComments?: PrComments;
   git?: HostGitClient;
   codeIndex?: HostCodeIndex;
   embedder?: Embedder;
@@ -130,7 +147,7 @@ export interface ContainerOverrides {
   pullRequestRepo?: PullRequestStore;
   /** Clock (epoch ms) for the PR-list sync coordinator's TTL/back-off — tests fake time. */
   prSyncClock?: () => number;
-  /** PR/MR detail service (`GET /pulls/:id`, comment gating) — tests inject one over fakes. */
+  /** PR/MR detail service (`GET /pulls/:id`) — tests inject one over fakes. */
   pullDetail?: PullDetail;
   /** Repositories use cases (add/list/refresh/remove + clone job) — tests inject a fake. */
   repoService?: RepoOperations;
@@ -179,7 +196,11 @@ export class Container {
 
   private _git?: HostGitClient;
   private _github?: GitHubClient;
-  private _gitlab?: GitLabClient;
+  /** The real GitLab client, cached together with the token it was built for. */
+  private _gitlab?: { client: RestGitLabClient; token: string | null };
+  private _gitlabTokenHealth?: GitLabTokenHealthService;
+  private _gitlabToken?: GitLabTokenService<SettingsActor>;
+  private _prComments?: PrComments;
   private _codeIndex?: HostCodeIndex;
   private _embedder?: Embedder;
   private llmCache = new Map<string, LLMProvider>();
@@ -448,10 +469,19 @@ export class Container {
    * `http.extraHeader`), and is never handed to the other provider. Read through
    * SecretsProvider on EVERY call (not cached) so a rotated/removed token takes
    * effect on the next clone/fetch. A missing secret ⇒ `null` (anonymous).
+   *
+   * GitLab: a configured token must pass the scope-health gate first — a token
+   * known to lack `api` blocks the clone/fetch with
+   * `gitlab_token_insufficient_scope` instead of falling back to anonymous
+   * access (spec 2026-10-20 AC-23).
    */
   async gitCredential(ref: HostRepoRef): Promise<GitCredential | null> {
     const spec = GIT_CREDENTIALS[ref.provider];
     if (!spec || ref.host !== spec.host) return null;
+    if (ref.provider === 'gitlab') {
+      const usable = await this.gitlabTokenHealth.ensureUsable();
+      return usable ? { username: spec.username, token: usable.token } : null;
+    }
     const token = await this.secrets.get(spec.secret);
     return token ? { username: spec.username, token } : null;
   }
@@ -490,6 +520,49 @@ export class Container {
       });
     }
     return this._settingsService;
+  }
+
+  /**
+   * GitLab token scope health (spec 2026-10-20 AC-23/24/28/29) — ONE per
+   * container (= per API process): its in-memory health map and single-flight
+   * checks are the gate in front of every GitLab operation. Keyed by a token
+   * fingerprint, so `invalidateSecretCaches()` deliberately leaves it intact.
+   */
+  get gitlabTokenHealth(): GitLabTokenHealthService {
+    return (this._gitlabTokenHealth ??= new GitLabTokenHealthService({
+      readToken: () => this.readGitLabToken(),
+      check: (token) => this.checkGitLabScopes(token),
+    }));
+  }
+
+  /**
+   * GitLab token save / test (AC-21/22/28): the candidate's scopes are probed
+   * before anything is stored; a stored key goes through `SettingsService`, so
+   * its `secret.save` audit row commits with the write (never for a rejected key).
+   */
+  get gitlabToken(): GitLabTokenService<SettingsActor> {
+    return (this._gitlabToken ??= new GitLabTokenService<SettingsActor>({
+      probe: (token) => this.checkGitLabScopes(token),
+      readToken: () => this.readGitLabToken(),
+      saveToken: (token, actor) => this.settingsService.saveSecret(actor, 'GITLAB_TOKEN', token),
+      invalidateCaches: () => this.invalidateSecretCaches(),
+      health: this.gitlabTokenHealth,
+    }));
+  }
+
+  private async readGitLabToken(): Promise<string | null> {
+    return (await this.secrets.get('GITLAB_TOKEN')) || null;
+  }
+
+  /**
+   * One scope lookup for `token` on a token-specific client (never the cached
+   * one, which may hold another token). Offline mode answers `unverified`
+   * without a request (hosts are unreachable by configuration).
+   */
+  private async checkGitLabScopes(token: string): Promise<GitLabScopeCheck> {
+    if (this.overrides.gitlab) return this.overrides.gitlab.checkTokenScopes();
+    if (this.config.hostsOffline) return { kind: 'unverified' };
+    return new RestGitLabClient({ token, fetch: this.overrides.gitlabFetch }).checkTokenScopes();
   }
 
   /**
@@ -563,6 +636,29 @@ export class Container {
     return (this._pullDetail ??= new PullDetailService({
       hosts: (provider) => this.prHost(provider),
       store: this.pullRequestRepo,
+    }));
+  }
+
+  /**
+   * PR/MR inline comments (`GET`/`POST /pulls/:id/comments`, both hosts) over an
+   * explicit deps object. GitLab access goes through the token-health gate and
+   * resolves to the diff-discussion port (`GitLabCommentsHost`) plus the service
+   * account the token authenticates as. Google mode adds the attribution footer
+   * on GitLab posts (AC-16); local mode never does (AC-17).
+   */
+  get prComments(): PrComments {
+    if (this.overrides.prComments) return this.overrides.prComments;
+    return (this._prComments ??= new PrCommentsService({
+      github: () => this.github(),
+      gitlabAccess: {
+        resolve: async () => {
+          const { client, usable } = await this.resolveGitLab();
+          return usable ? { host: client, serviceAccount: usable.username } : null;
+        },
+      },
+      files: async (prId) => (await this.pullRequestRepo.getPersistedDetail(prId)).files,
+      actorName: (userId) => this.identityRepo.displayIdentity(userId),
+      footerEnabled: this.config.authMode === 'google',
     }));
   }
 
@@ -750,24 +846,58 @@ export class Container {
     if (this._github) return this._github;
     const token = await this.secrets.get('GITHUB_TOKEN');
     if (!token) throw new ConfigError('GITHUB_TOKEN is not configured');
-    this._github = new OctokitGitHubClient(token);
+    this._github = new OctokitGitHubClient(
+      token,
+      this.overrides.githubFetch ? { fetch: this.overrides.githubFetch } : {},
+    );
     return this._github;
   }
 
   /**
-   * gitlab.com read-side client. The token is OPTIONAL (anonymous access works
-   * for public projects); only `GITLAB_TOKEN` is ever read here — never
-   * `GITHUB_TOKEN` (AC-13). Offline mode rejects before any client is built.
+   * gitlab.com client. The token is OPTIONAL (anonymous access works for public
+   * projects); only `GITLAB_TOKEN` is ever read here — never `GITHUB_TOKEN`
+   * (AC-13). Offline mode rejects before any client is built or token read.
+   *
+   * A configured token must pass the scope-health gate first (spec 2026-10-20
+   * AC-23/24): a token known to lack `api` rejects with
+   * `gitlab_token_insufficient_scope` — never an anonymous fallback.
    */
   async gitlab(): Promise<GitLabClient> {
+    return (await this.resolveGitLab()).client;
+  }
+
+  /** The same gated client, typed by the diff-discussion port (comments). */
+  async gitlabComments(): Promise<GitLabCommentsHost> {
+    return (await this.resolveGitLab()).client;
+  }
+
+  /**
+   * Offline check → token gate (one secret read) → client. The real client is
+   * cached per token value and reports 401 / 403 `insufficient_scope`
+   * responses back to the health gate (`onAuthFailure`, AC-24/29).
+   */
+  private async resolveGitLab(): Promise<{
+    client: GitLabClient & GitLabCommentsHost;
+    usable: UsableGitLabToken | null;
+  }> {
     if (this.config.hostsOffline) {
       throw new ConfigError('Repository hosts are offline (DEVDIGEST_HOSTS_OFFLINE=true)');
     }
-    if (this.overrides.gitlab) return this.overrides.gitlab;
-    if (this._gitlab) return this._gitlab;
-    const token = await this.secrets.get('GITLAB_TOKEN');
-    this._gitlab = new RestGitLabClient({ token: token || null });
-    return this._gitlab;
+    const usable = await this.gitlabTokenHealth.ensureUsable();
+    if (this.overrides.gitlab) return { client: this.overrides.gitlab, usable };
+    const token = usable?.token ?? null;
+    if (!this._gitlab || this._gitlab.token !== token) {
+      const health = this.gitlabTokenHealth;
+      this._gitlab = {
+        token,
+        client: new RestGitLabClient({
+          token,
+          fetch: this.overrides.gitlabFetch,
+          ...(token ? { onAuthFailure: (kind) => health.reportAuthFailure(token, kind) } : {}),
+        }),
+      };
+    }
+    return { client: this._gitlab.client, usable };
   }
 
   /**

@@ -1,5 +1,11 @@
 import type {
   GitLabClient,
+  GitLabCommentsHost,
+  GitLabDiffNote,
+  GitLabDiffRefs,
+  GitLabDiscussionRef,
+  GitLabScopeCheck,
+  GitLabTextPosition,
   GitLabProjectInfo,
   GitLabTokenCheck,
   HostRepoRef,
@@ -21,6 +27,16 @@ import {
   type GqlMergeRequestStatsData,
   type GqlOpenMergeRequestsData,
 } from './graphql.js';
+import {
+  mapCreatedDiscussion,
+  mapDiffRefs,
+  mapDiscussionRef,
+  mapDiscussions,
+  mapNote,
+  toApiPosition,
+  type RestDiscussion,
+  type RestNote,
+} from './discussions.js';
 import {
   mapDiffStats,
   mapGqlMergeRequest,
@@ -44,23 +60,41 @@ import {
 
 export type RestGitLabClientOptions = GitLabHttpOptions;
 
+/** AC-21/AC-23 message for a token that lacks the `api` scope. */
+export const GITLAB_INSUFFICIENT_SCOPE_MESSAGE =
+  'This token is missing the api scope. Required scope: api (Reporter role recommended).';
+/** AC-31: a write that may have reached GitLab but was not confirmed. */
+export const GITLAB_COMMENT_UNCONFIRMED_MESSAGE =
+  "GitLab didn't confirm the comment — check the MR before posting again.";
+const GITLAB_UNAVAILABLE_MESSAGE = 'GitLab is unavailable — try again.';
+/** Bound on the discussion-root memo (see `rememberDiscussion`). */
+const DISCUSSION_MEMO_MAX = 500;
+
 /**
  * GitLabClient for gitlab.com — REST v4 for project/MR detail/diffs/commits/
  * issues/token, GraphQL for the open-MR list (metadata + batched stats in one
- * request per page). Read-only in the MVP.
+ * request per page). Also the diff-discussion port (`GitLabCommentsHost`):
+ * read diff notes, post new diff discussions and replies (spec
+ * `specs/2026-10-20-gitlab-comments.md`).
  *
  * Requests are issued strictly sequentially (≤ 1 in flight per call chain).
  * Every list call is paginated to the end with no cap (AC-22).
  *
  * Constructed ONLY by the composition root (`platform/container.ts`).
  */
-export class RestGitLabClient implements GitLabClient {
+export class RestGitLabClient implements GitLabClient, GitLabCommentsHost {
   readonly provider = 'gitlab' as const;
-  readonly readOnly = true;
+  readonly readOnly = false;
 
   private readonly http: GitLabHttp;
   /** fullPath → numeric project id (for the same-project `closes_issues` filter). */
   private readonly projectIds = new Map<string, number>();
+  /**
+   * discussion id → ref, filled by `getDiscussion` / `listDiffNotes`. GitLab's
+   * add-note response carries neither the thread root id nor (always) the
+   * position, so `addDiscussionNote` takes them from here (AC-19).
+   */
+  private readonly discussions = new Map<string, GitLabDiscussionRef>();
 
   constructor(opts: RestGitLabClientOptions = {}) {
     this.http = new GitLabHttp(opts);
@@ -105,6 +139,149 @@ export class RestGitLabClient implements GitLabClient {
       throw err;
     }
   }
+
+  /**
+   * Scope health probe (AC-21/22/24/28). `GET /user`, then
+   * `GET /personal_access_tokens/self`:
+   *  - `api` in the scope list → `ok`;
+   *  - a list without `api`, 403/404 (or another 4xx), or no list → `insufficient_scope`
+   *    (definitive non-answer, AC-28);
+   *  - status 0 (network/timeout), 429 or 5xx → `unverified` (transient, AC-28);
+   *  - `/user` 401/403 → `invalid` — except a 403 `insufficient_scope` there, which
+   *    is itself a definitive "no api scope" answer.
+   */
+  checkTokenScopes = async (): Promise<GitLabScopeCheck> => {
+    if (!this.http.hasToken) return { kind: 'invalid', reason: 'invalid' };
+
+    let username: string;
+    try {
+      const { data } = await this.http.rest<RestUser>('/user');
+      username = typeof data?.username === 'string' ? data.username : '';
+    } catch (err) {
+      if (!(err instanceof GitLabHttpError)) throw err;
+      if (err.authFailure === 'insufficient_scope') return { kind: 'insufficient_scope', username: null };
+      if (err.upstreamStatus === 401 || err.upstreamStatus === 403) {
+        return { kind: 'invalid', reason: tokenFailureReason(err.upstreamDetail) };
+      }
+      return { kind: 'unverified' };
+    }
+
+    try {
+      const { data } = await this.http.rest<RestTokenSelf>('/personal_access_tokens/self');
+      if (!Array.isArray(data?.scopes)) return { kind: 'insufficient_scope', username };
+      const scopes = data.scopes.filter((s): s is string => typeof s === 'string');
+      if (!scopes.includes('api')) return { kind: 'insufficient_scope', username };
+      return { kind: 'ok', username, scopes };
+    } catch (err) {
+      if (!(err instanceof GitLabHttpError)) throw err;
+      if (isTransient(err)) return { kind: 'unverified' };
+      if (err.upstreamStatus === 401) {
+        return { kind: 'invalid', reason: tokenFailureReason(err.upstreamDetail) };
+      }
+      return { kind: 'insufficient_scope', username };
+    }
+  };
+
+  // ---------- GitLabCommentsHost ----------
+
+  /** Every note of every diff-anchored `text` discussion, all pages (AC-1/AC-2). */
+  listDiffNotes = async (ref: HostRepoRef, iid: number): Promise<GitLabDiffNote[]> => {
+    const path = `${this.mrPath(ref, iid)}/discussions`;
+    let raw: RestDiscussion[];
+    try {
+      raw = await this.paginate<RestDiscussion>(path);
+    } catch (err) {
+      throw this.readError(err);
+    }
+    const notes = mapDiscussions(raw);
+    for (const n of notes) {
+      if (n.id === n.rootNoteId) {
+        this.rememberDiscussion({ id: n.discussionId, rootNoteId: n.rootNoteId, position: n.position });
+      }
+    }
+    return notes;
+  };
+
+  /** The MR's current `diff_refs` (AC-12). */
+  getDiffRefs = async (ref: HostRepoRef, iid: number): Promise<GitLabDiffRefs> => {
+    let mr: RestMergeRequest;
+    try {
+      mr = (await this.http.rest<RestMergeRequest>(this.mrPath(ref, iid))).data;
+    } catch (err) {
+      throw this.readError(err);
+    }
+    const refs = mapDiffRefs(mr?.diff_refs);
+    if (!refs) {
+      throw new AppError('gitlab_comment_failed', 'GitLab returned no diff references for this merge request.', 502);
+    }
+    return refs;
+  };
+
+  /** null when the discussion does not exist on this MR (404) — AC-20. */
+  getDiscussion = async (
+    ref: HostRepoRef,
+    iid: number,
+    discussionId: string,
+  ): Promise<GitLabDiscussionRef | null> => {
+    const path = `${this.mrPath(ref, iid)}/discussions/${encodeDiscussionId(discussionId)}`;
+    let raw: RestDiscussion;
+    try {
+      raw = (await this.http.rest<RestDiscussion>(path)).data;
+    } catch (err) {
+      if (isStatus(err, 404)) return null;
+      throw this.readError(err);
+    }
+    const found = mapDiscussionRef(raw);
+    if (found) this.rememberDiscussion(found);
+    return found;
+  };
+
+  /** New diff discussion with a `text` position (AC-8/9/10). 429-only retry (AC-31). */
+  createDiffDiscussion = async (
+    ref: HostRepoRef,
+    iid: number,
+    input: { body: string; position: GitLabTextPosition },
+  ): Promise<GitLabDiffNote> => {
+    const path = `${this.mrPath(ref, iid)}/discussions`;
+    let raw: RestDiscussion;
+    try {
+      raw = (await this.http.post<RestDiscussion>(path, {
+        body: input.body,
+        position: toApiPosition(input.position),
+      })).data;
+    } catch (err) {
+      throw this.writeError(err);
+    }
+    const note = mapCreatedDiscussion(raw);
+    if (!note) throw this.unconfirmed();
+    return note;
+  };
+
+  /**
+   * Reply: one note added to `discussionId` (AC-19). The response does not carry
+   * the thread root, so `rootNoteId` comes from a prior `getDiscussion` /
+   * `listDiffNotes` on this client; without one it falls back to the note's own id
+   * — callers needing the root (AC-19) should take it from `getDiscussion` (Q3).
+   */
+  addDiscussionNote = async (
+    ref: HostRepoRef,
+    iid: number,
+    discussionId: string,
+    body: string,
+  ): Promise<GitLabDiffNote> => {
+    const path = `${this.mrPath(ref, iid)}/discussions/${encodeDiscussionId(discussionId)}/notes`;
+    let raw: RestNote;
+    try {
+      raw = (await this.http.post<RestNote>(path, { body })).data;
+    } catch (err) {
+      throw this.writeError(err);
+    }
+    const known = this.discussions.get(discussionId);
+    const id = raw && typeof raw === 'object' ? raw.id : undefined;
+    const note = mapNote(raw, discussionId, known?.rootNoteId ?? (id as number), known?.position ?? null);
+    if (!note) throw this.unconfirmed();
+    return note;
+  };
 
   // ---------- PullRequestHost ----------
 
@@ -248,6 +425,64 @@ export class RestGitLabClient implements GitLabClient {
 
   // ---------- internals ----------
 
+  private mrPath(ref: HostRepoRef, iid: number): string {
+    return `/projects/${encodeProject(projectPath(ref))}/merge_requests/${mrIid(iid)}`;
+  }
+
+  private rememberDiscussion(d: GitLabDiscussionRef): void {
+    if (this.discussions.size >= DISCUSSION_MEMO_MAX) this.discussions.clear();
+    this.discussions.set(d.id, d);
+  }
+
+  private insufficientScope(): AppError {
+    return new AppError('gitlab_token_insufficient_scope', GITLAB_INSUFFICIENT_SCOPE_MESSAGE, 400);
+  }
+
+  private unconfirmed(): AppError {
+    return new AppError('gitlab_comment_failed', GITLAB_COMMENT_UNCONFIRMED_MESSAGE, 502);
+  }
+
+  /**
+   * Comment-path READ failures: 401 → `gitlab_token_invalid`; 403 `insufficient_scope`
+   * → `gitlab_token_insufficient_scope`; 403/404 → `gitlab_project_inaccessible`;
+   * 0/429/5xx → `gitlab_comment_failed` 502; anything else passes through (already
+   * redacted).
+   */
+  private readError(err: unknown): unknown {
+    if (err instanceof AppError && !(err instanceof GitLabHttpError)) return err;
+    if (!(err instanceof GitLabHttpError)) return err;
+    if (err.upstreamStatus === 401) return this.tokenInvalid();
+    if (err.authFailure === 'insufficient_scope') return this.insufficientScope();
+    if (err.upstreamStatus === 403 || err.upstreamStatus === 404) {
+      return new AppError('gitlab_project_inaccessible', 'GitLab project not found or token has no access.', 404);
+    }
+    if (isTransient(err)) return new AppError('gitlab_comment_failed', GITLAB_UNAVAILABLE_MESSAGE, 502);
+    return err;
+  }
+
+  /**
+   * Comment WRITE failures (AC-29–AC-31). Status 0 (network/timeout), ≥ 500 or an
+   * unreadable 2xx ⇒
+   * the write may have landed ⇒ "didn't confirm" 502 (never retried). Other 4xx
+   * (locked discussion, validation…) ⇒ `gitlab_comment_failed` 400 with GitLab's
+   * redacted detail.
+   */
+  private writeError(err: unknown): unknown {
+    if (err instanceof AppError && !(err instanceof GitLabHttpError)) return err;
+    if (!(err instanceof GitLabHttpError)) return err;
+    if (err.upstreamStatus === 401) return this.tokenInvalid();
+    if (err.authFailure === 'insufficient_scope') return this.insufficientScope();
+    const s = err.upstreamStatus;
+    // 2xx here ⇒ the write landed but its body was unreadable (non-JSON).
+    if (s === 0 || s >= 500 || (s >= 200 && s < 300)) return this.unconfirmed();
+    const detail = err.upstreamDetail ? truncateDetail(err.upstreamDetail) : null;
+    return new AppError(
+      'gitlab_comment_failed',
+      detail ? `GitLab rejected the comment: ${detail}` : 'GitLab rejected the comment.',
+      400,
+    );
+  }
+
   private async projectId(fullPath: string): Promise<number> {
     const cached = this.projectIds.get(fullPath.toLowerCase());
     if (cached !== undefined) return cached;
@@ -332,6 +567,23 @@ export class RestGitLabClient implements GitLabClient {
 }
 
 // ---------- helpers ----------
+
+/** Status 0 (network/timeout), 429 or 5xx — a transient host condition. */
+function isTransient(err: GitLabHttpError): boolean {
+  const s = err.upstreamStatus;
+  return s === 0 || s === 429 || s >= 500;
+}
+
+function truncateDetail(s: string): string {
+  return s.length > 200 ? `${s.slice(0, 200)}…` : s;
+}
+
+/** Discussion ids are opaque host strings → one URL-encoded path segment. */
+function encodeDiscussionId(id: string): string {
+  const trimmed = id.trim();
+  if (!trimmed) throw new AppError('validation_error', 'GitLab discussion id is empty', 422);
+  return encodeURIComponent(trimmed);
+}
 
 function isStatus(err: unknown, ...statuses: number[]): boolean {
   return err instanceof GitLabHttpError && statuses.includes(err.upstreamStatus);

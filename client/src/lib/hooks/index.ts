@@ -19,3 +19,4 @@ export * from "./pr-sync";
 export * from "./session";
 export * from "./members";
 export * from "./tokens";
+export * from "./gitlab-health";

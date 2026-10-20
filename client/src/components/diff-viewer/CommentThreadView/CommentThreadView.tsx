@@ -23,7 +23,7 @@ export function CommentThreadView({
   return (
     <div style={cs.thread}>
       {thread.comments.map((c) => (
-        <CommentCard key={c.id} c={c} />
+        <CommentCard key={c.id} c={c} provider={commenting.provider} />
       ))}
       {commenting.canComment &&
         (replying ? (
@@ -33,6 +33,7 @@ export function CommentThreadView({
             line={thread.line!}
             side={thread.side}
             inReplyTo={thread.rootId}
+            discussionId={thread.discussionId}
             onClose={() => setReplying(false)}
           />
         ) : (

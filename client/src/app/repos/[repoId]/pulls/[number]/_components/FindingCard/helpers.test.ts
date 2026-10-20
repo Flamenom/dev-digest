@@ -19,10 +19,10 @@ const GITHUB: HostLinkRepo = {
 
 describe("fileHrefFor", () => {
   it("builds the host blob link when a host is provided", () => {
-    expect(fileHrefFor(F, SHA, { repo: GITLAB, readOnly: true }, null)).toBe(
+    expect(fileHrefFor(F, SHA, { repo: GITLAB, offerCopy: true }, null)).toBe(
       `https://gitlab.com/space-profit/platform/crm-frontend/-/blob/${SHA}/src/config.ts#L10-20`,
     );
-    expect(fileHrefFor(F, SHA, { repo: GITHUB, readOnly: false }, null)).toBe(
+    expect(fileHrefFor(F, SHA, { repo: GITHUB, offerCopy: false }, null)).toBe(
       `https://github.com/acme/payments-api/blob/${SHA}/src/config.ts#L10-L20`,
     );
   });
@@ -34,10 +34,10 @@ describe("fileHrefFor", () => {
   });
 
   it("renders no link without a head SHA, an unloaded host repo, an unsafe web_url or a repo name", () => {
-    expect(fileHrefFor(F, null, { repo: GITLAB, readOnly: true }, "acme/payments-api")).toBeUndefined();
-    expect(fileHrefFor(F, SHA, { repo: null, readOnly: true }, "acme/payments-api")).toBeUndefined();
+    expect(fileHrefFor(F, null, { repo: GITLAB, offerCopy: true }, "acme/payments-api")).toBeUndefined();
+    expect(fileHrefFor(F, SHA, { repo: null, offerCopy: true }, "acme/payments-api")).toBeUndefined();
     expect(
-      fileHrefFor(F, SHA, { repo: { ...GITLAB, web_url: "javascript:alert(1)" }, readOnly: true }, null),
+      fileHrefFor(F, SHA, { repo: { ...GITLAB, web_url: "javascript:alert(1)" }, offerCopy: true }, null),
     ).toBeUndefined();
     expect(fileHrefFor(F, SHA, null, null)).toBeUndefined();
   });
