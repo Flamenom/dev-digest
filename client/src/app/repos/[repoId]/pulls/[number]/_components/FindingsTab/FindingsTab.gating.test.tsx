@@ -93,7 +93,7 @@ function renderTab(role: Role) {
   });
   const cancelled = () =>
     router.calls.filter((c) => c.method === "POST").map((c) => c.path.split("/").at(2));
-  return { onDelete, cancelled };
+  return { onDelete, cancelled, router };
 }
 
 describe("FindingsTab — run gating", () => {
@@ -134,5 +134,16 @@ describe("FindingsTab — run gating", () => {
     await user.click(screen.getByRole("button", { name: "Delete run" }));
     expect(onDelete).toHaveBeenCalledWith("settled");
     expect(screen.getByRole("button", { name: "Delete this review run" })).toBeInTheDocument();
+  });
+
+  it("GitHub PR: no publish UI and no publish request (AC-3)", async () => {
+    const { router } = renderTab("admin");
+    // The open review accordion has rendered its body.
+    expect(await screen.findByText("Looks fine")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Cancel run" })).toHaveLength(2));
+
+    expect(screen.queryByRole("button", { name: /to GitLab$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Select all publishable" })).not.toBeInTheDocument();
+    expect(router.calls.filter((c) => /publish|publications/.test(c.path))).toEqual([]);
   });
 });

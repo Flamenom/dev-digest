@@ -69,6 +69,20 @@ export type {
   ConnTestResultWithCode,
 } from "@devdigest/shared";
 
+// Publish findings to a GitLab MR (contracts/review-publish.ts,
+// spec 2026-10-21-gitlab-publish-findings).
+export type {
+  PublishPreview,
+  PublishPreviewFinding,
+  PublishBlocker,
+  Publication,
+  PublicationItem,
+  PublishRequest,
+  PublishRequestInput,
+  OtherDraftsCount,
+  PublishErrorCode,
+} from "@devdigest/shared";
+
 import type { HostCommentInput } from "@devdigest/shared";
 
 /** The reply field of a host comment post: a GitHub reply sets `in_reply_to`

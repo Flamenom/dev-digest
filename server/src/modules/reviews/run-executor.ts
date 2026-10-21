@@ -101,6 +101,8 @@ export class ReviewRunExecutor {
     };
 
     let diff: UnifiedDiff;
+    // AC-1 — the head of the diff actually reviewed, recorded on every review row.
+    let reviewedHeadSha: string | null;
     try {
       const loaded = await runLog.step(
         'Loading PR diff',
@@ -108,6 +110,7 @@ export class ReviewRunExecutor {
         { kind: 'tool' },
       );
       diff = loaded.diff;
+      reviewedHeadSha = loaded.headSha;
       runLog.info(`Diff source: ${loaded.source}`);
       // AC-31 — host-omitted files (too large / collapsed) are not in the
       // fallback diff; say so in the trace. (RunEventKind has no 'warn'
@@ -158,7 +161,17 @@ export class ReviewRunExecutor {
         `review: agent "${agent.name}" started (${agent.provider}/${agent.model})`,
       );
       try {
-        const outcome = await this.runOneAgent(workspaceId, pull, repo, diff, agent, runId, runLog, intent);
+        const outcome = await this.runOneAgent(
+          workspaceId,
+          pull,
+          repo,
+          diff,
+          reviewedHeadSha,
+          agent,
+          runId,
+          runLog,
+          intent,
+        );
         logger?.info(
           {
             runId,
@@ -187,6 +200,7 @@ export class ReviewRunExecutor {
     pull: PullRow,
     repo: typeof schema.repos.$inferSelect,
     diff: UnifiedDiff,
+    reviewedHeadSha: string | null,
     agent: AgentRow,
     runId: string,
     parentLog: RunLogger,
@@ -339,6 +353,7 @@ export class ReviewRunExecutor {
         summary: outcome.review.summary,
         score: outcome.review.score,
         model: agent.model,
+        headSha: reviewedHeadSha,
       });
       const findingRows = await this.repo.insertFindings(review.id, keptFindings);
       runLog.result(`Persisted review ${review.id} with ${findingRows.length} finding(s)`);

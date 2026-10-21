@@ -34,6 +34,11 @@ export const reviews = pgTable(
     summary: text('summary'),
     score: integer('score'),
     model: text('model'),
+    /**
+     * Migration 0027 (AC-1) — head SHA of the diff this review actually reviewed.
+     * NULL for rows written before 0027 (and when the reviewed head is unknown).
+     */
+    headSha: text('head_sha'),
     createdAt: now(),
   },
   (t) => ({

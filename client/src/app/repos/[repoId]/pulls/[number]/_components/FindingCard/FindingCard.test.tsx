@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { NextIntlClientProvider } from "next-intl";
 import type { EvalCaseLink, FindingRecord } from "@devdigest/shared";
 import messages from "../../../../../../../../messages/en/prReview.json";
@@ -189,6 +190,26 @@ describe("FindingCard on a host", () => {
     );
     expect(screen.queryByRole("button", { name: "Copy finding" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Post comment" })).not.toBeInTheDocument();
+    // No addon → no publish checkbox and no "Publish" control (AC-3).
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Publish/ })).not.toBeInTheDocument();
+  });
+
+  it("renders an addon in the header without toggling the card", async () => {
+    const user = userEvent.setup();
+    renderWithIntl(
+      <FindingCard
+        f={FINDING}
+        addon={
+          <span onClick={(e) => e.stopPropagation()}>
+            <input type="checkbox" aria-label="Select finding" />
+          </span>
+        }
+      />,
+    );
+    await user.click(screen.getByRole("checkbox", { name: "Select finding" }));
+    // Collapsed card stays collapsed: the rationale is not shown.
+    expect(screen.queryByText(/is committed in source/)).not.toBeInTheDocument();
   });
 });
 

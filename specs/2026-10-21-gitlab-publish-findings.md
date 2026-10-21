@@ -254,9 +254,11 @@ cannot tell whether a finding's line numbers still describe the MR. AC-1 closes 
 - AC-18: **IF** a finding's composed body would exceed 1,000,000 characters, counting the
   marker and the footer, **THEN** the finding is not publishable with reason `body_too_long`.   _(observable: oversized rationale fixture → that reason; never sent)_
 - AC-19: **WHERE** the finding kind is `secret_leak`, the system **shall** publish a fixed,
-  redacted body instead of the rationale and suggestion: the header, the text "A possible
-  secret was detected on this line. Rotate it and remove it from history.", the marker and the
-  footer. It **shall never** send that finding's rationale, suggestion or any matched value.   _(observable: secret_leak fixture whose rationale contains `AKIA…` → sent body has no rationale text and no key substring)_ — decision D-7.
+  redacted body instead of the title, rationale and suggestion: the header with the finding's
+  title replaced by the fixed text "Possible secret detected" (severity and category kept), the
+  text "A possible secret was detected on this line. Rotate it and remove it from history.", the
+  marker and the footer. It **shall never** send that finding's title, rationale, suggestion or
+  any matched value — no finding-provided text reaches GitLab.   _(observable: secret_leak fixture whose title and rationale contain `AKIA…` → sent body has no title/rationale text and no key substring)_ — decision D-7.
 
 ### Publish request & validation (US-1, US-3, US-5)
 - AC-20: **WHEN** a user requests to publish findings of a review, the system **shall**
@@ -861,8 +863,8 @@ shared-sync guard. No existing contract file is edited.
   Each carries its file and line range as text in a location line. They are linked back by
   marker like positioned notes. This supersedes the comments spec's non-goal "no general MR
   notes" for **this feature only** → AC-9, AC-10, AC-14, AC-26, AC-36, AC-43.
-- **D-7 (was OQ-7): `secret_leak`.** It is published with a fixed redacted body. The rationale,
-  the suggestion and any matched value are never sent → AC-19.
+- **D-7 (was OQ-7): `secret_leak`.** It is published with a fixed redacted body and a fixed
+  header title. The title, the rationale, the suggestion and any matched value are never sent → AC-19.
 - **D-8 (was OQ-8): a definitive 4xx on one draft.** That finding is marked `failed` with its
   reason, and the rest are published (`partially_published`) → AC-29.
 

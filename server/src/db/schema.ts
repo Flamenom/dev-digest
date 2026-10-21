@@ -26,6 +26,7 @@ export * from './schema/runs';
 export * from './schema/ops';
 export * from './schema/repo-intel';
 export * from './schema/identity';
+export * from './schema/publications';
 
 import { users, workspaces, workspaceMembers, settings } from './schema/core';
 import { repos } from './schema/repos';
@@ -53,6 +54,7 @@ import {
   encryptedSecrets,
   auditEvents,
 } from './schema/identity';
+import { reviewPublications, reviewPublicationItems } from './schema/publications';
 
 /** Convenience: the full schema object for drizzle() client typing. */
 export const schema = {
@@ -104,4 +106,7 @@ export const schema = {
   apiTokens,
   encryptedSecrets,
   auditEvents,
+  // publish findings to GitLab (migration 0027).
+  reviewPublications,
+  reviewPublicationItems,
 };

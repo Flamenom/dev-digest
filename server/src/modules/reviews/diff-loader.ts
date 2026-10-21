@@ -16,6 +16,12 @@ export interface LoadedDiff {
    * for a local diff — the local clone has every file.
    */
   excludedFiles: number;
+  /**
+   * Head SHA of the diff actually reviewed (AC-1): the PR head that was diffed
+   * locally, or — for the pr_files fallback — the head the persisted patches
+   * were fetched at (`pull_requests.detail_head_sha`). Null when unknown (Q7).
+   */
+  headSha: string | null;
 }
 
 /**
@@ -48,7 +54,9 @@ export async function loadDiff(
       base = `origin/${pull.base}`;
     }
     const diff = await container.git.diff(ref, base, pull.headSha);
-    if (diff.files.length > 0) return { diff, source: 'local', excludedFiles: 0 };
+    if (diff.files.length > 0) {
+      return { diff, source: 'local', excludedFiles: 0, headSha: pull.headSha };
+    }
   } catch {
     /* fall through to pr_files reconstruction */
   }
@@ -57,6 +65,7 @@ export async function loadDiff(
     diff: buildDiffFromFiles(files),
     source: 'fallback',
     excludedFiles: files.filter((f) => f.patchOmitted != null).length,
+    headSha: pull.detailHeadSha ?? null,
   };
 }
 

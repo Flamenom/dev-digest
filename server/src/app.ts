@@ -106,6 +106,9 @@ const LOG_SERIALIZERS = {
   }),
 };
 
+/** Max wait for live publish tasks / reconciles on shutdown. */
+const PUBLISH_SHUTDOWN_GRACE_MS = 5_000;
+
 /** Strict-Transport-Security in google mode (AC-62): one year, subdomains. */
 const HSTS = { maxAge: 31_536_000, includeSubDomains: true } as const;
 
@@ -295,6 +298,39 @@ async function configureApp(
   } catch (err) {
     app.log.warn({ err: (err as Error).message }, 'stale-run reaping failed (non-fatal)');
   }
+
+  // Publications (spec 2026-10-21-gitlab-publish-findings, plan Q2 / AC-34).
+  // Same single-instance assumption as above: at boot no publish task of THIS
+  // process exists yet, so every `in_progress` row is orphaned → `unconfirmed`
+  // (awaited, before listening). Then a read-only reconcile pass settles them
+  // in the background — never awaited, never fatal (hosts offline / a missing
+  // token leave the rows `unconfirmed`). Skipped when the DB step failed (no DB).
+  let publishBoot: Promise<void> | null = null;
+  try {
+    const orphaned = await container.publishRepo.markOrphanedUnconfirmed();
+    if (orphaned > 0) app.log.info({ orphaned }, 'marked orphaned in-progress publications unconfirmed on boot');
+    publishBoot = container.publishReconciler.reconcileAll().catch((err: unknown) => {
+      app.log.warn({ err: (err as Error).message }, 'publish boot reconcile failed (non-fatal)');
+    });
+  } catch (err) {
+    app.log.warn({ err: (err as Error).message }, 'orphaned-publication marking failed (non-fatal)');
+  }
+  // Shutdown: let live publish tasks and the boot reconcile settle, bounded so
+  // a hung GitLab request never blocks `close()`.
+  app.addHook('onClose', async () => {
+    const settled = Promise.allSettled([
+      container.publishRunner.whenIdle(),
+      container.publishReconciler.whenIdle(),
+      publishBoot ?? Promise.resolve(),
+    ]);
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, PUBLISH_SHUTDOWN_GRACE_MS);
+      timer.unref();
+    });
+    await Promise.race([settled, timeout]);
+    clearTimeout(timer);
+  });
 
   // Route bookkeeping + per-IP sign-in limits — before rate-limit and modules.
   installRoutePolicyHooks(app);
