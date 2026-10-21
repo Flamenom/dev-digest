@@ -69,6 +69,22 @@ export const UNSUPPORTED_REPO_HOST_MESSAGE =
 export const GIT_AUTH_FAILURE_REGEX =
   /authentication failed|could not read username|terminal prompts disabled|access denied|http basic|\b40[13]\b|repository not found|not found/i;
 
-/** User-facing hint for a GitLab clone/fetch auth failure (AC-12/13). */
+/**
+ * User-facing hint for a GitLab clone/fetch auth failure (AC-12/13). The token
+ * must carry the `api` scope (specs/2026-10-20-gitlab-comments.md, AC-27).
+ */
 export const GITLAB_CLONE_AUTH_MESSAGE =
-  'GitLab refused the clone: connect a GitLab token in Settings → API keys (it needs read_repository access to this project).';
+  'GitLab refused the clone: connect a GitLab token in Settings → API keys (it needs the api scope and access to this project).';
+
+/**
+ * git stderr when the group/project limits "Enabled Git access protocols" to
+ * SSH only: `remote: Git access over HTTP is not allowed` (followed by a 403,
+ * which would otherwise match GIT_AUTH_FAILURE_REGEX). Checked FIRST — no token
+ * can fix it, so the token hint would be wrong.
+ */
+export const GITLAB_HTTP_GIT_DISABLED_REGEX = /git access over https? is not allowed/i;
+
+/** Error code for a gitlab.com clone refused because HTTP(S) Git access is disabled. */
+export const GITLAB_HTTP_GIT_DISABLED_CODE = 'gitlab_http_git_disabled';
+export const GITLAB_HTTP_GIT_DISABLED_MESSAGE =
+  'GitLab refused the clone: this group or project only allows Git over SSH. Ask a group owner to enable HTTP(S) under Settings → General → Visibility, project features, permissions → Enabled Git access protocols.';

@@ -258,7 +258,7 @@ export class Container {
     this.auth = overrides.auth ?? new LocalNoAuthProvider(db);
     this.secrets = overrides.secrets ?? this.buildSecrets();
     this.runBus = runBus;
-    this.jobs = new JobRunner(db);
+    this.jobs = new JobRunner(db, { log: this.log?.child?.({ module: 'jobs' }) ?? this.log });
   }
 
   /**
