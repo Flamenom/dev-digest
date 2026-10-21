@@ -15,6 +15,9 @@ import {
   CLONE_DEPTH,
   GIT_AUTH_FAILURE_REGEX,
   GITLAB_CLONE_AUTH_MESSAGE,
+  GITLAB_HTTP_GIT_DISABLED_CODE,
+  GITLAB_HTTP_GIT_DISABLED_MESSAGE,
+  GITLAB_HTTP_GIT_DISABLED_REGEX,
 } from './constants.js';
 
 /**
@@ -238,12 +241,19 @@ export class RepoService implements RepoOperations {
 }
 
 /**
- * Clone failures: for GitLab, an auth-shaped failure becomes the actionable
- * "connect a GitLab token" hint (AC-12/13). Every message is redacted — the
- * adapter already masks the token, this strips any stray userinfo too.
+ * Clone failures: for GitLab, an SSH-only group/project (HTTP Git disabled)
+ * gets its own hint — checked first, since its 403 is auth-shaped but no token
+ * fixes it — and any other auth-shaped failure becomes the actionable "connect a
+ * GitLab token" hint (AC-12/13). Every message is redacted — the adapter
+ * already masks the token, this strips any stray userinfo too.
  */
-function cloneError(provider: RepoProvider, err: unknown): Error {
+export function cloneError(provider: RepoProvider, err: unknown): Error {
   const message = redactSecret(err instanceof Error ? err.message : String(err));
+  if (provider === 'gitlab' && GITLAB_HTTP_GIT_DISABLED_REGEX.test(message)) {
+    return new AppError(GITLAB_HTTP_GIT_DISABLED_CODE, GITLAB_HTTP_GIT_DISABLED_MESSAGE, 400, {
+      cause: message,
+    });
+  }
   if (provider === 'gitlab' && GIT_AUTH_FAILURE_REGEX.test(message)) {
     return new AppError('gitlab_token_missing', GITLAB_CLONE_AUTH_MESSAGE, 400, { cause: message });
   }

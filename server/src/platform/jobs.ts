@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import * as t from '../db/schema.js';
 import { withTimeout, withRetry } from './resilience.js';
+import { redactSecret } from './redact.js';
 
 /**
  * JobRunner — async work (clone, PR import, indexing, polling) on a
@@ -15,15 +16,32 @@ import { withTimeout, withRetry } from './resilience.js';
 
 export type JobHandler = (payload: unknown, ctx: { jobId: string }) => Promise<void>;
 
+/**
+ * Structural logger for failed background jobs — pino satisfies it, so the
+ * platform does not import a framework logger type. `error` is preferred when
+ * present; `warn` is the minimum (the container's process logger shape).
+ */
+export interface JobLogger {
+  warn: (obj: unknown, msg?: string) => void;
+  error?: (obj: unknown, msg?: string) => void;
+  child?: (bindings: Record<string, unknown>) => JobLogger;
+}
+
 export interface JobRunnerOptions {
   concurrency?: number;
   timeoutMs?: number;
   retries?: number;
+  /** Where a failed job is reported (jobId, kind, redacted message only). */
+  log?: JobLogger;
 }
 
 export interface EnqueuedJob {
   id: string;
-  /** Resolves when the job finishes (or rejects if it ultimately fails). */
+  /**
+   * Resolves when the job finishes (or rejects if it ultimately fails). Awaiting
+   * it is optional: the runner already observes a failure (logs it), so an
+   * un-awaited failed job never becomes an unhandled rejection.
+   */
   done: Promise<void>;
 }
 
@@ -32,6 +50,7 @@ export class JobRunner {
   private handlers = new Map<string, JobHandler>();
   private timeoutMs: number;
   private retries: number;
+  private log?: JobLogger;
 
   constructor(
     private db: Db,
@@ -40,6 +59,7 @@ export class JobRunner {
     this.queue = new PQueue({ concurrency: opts.concurrency ?? 3 });
     this.timeoutMs = opts.timeoutMs ?? 120_000;
     this.retries = opts.retries ?? 2;
+    this.log = opts.log;
   }
 
   register(kind: string, handler: JobHandler): void {
@@ -97,7 +117,26 @@ export class JobRunner {
       }
     }) as Promise<void>;
 
+    // Fire-and-forget callers never await `done`; without a handler a failed job
+    // is an unhandled rejection, which terminates the Node process. Observe it
+    // here (callers that DO await `done` still see the rejection). The failure is
+    // already persisted on the `jobs` row; the log carries no payload.
+    done.catch((err: unknown) => this.reportFailure(jobId, kind, err));
+
     return { id: jobId, done };
+  }
+
+  private reportFailure(jobId: string, kind: string, err: unknown): void {
+    try {
+      const log = this.log;
+      if (!log) return;
+      const message = redactSecret(err instanceof Error ? err.message : String(err));
+      const entry = { jobId, kind, err: message };
+      if (log.error) log.error(entry, 'background job failed');
+      else log.warn(entry, 'background job failed');
+    } catch {
+      // A throwing logger must not turn back into an unhandled rejection.
+    }
   }
 
   /** Wait for the queue to drain (useful in tests). */
