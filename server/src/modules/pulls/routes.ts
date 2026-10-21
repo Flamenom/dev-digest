@@ -1,5 +1,5 @@
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
-import type { ZodTypeProvider } from 'fastify-type-provider-zod';
+import { hasZodFastifySchemaValidationErrors, type ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import type { PrDetailHost, PrMetaHost, PrSyncDoneEvent } from '@devdigest/shared';
 import { HostComment, HostCommentInput, PrListPage, PrSyncStartResult } from '@devdigest/shared';
@@ -204,15 +204,16 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
       // Rec3: a 1,000,000-character comment of multi-byte text exceeds the global
       // 1 MiB limit; let it reach AC-15's `comment_too_long` instead of a 413.
       bodyLimit: COMMENT_BODY_LIMIT_BYTES,
-      // AC-14: a whitespace-only body is a 400 validation error on both hosts,
-      // before any host is resolved (an empty string stays a schema failure).
-      preValidation: async (req) => {
-        if (isWhitespaceOnlyBody(req.body)) {
-          throw new AppError('validation_error', 'Comment body must not be empty', 400);
-        }
-      },
+      // AC-14: the blank-body rule lives ONLY in the `HostCommentInput` refine.
+      // The handler sees the schema failure first and picks its status.
+      // Consequence: the auth preHandler sees an UNVALIDATED body — never give
+      // this route a body-dependent policy predicate (e.g. `sessionOnly`) in
+      // platform/auth/route-policy.ts without moving validation back.
+      attachValidation: true,
     },
     async (req): Promise<HostComment> => {
+      // Before auth/tenancy and any host call, exactly as a non-attached failure.
+      if (req.validationError) throw commentValidationFailure(req.validationError, req.body);
       // Auth/tenancy first: an unauthenticated request never reaches a host (AC-41).
       const { workspaceId, userId } = await getContext(container, req);
       const { pr, repo } = await resolvePrAndRepo(req.params.id, workspaceId);
@@ -224,8 +225,22 @@ export default async function pullsRoutes(appBase: FastifyInstance) {
 /** POST /pulls/:id/comments body limit (4 MiB, plan Rec3). */
 const COMMENT_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
 
-/** A request body whose `body` field is a non-empty, whitespace-only string. */
-function isWhitespaceOnlyBody(raw: unknown): boolean {
+/**
+ * Status for a failed POST /pulls/:id/comments body (AC-14, AC-34).
+ *
+ * The blank-body rule has ONE source: the `HostCommentInput` refine, whose
+ * failure is a `custom` issue on `body`. When that issue fires for a non-empty
+ * string (i.e. whitespace only), the request is a 400 `validation_error` on both
+ * hosts. Every other failure — an empty string included (`pulls-comments.it`,
+ * GitHub parity) — is rethrown unchanged and becomes the app's 422.
+ */
+function commentValidationFailure(err: Error, raw: unknown): Error {
   const body = (raw as { body?: unknown } | null)?.body;
-  return typeof body === 'string' && body.length > 0 && body.trim().length === 0;
+  const blankBody =
+    hasZodFastifySchemaValidationErrors(err) &&
+    err.validation.some(({ params: { issue } }) => issue.code === 'custom' && issue.path.join('.') === 'body');
+  if (blankBody && typeof body === 'string' && body.length > 0) {
+    return new AppError('validation_error', 'Comment body must not be empty', 400);
+  }
+  return err;
 }

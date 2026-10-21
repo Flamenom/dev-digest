@@ -276,9 +276,11 @@ export class RestGitLabClient implements GitLabClient, GitLabCommentsHost {
     } catch (err) {
       throw this.writeError(err);
     }
+    if (!raw || typeof raw !== 'object') throw this.unconfirmed();
     const known = this.discussions.get(discussionId);
-    const id = raw && typeof raw === 'object' ? raw.id : undefined;
-    const note = mapNote(raw, discussionId, known?.rootNoteId ?? (id as number), known?.position ?? null);
+    // An unknown discussion: the reply's own id stands in for the root (mapNote
+    // still rejects a malformed id → unconfirmed).
+    const note = mapNote(raw, discussionId, known?.rootNoteId ?? raw.id, known?.position ?? null);
     if (!note) throw this.unconfirmed();
     return note;
   };

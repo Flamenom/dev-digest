@@ -3,7 +3,9 @@
    2026-10-20-gitlab-comments, AC-25). Admins get a link to Settings → API
    Keys; Members (and everyone while the session probe is pending — fail
    closed) get "Ask an admin to update it." The stable `id` is the
-   `aria-describedby` target of the disabled post button. */
+   `aria-describedby` target of the disabled post button. Not a live region
+   itself: pages mount it inside the always-present `GitLabTokenNoticeRegion`,
+   which announces it when it appears mid-session (no nested live regions). */
 "use client";
 
 import React from "react";
@@ -11,11 +13,11 @@ import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { Icon } from "@devdigest/ui";
 import { useIsAdmin } from "@/lib/hooks/permissions";
-import type { GitLabTokenHealth } from "@/lib/types";
+import type { BlockingGitLabHealth } from "@/lib/gitlab-token";
 import { s } from "./styles";
 
 /** The health values that render the notice (the blocking ones). */
-export type BlockingGitLabHealth = Extract<GitLabTokenHealth, "insufficient_scope" | "invalid">;
+export type { BlockingGitLabHealth };
 
 const MESSAGE_KEY = {
   insufficient_scope: "insufficientScope",

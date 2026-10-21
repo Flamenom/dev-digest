@@ -29,6 +29,8 @@ describe("GitLabTokenNotice (AC-25)", () => {
 
     const note = screen.getByRole("note");
     expect(note).toHaveAttribute("id", "gitlab-token-notice");
+    // Not a live region itself — the always-mounted GitLabTokenNoticeRegion announces it.
+    expect(note).not.toHaveAttribute("aria-live");
     expect(note).toHaveTextContent(SCOPE_TEXT);
     const link = await screen.findByRole("link", { name: "Open Settings → API Keys" });
     expect(link).toHaveAttribute("href", "/settings/api-keys");

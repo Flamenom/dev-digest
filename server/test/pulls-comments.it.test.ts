@@ -137,4 +137,34 @@ d('inline PR comments routes (Testcontainers pg)', () => {
     expect(res.statusCode).toBe(422);
     expect(gh.createdComments).toHaveLength(0);
   });
+
+  it('H4: the blank-body status comes from the HostCommentInput refine alone — whitespace → 400, other failures → 422', async () => {
+    const gh = new MockGitHubClient();
+    const app = await buildApp({ config: config(), db: pg.handle.db, overrides: { github: gh } });
+    const { pr } = await setupRepoAndPr(pg.handle.db, workspaceId);
+    const post = (payload: Record<string, unknown>) =>
+      app.inject({ method: 'POST', url: `/pulls/${pr.id}/comments`, payload });
+
+    // Whitespace-only (incl. non-ASCII space) → 400 validation_error, even with another invalid field.
+    for (const payload of [
+      { path: 'src/config.ts', line: 11, body: ' \n\t\u00a0' },
+      { path: '', line: 11, body: '   ' },
+    ]) {
+      const res = await post(payload);
+      expect(res.statusCode, res.body).toBe(400);
+      expect(res.json().error).toMatchObject({ code: 'validation_error', message: 'Comment body must not be empty' });
+    }
+    // Every other schema failure keeps the app's 422 envelope.
+    for (const payload of [
+      { path: 'src/config.ts', line: 11, body: 42 },
+      { path: 'src/config.ts', line: 11 },
+      { path: '', line: 11, body: 'ok' },
+      { path: 'src/config.ts', line: 11, body: 'ok', in_reply_to: 1, discussion_id: 'd' },
+    ]) {
+      const res = await post(payload);
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.json().error.code).toBe('validation_error');
+    }
+    expect(gh.createdComments).toHaveLength(0);
+  });
 });

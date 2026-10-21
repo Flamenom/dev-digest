@@ -21,11 +21,9 @@ import { useActiveRepo, useRepoNotFound } from "@/lib/repo-context";
 import { ApiError } from "@/lib/api";
 import { hostBlobUrl, hostLabelKey, hostPrUrl } from "@/lib/host-urls";
 import { useGitLabTokenHealth } from "@/lib/hooks/gitlab-health";
-import { GitLabTokenNotice } from "@/components/gitlab-token-notice";
+import { GitLabTokenNoticeRegion, GITLAB_TOKEN_NOTICE_ID } from "@/components/gitlab-token-notice";
 import type { FindingRecord } from "@devdigest/shared";
-
-/** `aria-describedby` target of the blocked post button (AC-25). */
-const TOKEN_NOTICE_ID = "gitlab-token-notice";
+import { s } from "./styles";
 
 export default function PRDetailPage() {
   const params = useParams<{ repoId: string; number: string }>();
@@ -38,11 +36,7 @@ export default function PRDetailPage() {
   const isGitLab = provider === "gitlab";
   // A known-bad GitLab token (insufficient_scope / invalid) blocks every GitLab
   // op: persistent notice + disabled post button (AC-25). null ⇒ unchecked.
-  const { health: gitlabHealth, blocked: gitlabBlocked } = useGitLabTokenHealth();
-  const tokenNoticeHealth =
-    isGitLab && gitlabBlocked && (gitlabHealth === "insufficient_scope" || gitlabHealth === "invalid")
-      ? gitlabHealth
-      : null;
+  const tokenNoticeHealth = useGitLabTokenHealth(repo);
   const repoNotFound = useRepoNotFound(repoId);
   // The route is keyed by PR number, but every PR API is keyed by the row's
   // uuid — resolve number → uuid via the (cached) pulls list before fetching.
@@ -153,11 +147,7 @@ export default function PRDetailPage() {
 
   return (
     <AppShell crumb={crumb}>
-      {tokenNoticeHealth && (
-        <div style={{ padding: "16px 32px 0", maxWidth: 1080, margin: "0 auto" }}>
-          <GitLabTokenNotice id={TOKEN_NOTICE_ID} health={tokenNoticeHealth} />
-        </div>
-      )}
+      <GitLabTokenNoticeRegion health={tokenNoticeHealth} wrapStyle={s.tokenNoticeWrap} />
       <PrDetailHeader
         pr={pr}
         prId={prId}
@@ -229,7 +219,7 @@ export default function PRDetailPage() {
             host={{
               provider,
               filesOmittedByHost: pr.files_omitted_by_host ?? 0,
-              postBlocked: tokenNoticeHealth ? { describedById: TOKEN_NOTICE_ID } : null,
+              postBlocked: tokenNoticeHealth ? { describedById: GITLAB_TOKEN_NOTICE_ID } : null,
             }}
             reviews={runs}
             onGoToFinding={goToFinding}

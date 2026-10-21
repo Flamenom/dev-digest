@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { MockGitHubClient } from '../src/adapters/mocks.js';
+import { MockAuthProvider, MockGitHubClient, MockIdentityProvider } from '../src/adapters/mocks.js';
 import { DEFAULT_REJECTION_LIMIT, RejectionLimiter, rejectionKey } from '../src/platform/auth/guard.js';
 import {
   anonymous,
   asSession,
   asToken,
   buildHermeticGoogleApp,
+  FAKE_WORKSPACE_ID,
   type HermeticGoogleApp,
 } from './helpers/google-mode.js';
 
@@ -17,6 +18,15 @@ import {
  * Every request comes from the same inject address (127.0.0.1). The sign-in
  * routes are T22's: until they exist, stand-ins are registered at the same
  * URLs (the per-IP limit is applied from the policy table, not the route).
+ *
+ * Hermetic + fast: the real sign-in handlers resolve the team workspace and
+ * persist/consume OAuth flows. Against the unreachable hermetic DB URL each
+ * of those took ~1.7 s (postgres-js connect attempts), so 21 sign-in requests
+ * could outlive the 60 s `timeWindow` under full-suite load and the 21st was
+ * never a 429. Here the team workspace comes from `MockAuthProvider`, the IdP
+ * is `MockIdentityProvider`, audit is an in-memory no-op and the DB is the
+ * recording proxy, which rejects synchronously — every request is ~ms, so
+ * the whole window-bound burst finishes far inside one window.
  */
 
 const SIGN_IN_ROUTES = ['/auth/google/start', '/auth/google/callback'] as const;
@@ -27,7 +37,13 @@ describe('per-user rate limits (google mode)', () => {
   beforeAll(async () => {
     t = await buildHermeticGoogleApp({
       rateLimit: true,
-      overrides: { github: new MockGitHubClient({ login: 'octocat' }) },
+      recordDb: true,
+      overrides: {
+        github: new MockGitHubClient({ login: 'octocat' }),
+        auth: new MockAuthProvider(undefined, { id: FAKE_WORKSPACE_ID, name: 'default' }),
+        identityProvider: new MockIdentityProvider(),
+        audit: { record: async () => {} },
+      },
       beforeReady: (app) => {
         app.get('/zz-rate-probe', async () => ({ ok: true }));
         for (const url of SIGN_IN_ROUTES) {
@@ -57,6 +73,16 @@ describe('per-user rate limits (google mode)', () => {
     const c = t.principals.session('member');
     const fresh = await t.app.inject(asSession(c, { method: 'GET', url: '/repos' }));
     expect(fresh.statusCode).not.toBe(429);
+  });
+
+  it('the real sign-in callback answers without touching the DB or the network (hermetic setup)', async () => {
+    t.dbLog?.reset();
+    const res = await t.app.inject(
+      anonymous({ method: 'GET', url: '/auth/google/callback', headers: { 'x-forwarded-for': '192.0.2.99' } }),
+    );
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toContain('error=auth_state_invalid');
+    expect(t.dbLog?.calls).toEqual([]);
   });
 
   it.each(SIGN_IN_ROUTES)('%s: 20/min per IP — the 21st from one IP is 429, another IP is unaffected', async (url) => {

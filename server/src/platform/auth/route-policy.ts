@@ -185,6 +185,9 @@ export const ROUTE_POLICY: Readonly<Record<string, RoutePolicy>> = Object.freeze
   'GET /pulls/:id/brief': MEMBER,
   // AC-41: Members and Admins may post/reply. AC-42: one row per successful
   // post (hook: status < 400 + principal ⇒ google mode only, never on failure).
+  // NOTE: this route uses `attachValidation: true` (modules/pulls/routes.ts), so
+  // the preHandler runs on an UNVALIDATED body. Never add a body-dependent
+  // predicate (e.g. `sessionOnly`) here without moving validation back first.
   'POST /pulls/:id/comments': {
     access: 'member',
     audit: audit('pr_comment.create', 'pull_request', { metadata: prCommentAuditMetadata }),

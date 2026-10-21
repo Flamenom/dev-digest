@@ -10,7 +10,7 @@ import {
 import { AppError } from '../../platform/errors.js';
 import { hostRepoRef } from '../_shared/repo-ref.js';
 import { composeGitLabText, sanitiseFooterName } from './comment-body.js';
-import { resolveGitLabTarget, type PersistedFileLike } from './comment-position.js';
+import { resolveGitLabTarget, type GitLabTarget, type PersistedFileLike } from './comment-position.js';
 import type { DetailRepo } from './detail-service.js';
 import { toHostComment } from './gitlab-comment-mapper.js';
 import type { SyncLogger } from './sync-service.js';
@@ -66,6 +66,11 @@ export interface PrComments {
 }
 
 const DIFF_OUTDATED_MESSAGE = 'New commits were pushed — reload the diff';
+
+/** What a GitLab post writes: a reply to a discussion, or a new diff discussion at a resolved line. */
+type GitLabWrite =
+  | { kind: 'reply'; discussionId: string }
+  | { kind: 'new'; target: GitLabTarget };
 
 /** `{ code, upstreamStatus }` of an error, by shape — never the error, its message or a body. */
 function errorTags(err: unknown): { code: string | null; upstreamStatus: number | null } {
@@ -252,17 +257,10 @@ export class PrCommentsService implements PrComments {
     }
 
     // 3. A new comment must target a line of the persisted diff.
-    let target: ReturnType<typeof resolveGitLabTarget> = null;
-    if (discussionId == null) {
-      target = resolveGitLabTarget(await this.deps.files(pr.id), input.path, input.side, input.line);
-      if (!target) {
-        throw new AppError(
-          'comment_position_invalid',
-          'That line is not part of this merge request diff.',
-          400,
-        );
-      }
-    }
+    const write: GitLabWrite =
+      discussionId != null
+        ? { kind: 'reply', discussionId }
+        : { kind: 'new', target: await this.resolveNewCommentTarget(pr, input) };
 
     // 4. Token gate (no token → fail fast, AC-29; gate errors propagate, AC-23).
     const access = await this.deps.gitlabAccess.resolve();
@@ -282,9 +280,9 @@ export class PrCommentsService implements PrComments {
     }
 
     let note: GitLabDiffNote;
-    if (discussionId != null) {
+    if (write.kind === 'reply') {
       // 6. Reply: the discussion must exist on this MR (AC-20); yields the root id (Q3).
-      const discussion = await host.getDiscussion(ref, pr.number, discussionId);
+      const discussion = await host.getDiscussion(ref, pr.number, write.discussionId);
       if (!discussion) {
         throw new AppError(
           'comment_thread_not_found',
@@ -302,7 +300,7 @@ export class PrCommentsService implements PrComments {
         position: hasPosition || !discussion.position ? added.position : discussion.position,
       };
     } else {
-      const t = target!;
+      const t = write.target;
       // 7. Exactly one write, anchored with the CURRENT refs just read.
       note = await host.createDiffDiscussion(ref, pr.number, {
         body: text,
@@ -325,5 +323,14 @@ export class PrCommentsService implements PrComments {
       iid: pr.number,
       serviceAccount,
     });
+  }
+
+  /** The diff line a NEW GitLab comment anchors to (AC-11); throws when it is not in the diff. */
+  private async resolveNewCommentTarget(pr: CommentsPr, input: HostCommentInput): Promise<GitLabTarget> {
+    const target = resolveGitLabTarget(await this.deps.files(pr.id), input.path, input.side, input.line);
+    if (!target) {
+      throw new AppError('comment_position_invalid', 'That line is not part of this merge request diff.', 400);
+    }
+    return target;
   }
 }

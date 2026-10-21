@@ -87,8 +87,11 @@ const EMPTY_POSITION: NotePosition = {
   newLine: null,
 };
 
+/** A discussion that passed {@link isTextDiffDiscussion}: it has a root note. */
+type TextDiffDiscussion = RestDiscussion & { notes: [RestNote, ...RestNote[]] };
+
 /** A diff discussion we surface: not an individual note, root is a non-system `text` DiffNote. */
-function isTextDiffDiscussion(d: RestDiscussion | null | undefined): boolean {
+function isTextDiffDiscussion(d: RestDiscussion | null | undefined): d is TextDiffDiscussion {
   if (!d || typeof d !== 'object' || typeof d.id !== 'string' || !d.id) return false;
   if (d.individual_note === true) return false;
   const root = Array.isArray(d.notes) ? d.notes[0] : undefined;
@@ -129,10 +132,9 @@ export function mapDiscussions(raw: readonly RestDiscussion[] | null | undefined
   const out: GitLabDiffNote[] = [];
   for (const d of raw ?? []) {
     if (!isTextDiffDiscussion(d)) continue;
-    const notes = d.notes as RestNote[];
-    const root = notes[0]!;
+    const root = d.notes[0];
     const rootPosition = mapPosition(root.position);
-    for (const note of notes) {
+    for (const note of d.notes) {
       if (!note || note.system === true) continue;
       const mapped = mapNote(note, d.id, root.id, rootPosition);
       if (mapped) out.push(mapped);

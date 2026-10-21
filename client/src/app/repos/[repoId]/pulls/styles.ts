@@ -122,4 +122,6 @@ export const s = {
     flexDirection: "column",
     gap: 14,
   } satisfies CSSProperties,
+  /** GitLab token notice wrapper — lines the notice up with the table card below it. */
+  tokenNoticeWrap: { margin: "4px 32px 0" } satisfies CSSProperties,
 } as const;

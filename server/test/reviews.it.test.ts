@@ -4,7 +4,7 @@ import { waitForPrRuns } from './helpers/runs.js';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/platform/config.js';
 import { seed } from '../src/db/seed.js';
-import { MockLLMProvider, MockEmbedder, MockGitClient } from '../src/adapters/mocks.js';
+import { MockLLMProvider, MockEmbedder, MockGitClient, MockGitHubClient } from '../src/adapters/mocks.js';
 import * as t from '../src/db/schema.js';
 import { eq } from 'drizzle-orm';
 import type { Review } from '@devdigest/shared';
@@ -110,6 +110,12 @@ d('A2 reviews + agents (Testcontainers pg)', () => {
     await pg?.stop();
   });
 
+  // Hermetic: no external network. The PR body says "Closes #471", so the
+  // linked-issue lookup would otherwise GET api.github.com with whatever
+  // GITHUB_TOKEN the developer's env/secrets file holds; the seeded agents
+  // (provider `openrouter`, picked up by `{ all: true }`) would likewise POST
+  // to openrouter.ai. Both hosts are mocked; `config()` still reads
+  // `process.env`, so nothing else may reach for a real secret.
   function appWith(structured: unknown, provider: 'openai' | 'anthropic' = 'openai') {
     return buildApp({
       config: config(),
@@ -117,7 +123,9 @@ d('A2 reviews + agents (Testcontainers pg)', () => {
       overrides: {
         embedder: new MockEmbedder(),
         git: new MockGitClient({ diff: DIFF }),
+        github: new MockGitHubClient(),
         llm: {
+          openrouter: new MockLLMProvider('openrouter', { structured }),
           [provider]: new MockLLMProvider(provider, { structured }),
         },
       },
@@ -297,6 +305,9 @@ d('A2 reviews + agents (Testcontainers pg)', () => {
     ).json();
     // seed has 2 enabled agents; we may have created more above in this PR's ws.
     expect(body.runs.length).toBeGreaterThanOrEqual(2);
+    // Let the fire-and-forget runs settle before closing, so none outlives the
+    // test (and the shared pg fixture) nondeterministically.
+    await waitForPrRuns(pg.handle.db, pr.id, { expected: body.runs.length });
     await app.close();
   });
 });

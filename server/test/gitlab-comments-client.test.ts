@@ -116,6 +116,18 @@ describe('mapDiscussions (pure, AC-1/AC-2)', () => {
   it('a discussion whose root is a system note is dropped', () => {
     expect(mapDiscussions([{ id: 'x', notes: [note(9, { system: true })] }])).toEqual([]);
   });
+
+  it('a discussion without a root note (empty / null / malformed notes) is dropped, not thrown on (H6)', () => {
+    const malformed = [
+      { id: 'e1', notes: [] },
+      { id: 'e2', notes: null },
+      { id: 'e3' },
+      { id: 'e4', notes: [null] },
+      { id: 'e5', notes: [{ ...note(1), id: 'nope' }] },
+      null,
+    ] as unknown as RestDiscussion[];
+    expect(mapDiscussions([...malformed, FIXTURE[0]!]).map((n) => n.id)).toEqual([1, 2]);
+  });
 });
 
 describe('toApiPosition (pure, AC-9/AC-10)', () => {
@@ -328,6 +340,21 @@ describe('addDiscussionNote (AC-19)', () => {
     expect(reply).toMatchObject({ id: 99, discussionId: 'disc1', rootNoteId: 11, body: 'reply' });
     expect(reply.position.newLine).toBe(10);
     expect(calls.filter((r) => r.method === 'POST')).toHaveLength(1);
+  });
+
+  it('an unknown discussion: the reply\'s own id stands in for the root (H6)', async () => {
+    const { c } = client(() => json(note(77, { body: 'r' }), 201));
+    const reply = await c.addDiscussionNote(REF, 42, 'never-looked-up', 'r');
+    expect(reply).toMatchObject({ id: 77, discussionId: 'never-looked-up', rootNoteId: 77 });
+  });
+
+  it('a 201 without a usable note (null, no id, bad id) → unconfirmed, 1 POST each (H6)', async () => {
+    for (const body of [null, {}, { id: 'x' }, { id: -1 }]) {
+      const { c, calls } = client(() => json(body, 201));
+      const err = await caught(c.addDiscussionNote(REF, 42, 'disc1', 'r'));
+      expect(err.message).toBe(UNCONFIRMED);
+      expect(calls).toHaveLength(1);
+    }
   });
 
   it('5xx → 1 POST, unconfirmed', async () => {

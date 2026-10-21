@@ -5,7 +5,7 @@
 import { useTranslations } from "next-intl";
 import { Button } from "@devdigest/ui";
 import type { FindingRecord } from "@devdigest/shared";
-import { useCopyToClipboard } from "@/components/read-only-host";
+import { useCopyToClipboard } from "@/lib/hooks/clipboard";
 import { findingClipboardText } from "../../helpers";
 
 export function CopyFindingAction({ f }: { f: FindingRecord }) {

@@ -45,3 +45,4 @@ export * from './contracts/secrets-status.js';
 export * from './auth-ports.js';
 export * from './contracts/host-comments.js';
 export * from './host-comments-ports.js';
+export * from './contracts/gitlab-token-codes.js';

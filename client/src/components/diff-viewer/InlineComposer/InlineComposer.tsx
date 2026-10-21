@@ -9,15 +9,16 @@
 import React from "react";
 import { useTranslations } from "next-intl";
 import { Textarea, Button } from "@devdigest/ui";
-import { useCopyToClipboard } from "@/components/read-only-host";
-import { cs, type CommentSubmitInput, type DiffCommentApi } from "../comments";
+import { useCopyToClipboard } from "@/lib/hooks/clipboard";
+import type { HostCommentReplyTarget } from "@/lib/types";
+import { cs, type DiffCommentApi } from "../comments";
 
 /** The reply field for this host: GitLab replies by discussion, GitHub by root id. */
 function replyTarget(
   commenting: DiffCommentApi,
   inReplyTo: number | undefined,
   discussionId: string | null | undefined,
-): Pick<CommentSubmitInput, "in_reply_to" | "discussion_id"> {
+): HostCommentReplyTarget {
   if (commenting.provider === "gitlab" && discussionId) return { discussion_id: discussionId };
   return inReplyTo != null ? { in_reply_to: inReplyTo } : {};
 }
