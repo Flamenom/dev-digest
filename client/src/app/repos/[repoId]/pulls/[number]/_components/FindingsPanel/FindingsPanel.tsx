@@ -36,6 +36,7 @@ export function FindingsPanel({
   headSha,
   targetFindingId,
   targetNonce = 0,
+  FindingAddon,
 }: {
   findings: FindingRecord[];
   prId: string;
@@ -45,6 +46,9 @@ export function FindingsPanel({
    *  re-triggers the scroll when the same finding is targeted again. */
   targetFindingId?: string | null;
   targetNonce?: number;
+  /** Optional per-finding header control component, rendered into
+   *  FindingCard's `addon` slot (the GitLab publish checkbox). Absent → cards unchanged. */
+  FindingAddon?: React.ComponentType<{ finding: FindingRecord }>;
 }) {
   const t = useTranslations("prReview");
   const params = useParams<{ repoId: string }>();
@@ -128,6 +132,7 @@ export function FindingsPanel({
               headSha={headSha}
               onAction={(act) => action.mutate({ findingId: f.id, action: act, prId })}
               evalCaseLink={evalCaseByFinding.get(f.id) ?? null}
+              addon={FindingAddon ? <FindingAddon finding={f} /> : undefined}
               onOpenEvalCase={() => {
                 const link = evalCaseByFinding.get(f.id);
                 setEditing(link ? { caseId: link.case_id } : { findingId: f.id });

@@ -30,6 +30,8 @@ export interface ReviewDto {
   model: string | null;
   grounding?: string | null;
   created_at: string;
+  /** AC-1 — head SHA of the diff this review reviewed; null for pre-0027 rows. */
+  head_sha: string | null;
   /** Who started the producing run (AC-45), resolved by `attachReviewActors`. */
   started_by?: ActorRef;
   findings: ReviewDtoFinding[];
@@ -73,6 +75,7 @@ export function reviewToDto(
     score: review.score,
     model: review.model,
     created_at: review.createdAt.toISOString(),
+    head_sha: review.headSha ?? null,
     findings: findings.map(findingRowToDto),
   };
 }

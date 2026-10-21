@@ -21,3 +21,4 @@ export * from "./members";
 export * from "./tokens";
 export * from "./gitlab-health";
 export * from "./clipboard";
+export * from "./publish";

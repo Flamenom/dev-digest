@@ -59,6 +59,8 @@ export class ReviewRepository {
     summary: string | null;
     score: number | null;
     model: string | null;
+    /** AC-1 — head SHA of the reviewed diff; null when unknown. */
+    headSha: string | null;
   }): Promise<ReviewRow> {
     return reviewRepo.insertReview(this.db, values);
   }

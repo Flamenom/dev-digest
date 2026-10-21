@@ -4,7 +4,13 @@ import type {
   GitLabDiffNote,
   GitLabDiffRefs,
   GitLabDiscussionRef,
+  GitLabDraftNote,
+  GitLabDraftNotesHost,
+  GitLabDraftPosition,
+  GitLabMrNote,
   GitLabScopeCheck,
+  GitLabWriteFailure,
+  GitLabWriteResult,
   GitLabTextPosition,
   GitLabProjectInfo,
   GitLabTokenCheck,
@@ -15,6 +21,7 @@ import type {
   PullDetailOptions,
   PullDetailResult,
   PullStateInfo,
+  WaitBudget,
 } from '@devdigest/shared';
 import { AppError, NotFoundError } from '../../platform/errors.js';
 import { GitLabHttp, GitLabHttpError, type GitLabHttpOptions, type QueryValue } from './http.js';
@@ -37,6 +44,7 @@ import {
   type RestDiscussion,
   type RestNote,
 } from './discussions.js';
+import { mapDraftNote, mapDraftNotes, mapMrNotes, toApiDraftPosition, type RestDraftNote } from './draft-notes.js';
 import {
   mapDiffStats,
   mapGqlMergeRequest,
@@ -82,7 +90,7 @@ const DISCUSSION_MEMO_MAX = 500;
  *
  * Constructed ONLY by the composition root (`platform/container.ts`).
  */
-export class RestGitLabClient implements GitLabClient, GitLabCommentsHost {
+export class RestGitLabClient implements GitLabClient, GitLabCommentsHost, GitLabDraftNotesHost {
   readonly provider = 'gitlab' as const;
   readonly readOnly = false;
 
@@ -283,6 +291,98 @@ export class RestGitLabClient implements GitLabClient, GitLabCommentsHost {
     const note = mapNote(raw, discussionId, known?.rootNoteId ?? raw.id, known?.position ?? null);
     if (!note) throw this.unconfirmed();
     return note;
+  };
+
+  // ---------- GitLabDraftNotesHost (publish findings) ----------
+
+  /** The token user's own draft notes on the MR, all pages (AC-23). Throws a mapped AppError. */
+  listOwnDraftNotes = async (ref: HostRepoRef, iid: number): Promise<GitLabDraftNote[]> => {
+    const path = `${this.mrPath(ref, iid)}/draft_notes`;
+    try {
+      return mapDraftNotes(await this.paginate<RestDraftNote>(path));
+    } catch (err) {
+      throw this.readError(err);
+    }
+  };
+
+  /**
+   * One draft note (AC-25). `position: null` ⇒ no `position` key at all (a
+   * general note, AC-9). Write policy: 429 only, charged to `waitBudget` (AC-28).
+   * Never throws — a failure is classified (`classifyWrite`).
+   */
+  createDraftNote = async (
+    ref: HostRepoRef,
+    iid: number,
+    input: { note: string; position: GitLabDraftPosition | null },
+    opts: { waitBudget: WaitBudget },
+  ): Promise<GitLabWriteResult<GitLabDraftNote>> => {
+    let path: string;
+    try {
+      path = `${this.mrPath(ref, iid)}/draft_notes`;
+    } catch {
+      // Invalid ref / iid: nothing was sent.
+      return { ok: false, failure: { kind: 'rejected', status: 422 } };
+    }
+    const body: { note: string; position?: ReturnType<typeof toApiDraftPosition> } = { note: input.note };
+    if (input.position) body.position = toApiDraftPosition(input.position);
+    try {
+      const { data } = await this.http.post<RestDraftNote | null>(path, body, { waitBudget: opts.waitBudget });
+      const draft = mapDraftNote(data);
+      // A 2xx without a readable draft: it may have landed ⇒ unconfirmed.
+      if (!draft) return { ok: false, failure: { kind: 'unconfirmed' } };
+      return { ok: true, value: draft };
+    } catch (err) {
+      return { ok: false, failure: classifyWrite(err) };
+    }
+  };
+
+  /** Idempotent (read retry policy). 404 ⇒ `'not_found'` (already gone); other failures throw. */
+  deleteDraftNote = async (ref: HostRepoRef, iid: number, draftId: number): Promise<'deleted' | 'not_found'> => {
+    const path = `${this.mrPath(ref, iid)}/draft_notes/${positiveId(draftId, 'draft note id')}`;
+    try {
+      await this.http.delete(path);
+      return 'deleted';
+    } catch (err) {
+      if (isStatus(err, 404)) return 'not_found';
+      throw this.readError(err);
+    }
+  };
+
+  /**
+   * Publishes ALL of the token user's drafts (AC-26). The body carries `note`
+   * only when a summary is given — NEVER `reviewer_state` or `internal`.
+   * Never throws; a 5xx / timeout / network error is `unconfirmed` (AC-32).
+   */
+  bulkPublishDraftNotes = async (
+    ref: HostRepoRef,
+    iid: number,
+    input: { note: string | null },
+    opts: { waitBudget: WaitBudget },
+  ): Promise<GitLabWriteResult<null>> => {
+    let path: string;
+    try {
+      path = `${this.mrPath(ref, iid)}/draft_notes/bulk_publish`;
+    } catch {
+      return { ok: false, failure: { kind: 'rejected', status: 422 } };
+    }
+    const body: { note?: string } = {};
+    if (input.note !== null) body.note = input.note;
+    try {
+      await this.http.post<unknown>(path, body, { waitBudget: opts.waitBudget });
+      return { ok: true, value: null };
+    } catch (err) {
+      return { ok: false, failure: classifyWrite(err) };
+    }
+  };
+
+  /** Every non-system note of every discussion (diff and general), all pages (AC-26). */
+  listMrNotes = async (ref: HostRepoRef, iid: number): Promise<GitLabMrNote[]> => {
+    const path = `${this.mrPath(ref, iid)}/discussions`;
+    try {
+      return mapMrNotes(await this.paginate<RestDiscussion>(path));
+    } catch (err) {
+      throw this.readError(err);
+    }
   };
 
   // ---------- PullRequestHost ----------
@@ -585,6 +685,31 @@ function encodeDiscussionId(id: string): string {
   const trimmed = id.trim();
   if (!trimmed) throw new AppError('validation_error', 'GitLab discussion id is empty', 422);
   return encodeURIComponent(trimmed);
+}
+
+/**
+ * A failed draft-note write → why it did not (provably) land (publish AC-28 –
+ * AC-32). Status 0, ≥ 500 or an unreadable 2xx ⇒ `unconfirmed` (may have
+ * landed — never re-sent); 429 here means the retry budget is exhausted.
+ */
+export function classifyWrite(err: unknown): GitLabWriteFailure {
+  if (!(err instanceof GitLabHttpError)) return { kind: 'unconfirmed' };
+  const s = err.upstreamStatus;
+  if (s === 401) return { kind: 'token_invalid' };
+  if (err.authFailure === 'insufficient_scope') return { kind: 'insufficient_scope' };
+  if (s === 403) return { kind: 'forbidden' };
+  if (s === 404) return { kind: 'not_found' };
+  if (s === 429) return { kind: 'rate_limited' };
+  if (s === 0 || s >= 500 || (s >= 200 && s < 300)) return { kind: 'unconfirmed' };
+  return { kind: 'rejected', status: s };
+}
+
+/** A host id that goes into a URL path: positive integer only. */
+function positiveId(n: number, label: string): number {
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new AppError('validation_error', `Invalid GitLab ${label}: ${n}`, 422);
+  }
+  return n;
 }
 
 function isStatus(err: unknown, ...statuses: number[]): boolean {

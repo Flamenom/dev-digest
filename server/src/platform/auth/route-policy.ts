@@ -33,7 +33,7 @@
  *
  * Pure data + pure helpers: no Fastify, no I/O.
  */
-import type { PrCommentAuditMetadata, SecretKey } from '@devdigest/shared';
+import type { PrCommentAuditMetadata, Role, SecretKey } from '@devdigest/shared';
 import { SECRET_KEY_BY_PROVIDER } from '../secret-keys.js';
 
 export type RouteAccess = 'public' | 'member' | 'admin';
@@ -206,6 +206,18 @@ export const ROUTE_POLICY: Readonly<Record<string, RoutePolicy>> = Object.freeze
   'DELETE /runs/:id': { access: 'admin', audit: audit('run.delete', 'run') },
   'DELETE /reviews/:id': { access: 'admin', audit: audit('review.delete', 'review') },
 
+  // ── Publish findings to GitLab (spec 2026-10-21-gitlab-publish-findings) ────
+  // AC-40: THE single publish row. The preview's `viewer_can_publish` is derived
+  // from this same entry (`roleSatisfies`), so flipping it to `admin` restricts
+  // both the server and the client button. Sessions and API tokens allowed.
+  // No `audit` descriptor: the outcome is decided after the 202, so the
+  // executor records `review.publish` at the terminal status (AC-41).
+  'POST /reviews/:id/publications': { access: 'member' },
+  'GET /reviews/:id/publish-preview': MEMBER,
+  'GET /reviews/:id/publish-other-drafts': MEMBER,
+  'GET /reviews/:id/publications': MEMBER,
+  'GET /publications/:id': MEMBER,
+
   // ── Findings (Q10: audited) ────────────────────────────────────────────────
   'POST /findings/:id/accept': { access: 'member', audit: audit('finding.accept', 'finding') },
   'POST /findings/:id/dismiss': { access: 'member', audit: audit('finding.dismiss', 'finding') },
@@ -313,6 +325,17 @@ export function lookupPolicy(method: string, url: string): PolicyLookup {
   return policy
     ? { key, policy, classified: true }
     : { key, policy: UNCLASSIFIED_POLICY, classified: false };
+}
+
+/**
+ * Whether `role` meets a policy's minimum `access` — the same rule the guard
+ * enforces (Admins pass every `member` route). Pure; lets a route expose a
+ * permission to the client from the SAME table row (AC-40, plan Q6).
+ */
+export function roleSatisfies(role: Role, access: RouteAccess): boolean {
+  if (access === 'public') return true;
+  if (access === 'member') return role === 'member' || role === 'admin';
+  return role === 'admin';
 }
 
 /** Registered routes (as `policyKey`s) missing from the table — the matrix test asserts this is empty. */

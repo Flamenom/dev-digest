@@ -16,6 +16,7 @@ import brief from './brief/routes.js';
 import projectContext from './project-context/routes.js';
 import evalPipeline from './eval/routes.js';
 import identity from './identity/routes.js';
+import publish from './publish/routes.js';
 
 /**
  * Module registry. Each feature module is a Fastify plugin in
@@ -51,4 +52,6 @@ export const modules: Record<string, FastifyPluginAsync> = {
   eval: evalPipeline,
   // Multi-user server mode: sign-in, session, members, personal API tokens.
   identity,
+  // Publish review findings to a GitLab MR as one batch review (draft notes).
+  publish,
 };

@@ -94,7 +94,8 @@ live log).
 
 A workspace can mix GitHub and GitLab repositories — the provider is chosen per
 repo from its URL. Specs: [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merge-requests.md),
-[`gitlab-comments`](specs/2026-10-20-gitlab-comments.md).
+[`gitlab-comments`](specs/2026-10-20-gitlab-comments.md),
+[`gitlab-publish-findings`](specs/2026-10-21-gitlab-publish-findings.md).
 
 - **Token** — one GitLab access token per workspace (personal, group or project
   token), set in **Settings → API Keys → GitLab access token** and checked with
@@ -161,6 +162,24 @@ repo from its URL. Specs: [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merg
     tests only; a one-time smoke on a sandbox gitlab.com MR (post
     `/label ~smoke\n/shrug\nLGTM` with a Reporter-role `api` token in google
     mode — no label, no shrug, footer without a mention) has not been run yet.
+- **Publish findings to the MR as one review** — on the Findings tab of a GitLab PR, in a review run,
+  select up to 50 findings (checkboxes, **Select all publishable**), press
+  **Publish N to GitLab**, optionally add a summary, and DevDigest posts them as
+  one GitLab review: one draft note per finding, then a single publish. Any
+  Member or Admin can publish; it uses the same `api`-scope token and service
+  account as comments (footer in `google` mode). A finding on a changed line is
+  posted inline; one that is off the diff is posted as a general MR comment
+  (the dialog says how many). **Make code suggestions applicable** is an opt-in
+  toggle (off by default) that turns eligible suggestions into GitLab's
+  applicable suggestion blocks. **Other drafts:** GitLab publishes every pending
+  draft of the service account together, so the dialog warns when the account
+  has other draft comments on the MR — they go out with the batch, untouched.
+  Each published finding shows "Published by … · time" and **View on GitLab**,
+  and cannot be published twice. Publishing is refused when the review predates
+  publish support or new commits were pushed since the review (re-run the
+  review), when the MR is not open, or while another publish to the MR is
+  running. Nothing renders for GitHub PRs. API and failure handling:
+  [`server/README.md`](server/README.md#publish-findings-to-gitlab-batch-review-via-draft-notes).
 
 | Lesson | Feature | What it does | Where in the UI | Spec |
 |--------|---------|--------------|-----------------|------|
@@ -175,7 +194,7 @@ repo from its URL. Specs: [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merg
 | L05 | Project Context | Attach `specs/` / `docs/` / `insights/` markdown from the clone to an agent; injected as untrusted context on every run | `/repos/:repoId/project-context` · agent editor → Context tab | [`project-context`](specs/2026-08-27-project-context.md) |
 | L05 | PR Brief | Why + risk brief for the PR (cached), Risk Areas and a Review Focus block | PR → Overview → PR Brief card | [`pr-brief`](specs/2026-08-27-pr-brief.md) |
 | L06 | Eval Pipeline | In-app regression harness for reviewer agents: accepted findings become `must_find` cases, dismissed ones `must_not_flag`; cases run through the real engine, scored by code | Finding → "Turn into eval case" · `/evals` · `/evals/:agentId` · agent editor → Evals tab | [`06-eval-pipeline`](specs/06-eval-pipeline.md) |
-| — | GitLab | gitlab.com repos (nested groups) beside GitHub ones, MR import, sync-on-open PR list, Draft badge, post/reply inline comments as the token's service account (`api` scope required, Reporter role recommended; "posted by … via DevDigest" footer in google mode), token-health notice — [details](#gitlab-gitlabcom) | Add repository · Settings → API Keys · PR list · PR → Files changed | [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merge-requests.md) · [`gitlab-comments`](specs/2026-10-20-gitlab-comments.md) |
+| — | GitLab | gitlab.com repos (nested groups) beside GitHub ones, MR import, sync-on-open PR list, Draft badge, post/reply inline comments as the token's service account (`api` scope required, Reporter role recommended; "posted by … via DevDigest" footer in google mode), token-health notice, publish findings to the MR as one review (applicable suggestions opt-in, other-drafts warning) — [details](#gitlab-gitlabcom) | Add repository · Settings → API Keys · PR list · PR → Files changed · PR → Findings → review run | [`gitlab-merge-requests`](specs/2026-10-16-gitlab-merge-requests.md) · [`gitlab-comments`](specs/2026-10-20-gitlab-comments.md) · [`gitlab-publish-findings`](specs/2026-10-21-gitlab-publish-findings.md) |
 
 **Two different "evals".** The **Eval Pipeline** above is a product feature
 (server `modules/eval`, Postgres, Eval Dashboard) that evaluates the in-app

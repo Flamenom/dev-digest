@@ -70,6 +70,7 @@ flowchart TB
   end
   subgraph Review["Review & runs"]
     reviews["reviews<br/>/pulls/:id/review · /reviews · /findings/:id/(accept|dismiss)<br/>/runs/:id/(events|trace)"]
+    publish["publish (GitLab)<br/>/reviews/:id/(publish-preview|publish-other-drafts|publications)<br/>/publications/:id"]
   end
   subgraph Agents["Agents"]
     agents["agents<br/>/agents · /agents/:id"]
@@ -144,6 +145,111 @@ Spec: [`gitlab-comments`](../specs/2026-10-20-gitlab-comments.md). Routes in
   operation (add repo, clone/resync, PR sync, PR refresh, comments, issue
   lookups) fails with `gitlab_token_insufficient_scope` and no anonymous
   fallback; persisted data stays readable.
+
+### Publish findings to GitLab (batch review via draft notes)
+
+Spec: [`gitlab-publish-findings`](../specs/2026-10-21-gitlab-publish-findings.md).
+Module `modules/publish/` (routes → `PublishService` → `PublishExecutor` /
+`PublishReconciler` → `publish/repository.ts`); GitLab calls go through the
+draft-notes operations of the GitLab host (`adapters/gitlab/draft-notes.ts`).
+All routes are review/publication **uuid**-keyed, `member` access.
+
+| Route | Response | Notes |
+|-------|----------|-------|
+| `GET /reviews/:id/publish-preview` | `PublishPreview` | per finding: `publishable`, `reason`, planned `anchor` (`multi_line` / `single_line` / `general` + `off_diff_reason`), `suggestion_eligible`, `published` link; review-level `blockers`; `viewer_can_publish`. **0 GitLab requests**; also triggers a background reconcile of this PR's stale publications |
+| `GET /reviews/:id/publish-other-drafts` | `OtherDraftsCount` | one draft-list read; counts the service account's drafts **without** this workspace's marker; any failure → `{ other_drafts: null }` |
+| `POST /reviews/:id/publications` | **202** `Publication` (`in_progress`) | body `PublishRequest`: `finding_ids` (1–50 unique uuids of this review), `summary?` (≤ 10,000 chars, not whitespace-only), `apply_suggestions` (default `false`); the work continues in the background |
+| `GET /reviews/:id/publications` | `Publication[]` | newest first |
+| `GET /publications/:id` | `Publication` | status, counters, per-finding `items` with `state` / `code` / `link` |
+
+- **Permission.** The single row `POST /reviews/:id/publications` in
+  `platform/auth/route-policy.ts` (`member`) gates publishing; the preview's
+  `viewer_can_publish` is derived from that same row, so changing it restricts
+  both server and client.
+- **Validation order (all before any GitLab write):** review in workspace →
+  selection (`400 publish_selection_invalid`) → summary
+  (`400 publish_summary_invalid`) → review-level blockers → per finding
+  (`400 finding_not_publishable` / `409 finding_already_published`, with ids).
+  Then the per-PR lock is taken; the token is resolved and the MR's current diff
+  refs are read once — a head that differs from the review's `head_sha` →
+  `409 review_diff_outdated` and the publication row is removed.
+- **Blockers** (preview `blockers[]`, and the synchronous error on POST):
+  `provider_not_supported` (400, GitHub PR), `review_head_unknown` (409, review
+  without `head_sha`), `review_diff_outdated` (409), `publish_in_progress` (409,
+  with `publication_id`), `pr_not_open` (409), `gitlab_token_missing` /
+  `gitlab_token_insufficient_scope` / `gitlab_token_invalid` (400).
+- **One publish per PR.** A partial unique index allows at most one
+  `in_progress` publication per PR (across reviews and users); a concurrent
+  loser gets `409 publish_in_progress` with the running id and makes no GitLab
+  request. A second index keeps a finding in at most one live
+  (`pending` / `drafted` / `published`) item, so a finding is never published twice.
+- **Execution** (`publish/executor.ts`): list the service account's drafts →
+  delete this workspace's stale marked drafts (other drafts are left untouched
+  and published with the batch, counted as `other_drafts_published`) → one
+  draft per finding in severity → file → line order (a 400 on a multi-line
+  draft is re-sent once as single-line) → exactly one `bulk_publish` (with the
+  summary, if any) → read all MR notes back and link each finding by marker
+  (`<web_url>/-/merge_requests/<iid>#note_<id>`). Every finding draft carries an
+  invisible ids-only marker (`_shared/publish-marker.ts`); only
+  service-account-authored notes are matched, and the marker is stripped from
+  service-account notes on `GET /pulls/:id/comments`.
+- **Write rule.** Draft creates and `bulk_publish` are retried on 429 only,
+  within a 60 s wait budget per publication; they are never re-sent after a
+  5xx / timeout / network error. A failure that leaves nothing published rolls
+  back (this publication's marked drafts are deleted, its items become
+  `rolled_back`, the findings stay selectable).
+- **Publication codes** (`Publication.code` / item `code`):
+  `gitlab_position_rejected` (item; the publication too when every draft is
+  rejected — then `bulk_publish` is not called), `gitlab_rate_limited`,
+  `gitlab_publish_failed`, `gitlab_publish_unconfirmed`,
+  `gitlab_drafts_left_behind` (rollback could not delete every marked draft; the
+  next publish to the MR removes them), plus the reused `gitlab_token_invalid`,
+  `gitlab_token_insufficient_scope`, `gitlab_project_inaccessible`. Messages are
+  fixed server strings (`publish/codes.ts`), never a body, summary or token.
+
+Publication lifecycle (`review_publications.status`):
+
+```mermaid
+stateDiagram-v2
+  [*] --> in_progress: POST /reviews/:id/publications (202)
+  in_progress --> published: bulk_publish confirmed
+  in_progress --> partially_published: some drafts rejected (400/422)
+  in_progress --> failed: rollback / all rejected / drafts left behind
+  in_progress --> unconfirmed: bulk_publish unconfirmed and GitLab unreadable
+  in_progress --> unconfirmed: orphaned at boot
+  unconfirmed --> published: reconcile
+  unconfirmed --> partially_published: reconcile
+  unconfirmed --> failed: reconcile
+  published --> [*]
+  partially_published --> [*]
+  failed --> [*]
+  note right of in_progress: stale for 10 min (task gone) - reconciled like unconfirmed
+```
+
+- **Boot reconciliation** (`app.ts`): on start every `in_progress` publication
+  is marked `unconfirmed` (single API instance assumed, as for review runs),
+  then `PublishReconciler.reconcileAll()` settles every `unconfirmed`
+  publication — and any `in_progress` one with no progress update for 10
+  minutes (not run by this process) — by reading
+  GitLab: marked notes that exist → `published`; this publication's remaining
+  marked drafts → deleted. It never creates a draft and never calls
+  `bulk_publish`. The preview and list reads trigger the same reconcile for
+  their PR. Shutdown waits (bounded) for live publish tasks and reconciles.
+- **Audit.** In `google` mode, a publication that reaches a terminal status
+  after at least one GitLab write records exactly one `review.publish` event
+  (target `review`), metadata `{ provider: "gitlab", publication_id, pr_id,
+  outcome, requested, published, failed, general_notes,
+  other_drafts_published, applicable_suggestions, has_summary }` — counts and
+  ids only. A request rejected before any write, and `local` mode, record none.
+- **Schema — migration `0027_review_publications`.** Adds `reviews.head_sha`
+  (the head SHA of the diff the review actually saw; `null` on older rows,
+  exposed as `head_sha` on review reads) and the tables `review_publications`
+  (status, code/message, counters, `diff_head_sha`, `bulk_publish_sent_at`
+  persisted before the bulk call) and `review_publication_items` (per finding:
+  state, code, anchor kind, draft id, discussion id, note id, https-only URL). Plain FK indexes on
+  `review_publications.pr_id` and `review_publication_items.finding_id` back the
+  cascade deletes, alongside the partial uniques for one in-progress publication
+  per PR and one live item per finding.
 
 ## Environment
 

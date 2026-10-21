@@ -6,6 +6,7 @@ import type { GitLabDiffNote } from '@devdigest/shared';
 import { HostComment } from '@devdigest/shared';
 import { toHostComment } from '../src/modules/pulls/gitlab-comment-mapper.js';
 import { composeGitLabText } from '../src/modules/pulls/comment-body.js';
+import { buildMarker } from '../src/modules/_shared/publish-marker.js';
 
 const HEAD = 'head-sha-1';
 const ctx = {
@@ -70,6 +71,21 @@ describe('toHostComment', () => {
     const body = composeGitLabText('Nit', 'Jane Doe');
     const mine = toHostComment(note({ author: 'devdigest-bot', body }), ctx);
     expect(mine).toMatchObject({ body: 'Nit', devdigest_attribution: { name: 'Jane Doe' } });
+    const theirs = toHostComment(note({ author: 'mallory', body }), ctx);
+    expect(theirs).toMatchObject({ body, devdigest_attribution: null });
+  });
+
+  it('strips the publish marker after the footer, on service-account notes only (publish AC-43)', () => {
+    const marker = buildMarker({
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      publicationId: '22222222-2222-4222-8222-222222222222',
+      findingId: '33333333-3333-4333-8333-333333333333',
+    });
+    const body = composeGitLabText(`**WARNING** · bug · T\n\nWhy\n\n${marker}`, 'Jane Doe');
+    const mine = toHostComment(note({ author: 'devdigest-bot', body }), ctx);
+    expect(mine).toMatchObject({ body: '**WARNING** · bug · T\n\nWhy', devdigest_attribution: { name: 'Jane Doe' } });
+    const local = toHostComment(note({ author: 'devdigest-bot', body: `Why\n\n${marker}` }), ctx);
+    expect(local).toMatchObject({ body: 'Why', devdigest_attribution: null });
     const theirs = toHostComment(note({ author: 'mallory', body }), ctx);
     expect(theirs).toMatchObject({ body, devdigest_attribution: null });
   });

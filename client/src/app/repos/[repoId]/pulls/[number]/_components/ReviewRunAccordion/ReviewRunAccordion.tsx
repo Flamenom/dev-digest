@@ -5,7 +5,13 @@
    and collapsible so older runs don't bury the latest.
 
    Multi-user (AC-33/AC-45): the header shows "Run by <name>" when the review
-   carries `started_by`; Delete review is Admin-only and hidden for Members. */
+   carries `started_by`; Delete review is Admin-only and hidden for Members.
+
+   GitLab publish (AC-36 – AC-40): with `publishEnabled` the body gets the
+   run's ReviewPublishSection (toolbar, notice, progress, per-finding
+   checkboxes). The checkboxes live in the body, never in the header — the
+   header is the accordion's toggle. GitHub → nothing renders and no publish
+   request is made (AC-3). */
 "use client";
 
 import React from "react";
@@ -15,6 +21,8 @@ import { ActorLabel } from "@/components/actor-label";
 import { HiddenForMember } from "@/components/admin-gate";
 import { FindingsPanel } from "../FindingsPanel";
 import { VerdictBanner } from "../VerdictBanner";
+import { FindingPublishAddon } from "../PublishFindings";
+import { ReviewPublishSection } from "./_components/ReviewPublishSection";
 import { useDeleteReview } from "@/lib/hooks/reviews";
 
 const VERDICT_COLOR: Record<string, string> = {
@@ -37,6 +45,7 @@ export function ReviewRunAccordion({
   targetReviewId = null,
   targetFindingId = null,
   targetNonce = 0,
+  publishEnabled = false,
 }: {
   review: ReviewRecordWithActor;
   prId: string;
@@ -51,6 +60,8 @@ export function ReviewRunAccordion({
    *  forwarded to FindingsPanel, which focuses + scrolls the exact card. */
   targetFindingId?: string | null;
   targetNonce?: number;
+  /** The PR is a GitLab MR: mount the publish flow (AC-3 — never for GitHub). */
+  publishEnabled?: boolean;
 }) {
   const [open, setOpen] = React.useState(defaultOpen);
   const rootRef = React.useRef<HTMLDivElement | null>(null);
@@ -64,6 +75,14 @@ export function ReviewRunAccordion({
   const del = useDeleteReview(prId);
   const findings = review.findings;
   const blockers = findings.filter((f) => f.severity === "CRITICAL" && !f.dismissed_at).length;
+  const panelProps = {
+    findings,
+    prId,
+    repoFullName,
+    headSha,
+    targetFindingId: isTarget ? targetFindingId : null,
+    targetNonce,
+  };
   const verdictColor = review.verdict ? VERDICT_COLOR[review.verdict] ?? "var(--text-muted)" : "var(--text-muted)";
 
   return (
@@ -164,14 +183,13 @@ export function ReviewRunAccordion({
               />
             </div>
           )}
-          <FindingsPanel
-            findings={findings}
-            prId={prId}
-            repoFullName={repoFullName}
-            headSha={headSha}
-            targetFindingId={isTarget ? targetFindingId : null}
-            targetNonce={targetNonce}
-          />
+          {publishEnabled ? (
+            <ReviewPublishSection review={review} prId={prId}>
+              <FindingsPanel {...panelProps} FindingAddon={FindingPublishAddon} />
+            </ReviewPublishSection>
+          ) : (
+            <FindingsPanel {...panelProps} />
+          )}
         </div>
       )}
     </div>

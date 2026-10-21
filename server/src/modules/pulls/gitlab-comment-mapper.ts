@@ -1,5 +1,6 @@
 import type { GitLabDiffNote, HostComment } from '@devdigest/shared';
-import { stripAttribution } from './comment-body.js';
+import { stripAttribution } from '../_shared/gitlab-note-text.js';
+import { stripMarker } from '../_shared/publish-marker.js';
 
 export interface GitLabCommentContext {
   /** The MR's current head SHA; a note anchored elsewhere is outdated (AC-4). */
@@ -22,6 +23,9 @@ export interface GitLabCommentContext {
  * - AC-5: `html_url` = `<web_url>/-/merge_requests/<iid>#note_<id>`.
  * - AC-2: the root note has `in_reply_to_id: null`; later notes point at the root.
  * - AC-7: the service account's exact trailing footer → stripped body + attribution.
+ * - Publish AC-43 (`specs/2026-10-21-gitlab-publish-findings.md`): on a
+ *   service-account note the publish marker is stripped too, AFTER the footer
+ *   (the footer is the final line). Other authors' notes are left unchanged.
  */
 export function toHostComment(note: GitLabDiffNote, ctx: GitLabCommentContext): HostComment {
   const pos = note.position;
@@ -29,7 +33,9 @@ export function toHostComment(note: GitLabDiffNote, ctx: GitLabCommentContext): 
   const anchoredLine = right ? pos.newLine : pos.oldLine;
   const outdated = pos.headSha !== ctx.currentHeadSha;
   const isServiceAccount = ctx.serviceAccount != null && note.author === ctx.serviceAccount;
-  const { body, attribution } = stripAttribution(note.body, isServiceAccount);
+  const stripped = stripAttribution(note.body, isServiceAccount);
+  const body = isServiceAccount ? stripMarker(stripped.body) : stripped.body;
+  const attribution = stripped.attribution;
   return {
     id: note.id,
     path: pos.newPath ?? pos.oldPath ?? '',
