@@ -162,6 +162,10 @@ d('publish findings to GitLab — reconciliation (fake GitLab, Testcontainers pg
     const id = (res.json() as Publication).id;
     await settle(app);
     expect((await getPublication(app, id)).status).toBe('unconfirmed');
+    // That read triggered a background reconcile; let it finish (and fail
+    // against the 500s) before GitLab becomes readable, or it can settle the
+    // publication before the preview below reads it.
+    await settle(app);
 
     // GitLab readable again. The preview answers from the DB right away
     // (still unconfirmed) and triggers the reconcile in the background.
