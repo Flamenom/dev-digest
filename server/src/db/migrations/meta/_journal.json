@@ -190,6 +190,20 @@
       "when": 1792484465424,
       "tag": "0026_sessions_tokens_fillfactor",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1792601101988,
+      "tag": "0027_review_publications",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1793007291436,
+      "tag": "0028_publish_deprecation",
+      "breakpoints": true
     }
   ]
 }

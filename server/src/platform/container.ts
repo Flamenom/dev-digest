@@ -8,6 +8,8 @@ import type {
   LLMProvider,
   GitLabClient,
   GitLabCommentsHost,
+  GitLabDraftNotesHost,
+  GitLabDiffVersionsHost,
   GitLabScopeCheck,
   GitCredential,
   GitCredentialResolver,
@@ -92,6 +94,12 @@ import { TokensService } from '../modules/identity/tokens-service.js';
 import { AuditRepository, type AuditTx } from '../modules/audit/repository.js';
 import { SecretStoreRepository, type SecretsTx } from '../modules/secrets/repository.js';
 import { SecretsMaintenance, type BatchSecretStore, type SecretsLogger } from '../modules/secrets/service.js';
+import { PublishRepository } from '../modules/publish/repository.js';
+import { PublishExecutor } from '../modules/publish/executor.js';
+import { PublishRunner } from '../modules/publish/runner.js';
+import { PublishReconciler } from '../modules/publish/reconciler.js';
+import { PublishService } from '../modules/publish/service.js';
+import type { PublishAudit, PublishGitLabAccess, PublishLogger } from '../modules/publish/ports.js';
 import { type DepGraph, DepCruiseGraph } from '../adapters/depgraph/index.js';
 import { type Tokenizer, TiktokenTokenizer } from '../adapters/tokenizer/index.js';
 
@@ -131,13 +139,15 @@ export interface ContainerOverrides {
    * gitlab.com client (read side + diff discussions) — tests inject
    * `MockGitLabClient`. Also answers the token scope check (`checkTokenScopes`).
    */
-  gitlab?: GitLabClient & GitLabCommentsHost;
+  gitlab?: GitLabClient & GitLabCommentsHost & GitLabDraftNotesHost & GitLabDiffVersionsHost;
   /** fetch used by the real GitLab client (it-tests run a fake GitLab over it). */
   gitlabFetch?: FetchLike;
   /** fetch used by the real GitHub client (it-tests count requests at this level). */
   githubFetch?: typeof fetch;
   /** PR/MR inline comments use case (`/pulls/:id/comments`) — tests inject a fake. */
   prComments?: PrComments;
+  /** Publish-findings use case (`/reviews/:id/publications`, …) — hermetic route tests inject one over fakes. */
+  publishService?: PublishService;
   git?: HostGitClient;
   codeIndex?: HostCodeIndex;
   embedder?: Embedder;
@@ -201,6 +211,10 @@ export class Container {
   private _gitlabTokenHealth?: GitLabTokenHealthService;
   private _gitlabToken?: GitLabTokenService<SettingsActor>;
   private _prComments?: PrComments;
+  private _publishRepo?: PublishRepository;
+  private _publishRunner?: PublishRunner;
+  private _publishReconciler?: PublishReconciler;
+  private _publishService?: PublishService;
   private _codeIndex?: HostCodeIndex;
   private _embedder?: Embedder;
   private llmCache = new Map<string, LLMProvider>();
@@ -662,6 +676,98 @@ export class Container {
     }));
   }
 
+  // ── Publish findings to GitLab (spec 2026-10-21-gitlab-publish-findings) ──
+
+  /** Publications + items (the only SQL of the publish slice). */
+  get publishRepo(): PublishRepository {
+    return (this._publishRepo ??= new PublishRepository(this.db));
+  }
+
+  /**
+   * The GitLab access of the publish flow: the same token-health gate as the
+   * comments use case (`resolveGitLab`), resolved to the draft-review port plus
+   * the service account the token authenticates as. One GitLab token per
+   * deployment (the team workspace's), so every workspace resolves the same way.
+   * Offline mode rejects with `ConfigError` before any token read (e2e).
+   */
+  private get publishGitLabAccess(): PublishGitLabAccess {
+    return {
+      resolve: async () => {
+        const { client, usable } = await this.resolveGitLab();
+        return usable ? { host: client, serviceAccount: usable.username } : null;
+      },
+    };
+  }
+
+  /** google mode only (AC-41); local mode records no audit events (AC-42). */
+  private get publishAudit(): PublishAudit {
+    return this.config.authMode === 'google' ? this.audit : null;
+  }
+
+  /** Detached-work logger (codes and ids only); `error` falls back to `warn`. */
+  private get publishLog(): PublishLogger {
+    const base = (this.log?.child?.({ module: 'publish' }) ?? this.log) as
+      | (SyncLogger & { error?: (obj: unknown, msg?: string) => void })
+      | undefined;
+    return {
+      warn: (obj, msg) => base?.warn(obj, msg),
+      error: (obj, msg) => (base?.error ? base.error(obj, msg) : base?.warn(obj, msg)),
+    };
+  }
+
+  /**
+   * In-process background publications — a SINGLETON: its live-task map is
+   * what the reconciler consults (`isActive`) and what shutdown awaits. Not
+   * `JobRunner` (its retries would re-send non-idempotent writes; plan Rec1).
+   */
+  get publishRunner(): PublishRunner {
+    if (!this._publishRunner) {
+      const log = this.publishLog;
+      this._publishRunner = new PublishRunner({
+        executor: new PublishExecutor({
+          store: this.publishRepo,
+          audit: this.publishAudit,
+          clock: this.clock,
+          log,
+        }),
+        log,
+      });
+    }
+    return this._publishRunner;
+  }
+
+  /** Read-only settling of stale / unconfirmed publications (AC-32 – AC-34); single-flight. */
+  get publishReconciler(): PublishReconciler {
+    return (this._publishReconciler ??= new PublishReconciler({
+      store: this.publishRepo,
+      accessFor: () => this.publishGitLabAccess,
+      runner: this.publishRunner,
+      audit: this.publishAudit,
+      clock: this.clock,
+      log: this.publishLog,
+    }));
+  }
+
+  /**
+   * The synchronous half of publishing (preview, other-drafts count, create →
+   * 202, reads). Footer in google mode only (AC-42); token health is read
+   * from the gate's in-memory state (no GitLab call, AC-2).
+   */
+  get publishService(): PublishService {
+    if (this.overrides.publishService) return this.overrides.publishService;
+    return (this._publishService ??= new PublishService({
+      store: this.publishRepo,
+      gitlab: this.publishGitLabAccess,
+      tokenHealth: () => this.gitlabTokenHealth.current(),
+      actorName: (userId) => this.identityRepo.displayIdentity(userId),
+      footerEnabled: this.config.authMode === 'google',
+      runner: this.publishRunner,
+      reconciler: this.publishReconciler,
+      clock: this.clock,
+      log: this.publishLog,
+    }));
+  }
+
   /**
    * F1 — Repositories service over an EXPLICIT deps object (never the
    * Container). Adapters that depend on secrets resolve lazily per call; the
@@ -877,7 +983,7 @@ export class Container {
    * responses back to the health gate (`onAuthFailure`, AC-24/29).
    */
   private async resolveGitLab(): Promise<{
-    client: GitLabClient & GitLabCommentsHost;
+    client: GitLabClient & GitLabCommentsHost & GitLabDraftNotesHost & GitLabDiffVersionsHost;
     usable: UsableGitLabToken | null;
   }> {
     if (this.config.hostsOffline) {

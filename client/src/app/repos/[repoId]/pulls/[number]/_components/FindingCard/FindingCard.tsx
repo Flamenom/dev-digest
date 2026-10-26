@@ -46,6 +46,7 @@ export function FindingCard({
   headSha,
   evalCaseLink,
   onOpenEvalCase,
+  addon,
 }: {
   /** `acted_by` (optional) names who made the latest accept/dismiss (AC-46). */
   f: FindingRecordWithActor;
@@ -60,6 +61,10 @@ export function FindingCard({
   evalCaseLink?: EvalCaseLink | null;
   /** Open the case editor for this finding — creating nothing on its own. */
   onOpenEvalCase?: () => void;
+  /** Optional header slot (e.g. the GitLab publish control), rendered as-is
+   *  between the title block and the chevron; it owns its layout and must
+   *  contain its own clicks — the header toggles the card. Absent → card unchanged. */
+  addon?: React.ReactNode;
 }) {
   const t = useTranslations("prReview");
   const hintId = React.useId();
@@ -99,6 +104,7 @@ export function FindingCard({
             )}
           </div>
         </div>
+        {addon}
         <Icon.ChevronDown size={16} style={s.chevron(expanded)} />
       </div>
 

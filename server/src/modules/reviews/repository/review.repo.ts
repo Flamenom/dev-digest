@@ -20,6 +20,8 @@ export async function insertReview(
     summary: string | null;
     score: number | null;
     model: string | null;
+    /** AC-1 — head SHA of the reviewed diff; null when unknown. */
+    headSha: string | null;
   },
 ): Promise<ReviewRow> {
   const [row] = await db.insert(t.reviews).values(values).returning();

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { taskLine } from '../src/modules/reviews/helpers.js';
+import { reviewToDto, taskLine } from '../src/modules/reviews/helpers.js';
+import type { ReviewRow } from '../src/modules/reviews/repository.js';
 
 /**
  * Unit coverage for the review task-line. The key invariant: our trusted
@@ -20,5 +21,31 @@ describe('taskLine', () => {
     const line = taskLine(pull);
     expect(line).toMatch(/never .*withhold .*(or downgrade )?.*security/i);
     expect(line).toMatch(/review the entire diff/i);
+  });
+});
+
+describe('reviewToDto — head_sha (AC-1)', () => {
+  const base = {
+    id: 'r-1',
+    workspaceId: 'ws-1',
+    prId: 'pr-1',
+    agentId: null,
+    runId: null,
+    kind: 'review',
+    verdict: 'comment',
+    summary: null,
+    score: 90,
+    model: 'm',
+    createdAt: new Date('2026-10-21T00:00:00Z'),
+  };
+
+  it('maps the recorded head SHA', () => {
+    const dto = reviewToDto({ ...base, headSha: 'abc' } as ReviewRow, []);
+    expect(dto.head_sha).toBe('abc');
+  });
+
+  it('maps a pre-0027 row (no head) to null', () => {
+    const dto = reviewToDto({ ...base, headSha: null } as ReviewRow, []);
+    expect(dto.head_sha).toBeNull();
   });
 });

@@ -1,6 +1,7 @@
 /** gitlab.com adapter barrel (REST + GraphQL over fetch). Only the container constructs the client. */
 export {
   RestGitLabClient,
+  classifyWrite,
   encodeProject,
   GITLAB_COMMENT_UNCONFIRMED_MESSAGE,
   GITLAB_INSUFFICIENT_SCOPE_MESSAGE,
@@ -18,4 +19,5 @@ export {
 } from './http.js';
 export * from './mappers.js';
 export * from './discussions.js';
+export * from './draft-notes.js';
 export { GITLAB_PAGE_SIZE } from './graphql.js';

@@ -6,7 +6,7 @@ import { RunStatus } from "../RunStatus";
 import { RunHistory } from "../RunHistory/RunHistory";
 import { ReviewRunAccordion } from "../ReviewRunAccordion";
 import { FindingHostProvider } from "../FindingCard";
-import type { HostLinkRepo } from "@/lib/host-urls";
+import { hostLabelKey, type HostLinkRepo } from "@/lib/host-urls";
 import { s } from "./styles";
 import type {
   FindingRecord,
@@ -114,6 +114,10 @@ export function FindingsTab({
     return m;
   }, [runs]);
 
+  // Publishing findings is GitLab-only: a GitHub PR mounts no publish UI and
+  // makes no preview request (AC-3).
+  const publishEnabled = hostLabelKey(repo) === "gitlab";
+
   const findingHost = React.useMemo(() => ({ repo, offerCopy }), [repo, offerCopy]);
 
   return (
@@ -217,6 +221,7 @@ export function FindingsTab({
               targetReviewId={target?.reviewId ?? null}
               targetFindingId={target?.findingId ?? null}
               targetNonce={target?.n ?? 0}
+              publishEnabled={publishEnabled}
             />
           ))
         )}

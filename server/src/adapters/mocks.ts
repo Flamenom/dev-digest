@@ -36,14 +36,24 @@ import type {
   GitLabCommentsHost,
   GitLabDiffNote,
   GitLabDiffRefs,
+  GitLabDiffVersionsHost,
   GitLabDiscussionRef,
+  GitLabDraftNote,
+  GitLabDraftNotesHost,
+  GitLabDraftPosition,
+  GitLabMrDiffVersion,
+  GitLabMrNote,
   GitLabScopeCheck,
+  GitLabWriteFailure,
+  GitLabWriteResult,
+  WaitBudget,
   GitLabTextPosition,
   GitLabProjectInfo,
   GitLabTokenCheck,
   HostRepoRef,
   IssueMetaHost,
   PrDetailHost,
+  PrFileHost,
   PrMetaHost,
   PrStatus,
   PullDetailOptions,
@@ -285,7 +295,32 @@ export type MockGitLabCallKind =
   | 'diff_refs' //        GET /merge_requests/:iid (diff_refs read before a post)
   | 'discussion' //       GET /merge_requests/:iid/discussions/:id
   | 'create_discussion' // POST /merge_requests/:iid/discussions
-  | 'add_note'; //        POST /merge_requests/:iid/discussions/:id/notes
+  | 'add_note' //         POST /merge_requests/:iid/discussions/:id/notes
+  | 'draft_notes' //      GET /merge_requests/:iid/draft_notes (own drafts)
+  | 'create_draft_note' // POST /merge_requests/:iid/draft_notes
+  | 'delete_draft_note' // DELETE /merge_requests/:iid/draft_notes/:id
+  | 'bulk_publish' //     POST /merge_requests/:iid/draft_notes/bulk_publish
+  | 'mr_notes' //         GET /merge_requests/:iid/discussions (every non-system note)
+  | 'mr_versions' //      GET /merge_requests/:iid/versions (one per page)
+  | 'mr_version'; //      GET /merge_requests/:iid/versions/:id (one version's diffs)
+
+/** Draft-note write kinds — these never throw; they are scripted via `writeScript`. */
+export type MockGitLabWriteKind = 'create_draft_note' | 'bulk_publish';
+
+/**
+ * One scripted write outcome. `'ok'` ⇒ normal behaviour. A failure is returned
+ * as `{ok:false}`; `landed: true` applies the write first (the "may have
+ * landed" case: 5xx / timeout after GitLab stored it).
+ */
+export type MockGitLabWriteStep = 'ok' | { failure: GitLabWriteFailure; landed?: boolean };
+
+/** A draft held by the mock (any author; only the service account's are "own"). */
+export interface MockGitLabDraft {
+  id: number;
+  author: string;
+  note: string;
+  position: GitLabDraftPosition | null;
+}
 
 export interface MockGitLabCall {
   kind: MockGitLabCallKind;
@@ -324,8 +359,33 @@ export interface MockGitLabOptions {
   diffNotes?: Record<number, GitLabDiffNote[]>;
   /** Current diff refs per iid (default: base/start fixed, head = the MR's head_sha). */
   diffRefs?: Record<number, Partial<GitLabDiffRefs>>;
-  /** Throw this error from the first call of the given kind(s) — and every later one. */
+  /**
+   * Throw this error from the first call of the given kind(s) — and every later one.
+   * Ignored for the never-throwing draft writes (`MockGitLabWriteKind`): use `writeScript`.
+   */
   errors?: Partial<Record<MockGitLabCallKind, Error>>;
+  /** Drafts per MR iid (any author). `listOwnDraftNotes` returns the service account's only. */
+  drafts?: Record<number, MockGitLabDraft[]>;
+  /** Every non-system MR note per iid returned by `listMrNotes`; `bulk_publish` appends here. */
+  mrNotes?: Record<number, GitLabMrNote[]>;
+  /**
+   * MR diff versions per iid, host order (newest first), returned by
+   * `listMrDiffVersions` (default: none ⇒ explicit `[]`). One `mr_versions` call is
+   * recorded per simulated page of `versionsPageSize` (default 100).
+   */
+  versions?: Record<number, GitLabMrDiffVersion[]>;
+  /** Page size for the `mr_versions` page simulation (default 100). */
+  versionsPageSize?: number;
+  /**
+   * Files per diff-version id returned by `getMrDiffVersionFiles`. An id absent
+   * here ⇒ the real host's 404 (`gitlab_project_inaccessible`); an explicit `[]`
+   * ⇒ a version with no files.
+   */
+  versionFiles?: Record<number, PrFileHost[]>;
+  /** Scripted errors for the version reads, consumed one per call (exhausted ⇒ normal behaviour). */
+  versionErrors?: Partial<Record<'mr_versions' | 'mr_version', Error[]>>;
+  /** Scripted outcomes per write kind, consumed one per call (exhausted ⇒ `'ok'`). */
+  writeScript?: Partial<Record<MockGitLabWriteKind, MockGitLabWriteStep[]>>;
 }
 
 const MOCK_GITLAB_DEFAULT_MR: PrMetaHost = {
@@ -350,7 +410,9 @@ const MOCK_GITLAB_DEFAULT_MR: PrMetaHost = {
  * (move a head SHA, un-draft an MR, inject an error) between calls. `calls`
  * records one entry per simulated host request, by endpoint kind.
  */
-export class MockGitLabClient implements GitLabClient, GitLabCommentsHost {
+export class MockGitLabClient
+  implements GitLabClient, GitLabCommentsHost, GitLabDraftNotesHost, GitLabDiffVersionsHost
+{
   readonly provider = 'gitlab' as const;
   readonly readOnly = false;
   public calls: MockGitLabCall[] = [];
@@ -362,8 +424,15 @@ export class MockGitLabClient implements GitLabClient, GitLabCommentsHost {
     body: string;
     position: GitLabTextPosition | null;
   }[] = [];
+  /** Every draft-note write attempted, in order (bodies exactly as sent). */
+  public draftWrites: (
+    | { kind: 'create_draft_note'; iid: number; note: string; position: GitLabDraftPosition | null; waitBudgetMs: number }
+    | { kind: 'bulk_publish'; iid: number; note: string | null; waitBudgetMs: number }
+    | { kind: 'delete_draft_note'; iid: number; draftId: number; result: 'deleted' | 'not_found' }
+  )[] = [];
   private nextNoteId = 9000;
   private nextDiscussionSeq = 1;
+  private nextDraftId = 7000;
 
   constructor(public opts: MockGitLabOptions = {}) {}
 
@@ -561,6 +630,144 @@ export class MockGitLabClient implements GitLabClient, GitLabCommentsHost {
     this.storeNote(iid, note);
     return { ...note, position: { ...note.position } };
   };
+
+  // ---------- GitLabDraftNotesHost ----------
+
+  /** The service account's drafts only (like GitLab's own-drafts endpoint); explicit `[]` when none. */
+  listOwnDraftNotes = async (ref: HostRepoRef, iid: number): Promise<GitLabDraftNote[]> => {
+    this.record('draft_notes', ref.fullName, iid);
+    const me = this.serviceAccount();
+    return (this.opts.drafts?.[iid] ?? []).filter((d) => d.author === me).map((d) => ({ id: d.id, note: d.note }));
+  };
+
+  createDraftNote = async (
+    ref: HostRepoRef,
+    iid: number,
+    input: { note: string; position: GitLabDraftPosition | null },
+    opts: { waitBudget: WaitBudget },
+  ): Promise<GitLabWriteResult<GitLabDraftNote>> => {
+    this.calls.push({ kind: 'create_draft_note', fullPath: ref.fullName, n: iid });
+    this.draftWrites.push({
+      kind: 'create_draft_note',
+      iid,
+      note: input.note,
+      position: input.position ? { ...input.position } : null,
+      waitBudgetMs: opts.waitBudget.remainingMs,
+    });
+    const step = this.nextWriteStep('create_draft_note');
+    if (step !== 'ok' && !step.landed) return { ok: false, failure: step.failure };
+    const draft: MockGitLabDraft = {
+      id: this.nextDraftId++,
+      author: this.serviceAccount(),
+      note: input.note,
+      position: input.position ? { ...input.position } : null,
+    };
+    this.opts.drafts ??= {};
+    (this.opts.drafts[iid] ??= []).push(draft);
+    if (step !== 'ok') return { ok: false, failure: step.failure };
+    return { ok: true, value: { id: draft.id, note: draft.note } };
+  };
+
+  /** Explicit `'not_found'` for an unknown (or another author's) draft — never a silent "deleted". */
+  deleteDraftNote = async (ref: HostRepoRef, iid: number, draftId: number): Promise<'deleted' | 'not_found'> => {
+    this.record('delete_draft_note', ref.fullName, iid);
+    const list = this.opts.drafts?.[iid] ?? [];
+    const me = this.serviceAccount();
+    const idx = list.findIndex((d) => d.id === draftId && d.author === me);
+    const result = idx === -1 ? 'not_found' : 'deleted';
+    if (idx !== -1) list.splice(idx, 1);
+    this.draftWrites.push({ kind: 'delete_draft_note', iid, draftId, result });
+    return result;
+  };
+
+  /**
+   * Moves ALL of the service account's drafts into `mrNotes` (one discussion per
+   * draft) plus the summary note when given. Other authors' drafts stay.
+   */
+  bulkPublishDraftNotes = async (
+    ref: HostRepoRef,
+    iid: number,
+    input: { note: string | null },
+    opts: { waitBudget: WaitBudget },
+  ): Promise<GitLabWriteResult<null>> => {
+    this.calls.push({ kind: 'bulk_publish', fullPath: ref.fullName, n: iid });
+    this.draftWrites.push({ kind: 'bulk_publish', iid, note: input.note, waitBudgetMs: opts.waitBudget.remainingMs });
+    const step = this.nextWriteStep('bulk_publish');
+    if (step !== 'ok' && !step.landed) return { ok: false, failure: step.failure };
+    const me = this.serviceAccount();
+    const all = this.opts.drafts?.[iid] ?? [];
+    const own = all.filter((d) => d.author === me);
+    if (this.opts.drafts) this.opts.drafts[iid] = all.filter((d) => d.author !== me);
+    this.opts.mrNotes ??= {};
+    const notes = (this.opts.mrNotes[iid] ??= []);
+    const bodies = [...own.map((d) => d.note), ...(input.note !== null ? [input.note] : [])];
+    for (const body of bodies) {
+      notes.push({
+        id: this.nextNoteId++,
+        discussionId: `mockdiscussion${String(this.nextDiscussionSeq++).padStart(8, '0')}`,
+        author: me,
+        body,
+        system: false,
+      });
+    }
+    if (step !== 'ok') return { ok: false, failure: step.failure };
+    return { ok: true, value: null };
+  };
+
+  /** Explicit `[]` when the MR has no notes. */
+  listMrNotes = async (ref: HostRepoRef, iid: number): Promise<GitLabMrNote[]> => {
+    this.record('mr_notes', ref.fullName, iid);
+    return (this.opts.mrNotes?.[iid] ?? []).filter((n) => !n.system).map((n) => ({ ...n }));
+  };
+
+  // ---------- GitLabDiffVersionsHost ----------
+
+  /**
+   * Bounded like the real client: at most `maxPages` simulated pages, `truncated`
+   * when more remained. Explicit `[]` when the MR has no versions.
+   */
+  listMrDiffVersions = async (
+    ref: HostRepoRef,
+    iid: number,
+    opts: { maxPages: number },
+  ): Promise<{ versions: GitLabMrDiffVersion[]; truncated: boolean }> => {
+    const all = this.opts.versions?.[iid] ?? [];
+    const pageSize = this.opts.versionsPageSize ?? 100;
+    const totalPages = Math.max(1, Math.ceil(all.length / pageSize));
+    const maxPages = Number.isInteger(opts.maxPages) && opts.maxPages > 0 ? opts.maxPages : 1;
+    const pages = Math.min(totalPages, maxPages);
+    for (let i = 0; i < pages; i++) this.recordVersionRead('mr_versions', ref.fullName, iid);
+    return {
+      versions: all.slice(0, pages * pageSize).map((v) => ({ ...v })),
+      truncated: totalPages > maxPages,
+    };
+  };
+
+  getMrDiffVersionFiles = async (ref: HostRepoRef, iid: number, versionId: number): Promise<PrFileHost[]> => {
+    if (!Number.isInteger(versionId) || versionId <= 0) {
+      throw new AppError('validation_error', `Invalid GitLab diff version id: ${versionId}`, 422);
+    }
+    this.recordVersionRead('mr_version', ref.fullName, iid);
+    const files = this.opts.versionFiles?.[versionId];
+    if (!files) {
+      throw new AppError('gitlab_project_inaccessible', 'GitLab project not found or token has no access.', 404);
+    }
+    return files.map((f) => ({ ...f }));
+  };
+
+  /** Records the call, then throws the next scripted version error, else the sticky `errors[kind]`. */
+  private recordVersionRead(kind: 'mr_versions' | 'mr_version', fullPath: string | undefined, n: number): void {
+    const scripted = this.opts.versionErrors?.[kind]?.shift();
+    if (scripted) {
+      this.calls.push({ kind, fullPath, n });
+      throw scripted;
+    }
+    this.record(kind, fullPath, n);
+  }
+
+  private nextWriteStep(kind: MockGitLabWriteKind): MockGitLabWriteStep {
+    return this.opts.writeScript?.[kind]?.shift() ?? 'ok';
+  }
 
   private currentRefs(iid: number): GitLabDiffRefs {
     const meta = this.pulls().find((p) => p.number === iid);

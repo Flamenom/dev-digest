@@ -1,3 +1,4 @@
+import type { WaitBudget } from '@devdigest/shared';
 import { ExternalServiceError } from '../../platform/errors.js';
 import { redactSecret } from '../../platform/redact.js';
 
@@ -13,8 +14,11 @@ import { redactSecret } from '../../platform/redact.js';
  *    A 5xx may mean the write landed, so it is never re-sent (AC-31);
  *  - network errors and timeouts are NEVER retried (reads or writes) — writes
  *    rely on this: a request that may have reached GitLab is sent exactly once;
+ *  - `delete()` is idempotent ⇒ READ policy (429 / 5xx retried);
  *  - `Retry-After` (seconds or HTTP-date) honoured, capped at 30 s;
- *  - total extra wait per call ≤ 60 s.
+ *  - total extra wait per call ≤ 60 s; a write may also charge its 429 waits to
+ *    a shared per-publication `WaitBudget` (publish AC-28) — whichever of the
+ *    budget, the 60 s cap or `GITLAB_MAX_RETRIES` ends first stops the retries.
  *
  * Security:
  *  - the origin is fixed to https://gitlab.com (no configurable base ⇒ no SSRF);
@@ -119,16 +123,38 @@ export class GitLabHttp {
    * Write: POST `/api/v4<path>` with a JSON body. Same origin pin, token header
    * and `redirect:'manual'` as reads. Retries ONLY 429 (AC-31); a 5xx, timeout or
    * network error is surfaced after exactly one attempt — never re-sent.
+   *
+   * `opts.waitBudget` (publish AC-28): each 429 wait is also charged to this
+   * shared, mutable budget; once it is at 0, another 429 is thrown as-is.
+   * A `204` / empty body yields `data: null` (e.g. `bulk_publish`).
    */
-  async post<T>(path: string, body: unknown): Promise<GitLabRestResponse<T>> {
+  async post<T>(
+    path: string,
+    body: unknown,
+    opts: { waitBudget?: WaitBudget } = {},
+  ): Promise<GitLabRestResponse<T>> {
     const url = this.buildUrl(`${REST_PREFIX}${path}`, {});
     const headers: Record<string, string> = {
       Accept: 'application/json',
       'Content-Type': 'application/json',
     };
     if (this.token) headers['PRIVATE-TOKEN'] = this.token;
-    const res = await this.send('POST', url, headers, JSON.stringify(body), false);
-    return { data: (await this.readJson(res, 'POST', path)) as T, headers: res.headers };
+    const res = await this.send('POST', url, headers, JSON.stringify(body), false, opts.waitBudget);
+    return { data: (await this.readOptionalJson(res, 'POST', path)) as T, headers: res.headers };
+  }
+
+  /**
+   * DELETE `/api/v4<path>`. Idempotent ⇒ read policy: 429 / 5xx retried, network
+   * errors and timeouts not. A 404 is surfaced as a `GitLabHttpError` so the
+   * caller can treat it as "already gone". The body is never parsed.
+   */
+  async delete(path: string): Promise<{ status: number; headers: Headers }> {
+    const url = this.buildUrl(`${REST_PREFIX}${path}`, {});
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (this.token) headers['PRIVATE-TOKEN'] = this.token;
+    const res = await this.send('DELETE', url, headers, undefined, true);
+    discard(res);
+    return { status: res.status, headers: res.headers };
   }
 
   /** POST `/api/graphql`. Throws on HTTP failure or a non-empty `errors` array. */
@@ -172,12 +198,14 @@ export class GitLabHttp {
   }
 
   private async send(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE',
     url: string,
     headers: Record<string, string>,
     body?: string,
     /** false ⇒ write policy: only 429 is retried (a 5xx may have landed). */
     retryServerErrors = true,
+    /** Shared per-publication 429 wait budget (mutated: each wait is charged). */
+    waitBudget?: WaitBudget,
   ): Promise<Response> {
     const label = `${method} ${new URL(url).pathname}`;
     let extraWaitMs = 0;
@@ -219,14 +247,18 @@ export class GitLabHttp {
       }
 
       if (isRetryable(res.status, retryServerErrors) && attempt < GITLAB_MAX_RETRIES) {
-        const remaining = GITLAB_MAX_EXTRA_WAIT_MS - extraWaitMs;
+        const budget = res.status === 429 ? waitBudget : undefined;
+        const budgetLeft = budget ? Math.max(0, budget.remainingMs) : Number.POSITIVE_INFINITY;
+        const remaining = Math.min(GITLAB_MAX_EXTRA_WAIT_MS - extraWaitMs, budgetLeft);
         const wanted = this.retryDelay(res, attempt);
-        // `Retry-After: 0` ⇒ retry immediately; otherwise retry while wait budget remains.
-        if (wanted === 0 || remaining > 0) {
+        // A shared budget at 0 ⇒ no further retry: the 429 is surfaced (AC-28).
+        // Otherwise `Retry-After: 0` ⇒ retry immediately; else retry while wait budget remains.
+        if (budgetLeft > 0 && (wanted === 0 || remaining > 0)) {
           const delay = Math.min(wanted, remaining);
           discard(res);
           if (delay > 0) await this.sleep(delay);
           extraWaitMs += delay;
+          if (budget) budget.remainingMs = Math.max(0, budget.remainingMs - delay);
           continue;
         }
       }
@@ -270,6 +302,29 @@ export class GitLabHttp {
       this.onAuthFailure(kind);
     } catch {
       // A failing health hook must never replace the request's own error.
+    }
+  }
+
+  /** Like `readJson`, but a `204` or an empty body is `null` instead of an error. */
+  private async readOptionalJson(res: Response, method: string, path: string): Promise<unknown> {
+    if (res.status === 204) {
+      discard(res);
+      return null;
+    }
+    let text: string;
+    try {
+      text = await res.text();
+    } catch {
+      text = '';
+    }
+    if (text.trim() === '') return null;
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new GitLabHttpError(
+        this.redact(`GitLab ${method} ${path.split('?')[0]} returned a non-JSON body`),
+        res.status,
+      );
     }
   }
 

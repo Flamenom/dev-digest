@@ -46,3 +46,7 @@ export * from './auth-ports.js';
 export * from './contracts/host-comments.js';
 export * from './host-comments-ports.js';
 export * from './contracts/gitlab-token-codes.js';
+export * from './contracts/review-publish.js';
+export * from './review-publish-ports.js';
+export * from './contracts/review-publish-deprecation.js';
+export * from './review-publish-versions-ports.js';

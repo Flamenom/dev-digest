@@ -118,6 +118,24 @@ describe('loadDiff — GitLab merge requests', () => {
     expect(result.diff.files.map((f) => f.path)).toEqual(['src/a.ts']);
   });
 
+  it('records the reviewed head SHA: local → the diffed PR head (AC-1)', async () => {
+    const result = await loadDiff(containerWith(new RecordingGit()), repoFake([]), 'ws-1', pull(), gitlabRepo);
+    expect(result.source).toBe('local');
+    expect(result.headSha).toBe('cafebabe');
+  });
+
+  it('records the reviewed head SHA: fallback → detail_head_sha, null when unknown (AC-1, Q7)', async () => {
+    const files: PrFile[] = [{ path: 'src/a.ts', patch: MODIFIED_PATCH, patchOmitted: null }];
+    const withDetail = { ...pull(), detailHeadSha: 'deadbeef' } as PullRow;
+    const fb = await loadDiff(containerWith(new RecordingGit(true)), repoFake(files), 'ws-1', withDetail, gitlabRepo);
+    expect(fb.source).toBe('fallback');
+    expect(fb.headSha).toBe('deadbeef');
+
+    const noDetail = { ...pull(), detailHeadSha: null } as PullRow;
+    const fbNull = await loadDiff(containerWith(new RecordingGit(true)), repoFake(files), 'ws-1', noDetail, gitlabRepo);
+    expect(fbNull.headSha).toBeNull();
+  });
+
   it('a failed MR-head fetch is best-effort: the run still gets a diff', async () => {
     const git = new RecordingGit();
     git.fetchPullHead = async () => {

@@ -8,9 +8,14 @@ import type { FetchLike } from '../../src/adapters/gitlab/index.js';
  * answered here and recorded as `{ method, path, query, body, token }`.
  *
  * Default handlers model a tiny GitLab: tokens (→ user + scopes), projects,
- * merge requests (diff_refs) and their discussions. One-shot overrides
- * (`when(...)`) script failures — a status (with headers/body), a timeout or a
- * network error — for the next N matching requests.
+ * merge requests (diff_refs), their discussions and — for publish (spec
+ * 2026-10-21-gitlab-publish-findings, plan T11) — per-author draft notes with
+ * `bulk_publish` and — for publish from an outdated review (spec
+ * 2026-10-23-gitlab-publish-outdated-findings, plan T10) — MR diff versions
+ * (`…/versions[/:id]`, paginated), a position validator and `setHead`. One-shot overrides (`when(...)`) script failures — a status
+ * (with headers/body), a timeout or a network error — for the next N matching
+ * requests; `applyFirst` lets the write land before the failure is answered,
+ * `delayMs` / `latencyMs` / `gate` slow requests down.
  */
 
 export interface FakeRequest {
@@ -25,15 +30,34 @@ export interface FakeRequest {
 }
 
 export type FakeReply =
-  | { status: number; body?: unknown; headers?: Record<string, string> }
+  | {
+      status: number;
+      body?: unknown;
+      headers?: Record<string, string>;
+      /** Run the default handler first (the write LANDS), then answer `status`. */
+      applyFirst?: boolean;
+      /** Extra latency before answering. */
+      delayMs?: number;
+    }
+  /** The default handler, after `delayMs` and/or once `gate` settles. */
+  | { passThrough: true; delayMs?: number; gate?: Promise<unknown> }
   | 'timeout'
   | 'network';
+
+export interface WhenOptions {
+  /** Let the first `skip` matching requests through to the default handler. */
+  skip?: number;
+  /** Only requests satisfying this predicate match the rule. */
+  match?: (req: FakeRequest) => boolean;
+}
 
 interface Rule {
   method: string;
   path: string | RegExp;
   reply: FakeReply;
   remaining: number;
+  skip: number;
+  match?: (req: FakeRequest) => boolean;
 }
 
 export interface FakeNotePosition {
@@ -63,6 +87,19 @@ export interface FakeDiscussion {
   notes: FakeNote[];
 }
 
+/** One draft note of `author` on an MR (only that user can list / delete / publish it). */
+export interface FakeDraft {
+  id: number;
+  author: string;
+  note: string;
+  /** The request `position` as sent (incl. `line_range`), or null for a general note. */
+  position: Record<string, unknown> | null;
+}
+
+/** The publish marker shape (`modules/_shared/publish-marker.ts`), ids captured. */
+const MARKER_LINE_RE =
+  /^<!-- devdigest:publish:v1 w=([0-9a-f-]{36}) p=([0-9a-f-]{36}) f=([0-9a-f-]{36}) -->$/m;
+
 export interface FakeMr {
   iid: number;
   title: string;
@@ -74,6 +111,36 @@ export interface FakeMr {
   startSha: string;
   headSha: string;
   discussions: FakeDiscussion[];
+  drafts: FakeDraft[];
+  /** MR diff versions (`GET …/versions`), in insertion order; listed newest first. */
+  versions: FakeVersion[];
+  /**
+   * Position validator (outdated-findings T10): when set, a positioned draft
+   * whose SHAs differ from `shas` is rejected with `status`.
+   */
+  positionCheck: { shas: { baseSha: string; startSha: string; headSha: string }; status: 400 | 422 } | null;
+}
+
+/** One file diff of a diff version, as GitLab returns it in `…/versions/:id`. */
+export interface FakeVersionDiff {
+  old_path: string;
+  new_path: string;
+  diff: string;
+  new_file?: boolean;
+  renamed_file?: boolean;
+  deleted_file?: boolean;
+  too_large?: boolean;
+  collapsed?: boolean;
+}
+
+/** One MR diff version (outdated-findings AC-6). */
+export interface FakeVersion {
+  id: number;
+  headSha: string;
+  baseSha: string;
+  startSha: string;
+  createdAt: string;
+  diffs: FakeVersionDiff[];
 }
 
 interface FakeProject {
@@ -95,6 +162,12 @@ export class FakeGitLab {
   private nextNoteId = 9_000;
   private nextDiscussion = 1;
   private nextProjectId = 7_000;
+  private nextDraftId = 50_000;
+  private nextVersionId = 800;
+  private readonly hiddenNotes = new Set<number>();
+  private readonly hiddenNotePredicates: ((note: FakeNote) => boolean)[] = [];
+  /** Global latency (ms) added before answering EVERY request. */
+  latencyMs = 0;
 
   /** A token GitLab accepts, authenticating as `username` with `scopes` (null ⇒ no list). */
   addToken(token: string, username: string, scopes: string[] | null): this {
@@ -134,6 +207,9 @@ export class FakeGitLab {
       startSha: shas.startSha ?? 'start000',
       headSha: shas.headSha,
       discussions: [],
+      drafts: [],
+      versions: [],
+      positionCheck: null,
     };
     project.mrs.set(iid, mr);
     return mr;
@@ -146,8 +222,102 @@ export class FakeGitLab {
   }
 
   /** Script the next `times` requests matching `method` + `path` (substring or RegExp). */
-  when(method: string, path: string | RegExp, reply: FakeReply, times = 1): this {
-    this.rules.push({ method, path, reply, remaining: times });
+  when(method: string, path: string | RegExp, reply: FakeReply, times = 1, opts: WhenOptions = {}): this {
+    this.rules.push({ method, path, reply, remaining: times, skip: opts.skip ?? 0, match: opts.match });
+    return this;
+  }
+
+  // ---------- diff versions (publish from an outdated review) ----------
+
+  /** Adds a diff version to the MR (`id` defaults to the next free one). */
+  addVersion(
+    fullPath: string,
+    iid: number,
+    v: Partial<Omit<FakeVersion, 'headSha'>> & { headSha: string },
+  ): FakeVersion {
+    const mr = this.mr(fullPath, iid);
+    const version: FakeVersion = {
+      id: v.id ?? this.nextVersionId++,
+      headSha: v.headSha,
+      baseSha: v.baseSha ?? `base-${v.headSha}`,
+      startSha: v.startSha ?? `start-${v.headSha}`,
+      createdAt: v.createdAt ?? new Date(Date.UTC(2026, 9, 1) + mr.versions.length * 60_000).toISOString(),
+      diffs: v.diffs ?? [],
+    };
+    mr.versions.push(version);
+    return version;
+  }
+
+  /** Moves the MR's live head (`diff_refs.head_sha` / `sha`), e.g. mid-run (AC-28). */
+  setHead(fullPath: string, iid: number, headSha: string): this {
+    this.mr(fullPath, iid).headSha = headSha;
+    return this;
+  }
+
+  /**
+   * Only positions carrying exactly `shas` are accepted; any other positioned
+   * draft create is rejected with `status` (400 or 422). `null` clears it.
+   */
+  acceptPositionsOnly(
+    fullPath: string,
+    iid: number,
+    shas: { baseSha: string; startSha: string; headSha: string } | null,
+    status: 400 | 422 = 400,
+  ): this {
+    this.mr(fullPath, iid).positionCheck = shas ? { shas, status } : null;
+    return this;
+  }
+
+  /** The request log as `METHOD path` lines (query omitted), in order. */
+  get log(): string[] {
+    return this.requests.map((r) => `${r.method} ${r.path}`);
+  }
+
+  // ---------- draft notes (publish) ----------
+
+  /** Every draft on the MR (all authors), in creation order. */
+  drafts(fullPath: string, iid: number): FakeDraft[] {
+    return this.mr(fullPath, iid).drafts;
+  }
+
+  /** A draft written by someone (a human reviewer using the service account, another tool). */
+  addHumanDraft(fullPath: string, iid: number, author: string, note: string, position: Record<string, unknown> | null = null): FakeDraft {
+    const draft: FakeDraft = { id: this.nextDraftId++, author, note, position };
+    this.mr(fullPath, iid).drafts.push(draft);
+    return draft;
+  }
+
+  /** Every non-system note of every discussion of the MR (hidden ones included). */
+  notes(fullPath: string, iid: number): FakeNote[] {
+    return this.mr(fullPath, iid).discussions.flatMap((d) => d.notes);
+  }
+
+  /**
+   * Count of publish markers on the MR: `drafts` (default), published `notes`,
+   * or `all`; optionally only those of one publication / finding.
+   */
+  markerCount(
+    fullPath: string,
+    iid: number,
+    where: 'drafts' | 'notes' | 'all' = 'drafts',
+    filter: { publicationId?: string; findingId?: string } = {},
+  ): number {
+    const bodies: string[] = [];
+    if (where !== 'notes') bodies.push(...this.drafts(fullPath, iid).map((d) => d.note));
+    if (where !== 'drafts') bodies.push(...this.notes(fullPath, iid).map((n) => n.body));
+    return bodies.filter((b) => {
+      const m = MARKER_LINE_RE.exec(b);
+      if (!m) return false;
+      if (filter.publicationId && m[2] !== filter.publicationId) return false;
+      if (filter.findingId && m[3] !== filter.findingId) return false;
+      return true;
+    }).length;
+  }
+
+  /** Hide a published note from every discussion read (AC-27: "note not found by marker"). */
+  hideNote(noteIdOrPredicate: number | ((note: FakeNote) => boolean)): this {
+    if (typeof noteIdOrPredicate === 'number') this.hiddenNotes.add(noteIdOrPredicate);
+    else this.hiddenNotePredicates.push(noteIdOrPredicate);
     return this;
   }
 
@@ -161,6 +331,11 @@ export class FakeGitLab {
   /** Every write (POST to the REST API; GraphQL reads excluded). */
   get writes(): FakeRequest[] {
     return this.requests.filter((r) => r.method === 'POST' && r.path.startsWith(API));
+  }
+
+  /** Every DELETE to the REST API. */
+  get deletes(): FakeRequest[] {
+    return this.requests.filter((r) => r.method === 'DELETE' && r.path.startsWith(API));
   }
 
   reset(): void {
@@ -192,17 +367,31 @@ export class FakeGitLab {
       token,
     };
     this.requests.push(req);
+    if (this.latencyMs > 0) await sleep(this.latencyMs);
 
-    const rule = this.rules.find((r) => r.remaining > 0 && r.method === method && matches(req.path, r.path));
+    const rule = this.rules.find(
+      (r) => r.remaining > 0 && r.method === method && matches(req.path, r.path) && (!r.match || r.match(req)),
+    );
+    if (rule && rule.skip > 0) {
+      rule.skip -= 1;
+      return this.route(req);
+    }
     if (rule) {
       rule.remaining -= 1;
-      if (rule.reply === 'timeout') {
+      const reply = rule.reply;
+      if (reply === 'timeout') {
         const err = new Error('The operation was aborted due to timeout');
         err.name = 'TimeoutError';
         throw err;
       }
-      if (rule.reply === 'network') throw new TypeError('fetch failed');
-      return json(rule.reply.status, rule.reply.body ?? { message: `${rule.reply.status}` }, rule.reply.headers);
+      if (reply === 'network') throw new TypeError('fetch failed');
+      if (reply.delayMs) await sleep(reply.delayMs);
+      if ('passThrough' in reply) {
+        if (reply.gate) await reply.gate;
+        return this.route(req);
+      }
+      if (reply.applyFirst) this.route(req);
+      return json(reply.status, reply.body ?? { message: `${reply.status}` }, reply.headers);
     }
     return this.route(req);
   };
@@ -252,9 +441,22 @@ export class FakeGitLab {
     if (req.method === 'GET' && (mrSub === '/diffs' || mrSub === '/commits' || mrSub === '/closes_issues')) {
       return json(200, [], { 'x-next-page': '' });
     }
+    if (req.method === 'GET' && mrSub === '/versions') {
+      const newestFirst = [...mr.versions].reverse().map(restVersion);
+      return paginate(newestFirst, req.query);
+    }
+    const vMatch = /^\/versions\/(\d+)$/.exec(mrSub);
+    if (req.method === 'GET' && vMatch) {
+      const version = mr.versions.find((v) => v.id === Number(vMatch[1]));
+      if (!version) return json(404, { message: '404 Not found' });
+      return json(200, { ...restVersion(version), diffs: version.diffs });
+    }
     if (mrSub === '/discussions') {
-      if (req.method === 'GET') return paginate(mr.discussions, req.query);
+      if (req.method === 'GET') return paginate(this.visibleDiscussions(mr), req.query);
       if (req.method === 'POST') return this.createDiscussion(mr, req.body, user?.username ?? 'anonymous');
+    }
+    if (mrSub === '/draft_notes' || mrSub.startsWith('/draft_notes/')) {
+      return this.draftNotes(mr, req, mrSub.slice('/draft_notes'.length), user?.username ?? 'anonymous');
     }
     const dMatch = /^\/discussions\/([^/]+)(\/notes)?$/.exec(mrSub);
     if (dMatch) {
@@ -277,6 +479,97 @@ export class FakeGitLab {
       }
     }
     return json(404, { message: '404 Not Found' });
+  }
+
+  /** Discussions as a read returns them: hidden notes removed, emptied discussions dropped. */
+  private visibleDiscussions(mr: FakeMr): FakeDiscussion[] {
+    if (this.hiddenNotes.size === 0 && this.hiddenNotePredicates.length === 0) return mr.discussions;
+    const hidden = (n: FakeNote) => this.hiddenNotes.has(n.id) || this.hiddenNotePredicates.some((p) => p(n));
+    return mr.discussions
+      .map((d) => ({ ...d, notes: d.notes.filter((n) => !hidden(n)) }))
+      .filter((d) => d.notes.length > 0);
+  }
+
+  /**
+   * `…/merge_requests/:iid/draft_notes[/:id | /bulk_publish]`. Drafts are
+   * per author: list / delete / publish only ever see the token user's own.
+   */
+  private draftNotes(mr: FakeMr, req: FakeRequest, rest: string, author: string): Response {
+    const own = () => mr.drafts.filter((d) => d.author === author);
+    if (rest === '') {
+      if (req.method === 'GET') {
+        return paginate(own().map((d) => ({ id: d.id, note: d.note, position: d.position })), req.query);
+      }
+      if (req.method === 'POST') {
+        const input = (req.body ?? {}) as { note?: unknown; position?: unknown };
+        const position = input.position ?? null;
+        if (position !== null && !validDraftPosition(position)) {
+          return json(400, { message: '400 Bad request - position is invalid' });
+        }
+        if (position !== null && mr.positionCheck) {
+          const p = position as Record<string, unknown>;
+          const want = mr.positionCheck.shas;
+          if (p.base_sha !== want.baseSha || p.start_sha !== want.startSha || p.head_sha !== want.headSha) {
+            return json(mr.positionCheck.status, { message: `${mr.positionCheck.status} position is invalid` });
+          }
+        }
+        const draft: FakeDraft = {
+          id: this.nextDraftId++,
+          author,
+          note: String(input.note ?? ''),
+          position: position as Record<string, unknown> | null,
+        };
+        mr.drafts.push(draft);
+        return json(201, { id: draft.id, note: draft.note, position: draft.position });
+      }
+    }
+    if (rest === '/bulk_publish' && req.method === 'POST') {
+      const summary = (req.body as { note?: unknown } | undefined)?.note;
+      for (const draft of own()) this.publishDraft(mr, draft);
+      mr.drafts = mr.drafts.filter((d) => d.author !== author);
+      if (typeof summary === 'string') {
+        mr.discussions.push({
+          id: `disc-${this.nextDiscussion++}`,
+          individual_note: true,
+          notes: [diffNote(this.nextNoteId++, author, summary, null, { type: null })],
+        });
+      }
+      return new Response(null, { status: 204 });
+    }
+    const idMatch = /^\/(\d+)$/.exec(rest);
+    if (idMatch && req.method === 'DELETE') {
+      const id = Number(idMatch[1]);
+      const index = mr.drafts.findIndex((d) => d.id === id && d.author === author);
+      if (index < 0) return json(404, { message: '404 Draft Note Not Found' });
+      mr.drafts.splice(index, 1);
+      return new Response(null, { status: 204 });
+    }
+    return json(404, { message: '404 Not Found' });
+  }
+
+  /** A published draft: positioned → a `DiffNote` discussion; unpositioned → an individual general note. */
+  private publishDraft(mr: FakeMr, draft: FakeDraft): void {
+    const id = `disc-${this.nextDiscussion++}`;
+    if (draft.position) {
+      const { line_range: _range, ...position } = draft.position as Record<string, unknown> & { line_range?: unknown };
+      mr.discussions.push({
+        id,
+        individual_note: false,
+        notes: [
+          diffNote(this.nextNoteId++, draft.author, draft.note, {
+            old_line: null,
+            new_line: null,
+            ...(position as unknown as FakeNotePosition),
+          }),
+        ],
+      });
+      return;
+    }
+    mr.discussions.push({
+      id,
+      individual_note: true,
+      notes: [diffNote(this.nextNoteId++, draft.author, draft.note, null, { type: null })],
+    });
   }
 
   private createDiscussion(mr: FakeMr, raw: unknown, author: string): Response {
@@ -459,6 +752,22 @@ export function rawCommandLines(text: string): string[] {
 
 // ---------- internals ----------
 
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** GitLab rejects a draft position without a text anchor, or a `line_range` missing an end (400). */
+function validDraftPosition(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const p = raw as Record<string, unknown>;
+  if (p.position_type !== 'text' || typeof p.head_sha !== 'string') return false;
+  if (typeof p.new_path !== 'string' && typeof p.old_path !== 'string') return false;
+  if (p.new_line == null && p.old_line == null) return false;
+  if (p.line_range !== undefined) {
+    const range = p.line_range as { start?: unknown; end?: unknown } | null;
+    if (!range || typeof range !== 'object' || !range.start || !range.end) return false;
+  }
+  return true;
+}
+
 function matches(path: string, pattern: string | RegExp): boolean {
   return typeof pattern === 'string' ? path.includes(pattern) : pattern.test(path);
 }
@@ -485,6 +794,19 @@ function restMr(project: FakeProject, mr: FakeMr) {
     author: { username: mr.author },
     created_at: FAKE_CREATED_AT,
     updated_at: FAKE_CREATED_AT,
+  };
+}
+
+function restVersion(v: FakeVersion) {
+  return {
+    id: v.id,
+    head_commit_sha: v.headSha,
+    base_commit_sha: v.baseSha,
+    start_commit_sha: v.startSha,
+    created_at: v.createdAt,
+    merge_request_id: 1,
+    state: 'collected',
+    real_size: String(v.diffs.length),
   };
 }
 
