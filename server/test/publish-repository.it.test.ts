@@ -372,4 +372,130 @@ d('PublishRepository', () => {
       repo.createPublication(input(wsA, s.prId, s.reviews[1]!, s.findings[0]!)),
     ).resolves.toMatchObject({ status: 'in_progress' });
   });
+
+  // ---------------------------------------------------------------- outdated-findings (plan T6)
+
+  it('new publications default to not deprecated, no version lookup, 0 fallbacks', async () => {
+    const s = await seedPr(wsA);
+    const pub = await repo.createPublication(input(wsA, s.prId, s.reviews[0]!, s.findings[0]!));
+    expect(pub).toMatchObject({
+      deprecated: false,
+      deprecationReason: null,
+      reviewedVersionFound: null,
+      positionFallbacks: 0,
+    });
+    const states = await repo.findingStates(s.findings[0]!);
+    expect(states.every((st) => st.publicationDeprecated === false)).toBe(true);
+  });
+
+  it('setStartDecision(head_moved, items deferred) → deprecated record, deferred items', async () => {
+    const s = await seedPr(wsA);
+    const ids = s.findings[0]!;
+    const pub = await repo.createPublication(input(wsA, s.prId, s.reviews[0]!, ids));
+    await repo.setStartDecision(pub.id, {
+      deprecationReason: 'head_moved',
+      items: ids.map((findingId) => ({ findingId, anchorKind: 'deferred' as const })),
+    });
+    const rec = await repo.getPublication(wsA, pub.id);
+    expect(rec).toMatchObject({ deprecated: true, deprecationReason: 'head_moved' });
+    expect(rec!.items.map((i) => i.anchorKind)).toEqual(['deferred', 'deferred', 'deferred']);
+
+    const states = await repo.findingStates(ids);
+    expect(states).toHaveLength(3);
+    expect(states.every((st) => st.publicationDeprecated)).toBe(true);
+  });
+
+  it('setStartDecision(null) keeps the run non-deprecated; only this publication\'s items change', async () => {
+    const a = await seedPr(wsA);
+    const b = await seedPr(wsA);
+    const pa = await repo.createPublication(input(wsA, a.prId, a.reviews[0]!, a.findings[0]!));
+    const pb = await repo.createPublication(input(wsA, b.prId, b.reviews[0]!, b.findings[0]!));
+    await repo.setStartDecision(pa.id, {
+      deprecationReason: null,
+      // A finding of publication B must not be touched through publication A.
+      items: [
+        { findingId: a.findings[0]![0]!, anchorKind: 'general' },
+        { findingId: b.findings[0]![0]!, anchorKind: 'general' },
+      ],
+    });
+    const ra = await repo.getPublication(wsA, pa.id);
+    expect(ra).toMatchObject({ deprecated: false, deprecationReason: null });
+    expect(ra!.items.map((i) => i.anchorKind)).toEqual(['general', 'single_line', 'single_line']);
+    const rb = await repo.getPublication(wsA, pb.id);
+    expect(rb!.items.map((i) => i.anchorKind)).toEqual(['single_line', 'single_line', 'single_line']);
+  });
+
+  it('setAnchorResolution(false, [general…]) → reviewedVersionFound false, kinds + head updated', async () => {
+    const s = await seedPr(wsA);
+    const ids = s.findings[0]!;
+    const pub = await repo.createPublication(input(wsA, s.prId, s.reviews[0]!, ids));
+    await repo.setStartDecision(pub.id, {
+      deprecationReason: 'head_moved',
+      items: ids.map((findingId) => ({ findingId, anchorKind: 'deferred' as const })),
+    });
+    await repo.setAnchorResolution(pub.id, {
+      reviewedVersionFound: false,
+      diffHeadSha: null,
+      items: ids.map((findingId) => ({ findingId, anchorKind: 'general' as const })),
+    });
+    const rec = await repo.getPublication(wsA, pub.id);
+    expect(rec).toMatchObject({
+      deprecated: true,
+      deprecationReason: 'head_moved',
+      reviewedVersionFound: false,
+      diffHeadSha: null,
+    });
+    expect(rec!.items.map((i) => i.anchorKind)).toEqual(['general', 'general', 'general']);
+
+    await repo.setAnchorResolution(pub.id, {
+      reviewedVersionFound: true,
+      diffHeadSha: 'def456',
+      items: [
+        { findingId: ids[0]!, anchorKind: 'multi_line' },
+        { findingId: ids[1]!, anchorKind: 'single_line' },
+      ],
+    });
+    const again = await repo.getPublication(wsA, pub.id);
+    expect(again).toMatchObject({ reviewedVersionFound: true, diffHeadSha: 'def456' });
+    expect(again!.items.map((i) => i.anchorKind)).toEqual(['multi_line', 'single_line', 'general']);
+  });
+
+  it('markItemDrafted with a position fallback twice → positionFallbacks 2, kinds general', async () => {
+    const s = await seedPr(wsA);
+    const [f1, f2, f3] = s.findings[0]!;
+    const pub = await repo.createPublication(input(wsA, s.prId, s.reviews[0]!, [f1!, f2!, f3!]));
+    await repo.setStartDecision(pub.id, {
+      deprecationReason: 'head_unknown',
+      items: [f1!, f2!, f3!].map((findingId) => ({ findingId, anchorKind: 'single_line' as const })),
+    });
+    await repo.markItemDrafted(pub.id, f1!, 11, { anchorKind: 'general', positionFallback: true });
+    await repo.markItemDrafted(pub.id, f2!, 12, { anchorKind: 'general', positionFallback: true });
+    // Base behaviour without options: kind unchanged, no fallback counted.
+    await repo.markItemDrafted(pub.id, f3!, 13);
+    // A repeat on an already drafted item is a no-op (no double count).
+    await repo.markItemDrafted(pub.id, f1!, 11, { anchorKind: 'general', positionFallback: true });
+
+    const rec = await repo.getPublication(wsA, pub.id);
+    expect(rec).toMatchObject({ drafted: 3, positionFallbacks: 2, deprecationReason: 'head_unknown' });
+    expect(rec!.items.map((i) => [i.anchorKind, i.draftId])).toEqual([
+      ['general', 11],
+      ['general', 12],
+      ['single_line', 13],
+    ]);
+
+    // finish writes positionFallbacks when present (and keeps the CAS).
+    expect(
+      await repo.finish(pub.id, ['in_progress'], {
+        status: 'failed',
+        code: 'gitlab_publish_failed',
+        message: 'x',
+        finishedAt: new Date(),
+        counters: { positionFallbacks: 1, generalNotes: 2 },
+      }),
+    ).toBe(true);
+    expect(await repo.getPublication(wsA, pub.id)).toMatchObject({
+      positionFallbacks: 1,
+      generalNotes: 2,
+    });
+  });
 });

@@ -3,10 +3,12 @@ import type {
   GitLabCommentsHost,
   GitLabDiffNote,
   GitLabDiffRefs,
+  GitLabDiffVersionsHost,
   GitLabDiscussionRef,
   GitLabDraftNote,
   GitLabDraftNotesHost,
   GitLabDraftPosition,
+  GitLabMrDiffVersion,
   GitLabMrNote,
   GitLabScopeCheck,
   GitLabWriteFailure,
@@ -17,6 +19,7 @@ import type {
   HostRepoRef,
   IssueMetaHost,
   PrDetailHost,
+  PrFileHost,
   PrMetaHost,
   PullDetailOptions,
   PullDetailResult,
@@ -44,7 +47,16 @@ import {
   type RestDiscussion,
   type RestNote,
 } from './discussions.js';
-import { mapDraftNote, mapDraftNotes, mapMrNotes, toApiDraftPosition, type RestDraftNote } from './draft-notes.js';
+import {
+  mapDiffVersions,
+  mapDraftNote,
+  mapDraftNotes,
+  mapMrNotes,
+  toApiDraftPosition,
+  type RestDiffVersion,
+  type RestDiffVersionDetail,
+  type RestDraftNote,
+} from './draft-notes.js';
 import {
   mapDiffStats,
   mapGqlMergeRequest,
@@ -90,7 +102,9 @@ const DISCUSSION_MEMO_MAX = 500;
  *
  * Constructed ONLY by the composition root (`platform/container.ts`).
  */
-export class RestGitLabClient implements GitLabClient, GitLabCommentsHost, GitLabDraftNotesHost {
+export class RestGitLabClient
+  implements GitLabClient, GitLabCommentsHost, GitLabDraftNotesHost, GitLabDiffVersionsHost
+{
   readonly provider = 'gitlab' as const;
   readonly readOnly = false;
 
@@ -385,6 +399,48 @@ export class RestGitLabClient implements GitLabClient, GitLabCommentsHost, GitLa
     }
   };
 
+  // ---------- GitLabDiffVersionsHost (publish from an outdated review) ----------
+
+  /**
+   * The MR's diff versions (host order, newest first), at most `maxPages`
+   * pages of 100. `truncated` ⇒ GitLab still announced a next page. Read
+   * policy (5xx back-off; network errors / timeouts not retried). Throws a
+   * mapped AppError (`readError`).
+   */
+  listMrDiffVersions = async (
+    ref: HostRepoRef,
+    iid: number,
+    opts: { maxPages: number },
+  ): Promise<{ versions: GitLabMrDiffVersion[]; truncated: boolean }> => {
+    const path = `${this.mrPath(ref, iid)}/versions`;
+    const maxPages = Number.isInteger(opts.maxPages) && opts.maxPages > 0 ? opts.maxPages : 1;
+    try {
+      const { items, truncated } = await this.paginatePages<RestDiffVersion>(path, {}, maxPages);
+      return { versions: mapDiffVersions(items), truncated };
+    } catch (err) {
+      throw this.readError(err);
+    }
+  };
+
+  /**
+   * The files of one diff version, mapped exactly like the MR diff
+   * (`mapRestDiff`: too_large / collapsed ⇒ `patch_omitted`, empty ⇒ `patch: null`).
+   * A missing / non-array `diffs` ⇒ `[]`. Read policy; throws a mapped AppError.
+   */
+  getMrDiffVersionFiles = async (ref: HostRepoRef, iid: number, versionId: number): Promise<PrFileHost[]> => {
+    const path = `${this.mrPath(ref, iid)}/versions/${positiveId(versionId, 'diff version id')}`;
+    let raw: RestDiffVersionDetail | null;
+    try {
+      raw = (await this.http.rest<RestDiffVersionDetail | null>(path)).data;
+    } catch (err) {
+      throw this.readError(err);
+    }
+    const diffs = raw && typeof raw === 'object' && Array.isArray(raw.diffs) ? (raw.diffs as unknown[]) : [];
+    return diffs
+      .filter((d): d is RestDiff => !!d && typeof d === 'object')
+      .map(mapRestDiff);
+  };
+
   // ---------- PullRequestHost ----------
 
   async listPullRequests(ref: HostRepoRef): Promise<PrMetaHost[]> {
@@ -609,9 +665,21 @@ export class RestGitLabClient implements GitLabClient, GitLabCommentsHost, GitLa
 
   /** GET every page of a REST list (`x-next-page`), no upper limit (AC-22). */
   private async paginate<T>(path: string, query: Record<string, QueryValue> = {}): Promise<T[]> {
+    return (await this.paginatePages<T>(path, query, Number.POSITIVE_INFINITY)).items;
+  }
+
+  /**
+   * GET at most `maxPages` pages of a REST list (`x-next-page`). `truncated` ⇒
+   * the last page read still announced a next page.
+   */
+  private async paginatePages<T>(
+    path: string,
+    query: Record<string, QueryValue>,
+    maxPages: number,
+  ): Promise<{ items: T[]; truncated: boolean }> {
     const out: T[] = [];
     let page = 1;
-    for (;;) {
+    for (let read = 1; ; read++) {
       const { data, headers } = await this.http.rest<T[]>(path, {
         ...query,
         per_page: GITLAB_PAGE_SIZE,
@@ -628,10 +696,10 @@ export class RestGitLabClient implements GitLabClient, GitLabCommentsHost, GitLa
         const parsed = Number(header.trim());
         next = header.trim() && Number.isInteger(parsed) ? parsed : null;
       }
-      if (next === null || next <= page || items.length === 0) break;
+      if (next === null || next <= page || items.length === 0) return { items: out, truncated: false };
+      if (read >= maxPages) return { items: out, truncated: true };
       page = next;
     }
-    return out;
   }
 
   private tokenInvalid(): AppError {

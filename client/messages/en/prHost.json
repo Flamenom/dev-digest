@@ -33,7 +33,9 @@
     "selectAll": "Select all publishable",
     "publishButton": "Publish {count} to GitLab",
     "offDiff": "Posts as a general MR comment (not on a changed line)",
+    "deferredAnchor": "Placement decided at publish (outdated review)",
     "publishedBy": "Published by {name} · {time}",
+    "publishedDeprecatedBy": "Published as deprecated by {name} · {time}",
     "publishedLinkUnavailable": "Published — link unavailable",
     "viewOnGitLab": "View on GitLab",
     "reason": {
@@ -43,6 +45,12 @@
       "publish_unconfirmed": "GitLab didn't confirm an earlier publish — check the MR"
     },
     "rerun": "Re-run review",
+    "deprecation": {
+      "notice": {
+        "headMoved": "This review ran on `{sha}`; the MR has changed since. Findings will be published marked as deprecated.",
+        "headUnknown": "This review predates commit tracking. Findings will be published as deprecated general comments."
+      }
+    },
     "dialog": {
       "title": "Publish to GitLab !{iid}",
       "counts": "{critical} critical · {warning} warning · {suggestion} suggestion",
@@ -54,12 +62,24 @@
       "summary": "Summary (optional)",
       "summaryCounter": "{count} / 10,000",
       "googleNote": "Comments are posted as the GitLab service account and signed with your name",
+      "outdated": {
+        "heading": "Outdated review",
+        "headMoved": "Reviewed at `{sha}`, the MR is now at `{liveSha}`. Findings will be published marked as deprecated.",
+        "headUnknown": "The reviewed commit is unknown. All findings will be posted as deprecated general MR comments.",
+        "placementSome": "{general} of {total} will be posted as general MR comments (not on a diff line)",
+        "placementAll": "All {total} will be posted as general MR comments",
+        "planUnavailable": "Couldn't check how findings will be placed — some or all may be posted as general comments.",
+        "noApplicable": "Code suggestions can't be made applicable for an outdated review."
+      },
       "publish": "Publish",
+      "publishDeprecated": "Publish as deprecated",
       "cancel": "Cancel"
     },
     "progress": "Publishing {done} of {total}…",
     "result": {
       "published": "Published {count} findings to GitLab",
+      "publishedDeprecated": "Published {count} findings to GitLab as deprecated",
+      "generalCount": "{count} were posted as general MR comments",
       "otherDrafts": "{count} other draft comments of this account were published with them",
       "partial": "Published {published}, failed {failed}",
       "tryAgain": "Try again",
@@ -73,8 +93,8 @@
       "finding_already_published": "Some selected findings are already published.",
       "publish_in_progress": "A publish to this merge request is already in progress.",
       "provider_not_supported": "Publishing findings is only supported for GitLab merge requests.",
-      "review_head_unknown": "This review predates publish support — re-run the review to publish its findings.",
-      "review_diff_outdated": "New commits were pushed since this review — re-run the review to publish.",
+      "review_head_unknown": "This review is outdated — confirm publishing its findings as deprecated.",
+      "review_diff_outdated": "This review is outdated — confirm publishing its findings as deprecated.",
       "pr_not_open": "The merge request is not open.",
       "gitlab_drafts_left_behind": "Publishing failed and some draft comments remain on the GitLab service account. The next publish removes them.",
       "gitlab_position_rejected": "GitLab rejected the comment position.",

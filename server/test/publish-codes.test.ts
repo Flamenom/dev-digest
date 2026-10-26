@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { PublishBlockerCode, PublishErrorCode, type GitLabWriteFailure } from '@devdigest/shared';
 import {
+  DEPRECATED_NOT_ACKNOWLEDGED_MESSAGE,
   PUBLISH_HTTP_STATUS,
   PUBLISH_MESSAGES,
   blockerMessage,
@@ -18,13 +19,15 @@ import {
 } from '../src/modules/settings/gitlab-token-health.js';
 
 describe('publish messages', () => {
-  it('AC-4 / AC-5 / AC-33 messages equal the spec strings byte-for-byte', () => {
-    expect(blockerMessage('review_head_unknown')).toBe(
-      'This review predates publish support — re-run the review to publish its findings.',
-    );
-    expect(blockerMessage('review_diff_outdated')).toBe(
-      'New commits were pushed since this review — re-run the review to publish.',
-    );
+  it('AC-33 message and the outdated-findings AC-4 message equal the spec strings byte-for-byte', () => {
+    const ac4 = 'This review is outdated — confirm publishing its findings as deprecated.';
+    expect(DEPRECATED_NOT_ACKNOWLEDGED_MESSAGE).toBe(ac4);
+    expect(PUBLISH_MESSAGES.review_diff_outdated).toBe(ac4);
+    expect(PUBLISH_MESSAGES.review_head_unknown).toBe(ac4);
+    expect(blockerMessage('review_head_unknown')).toBe(ac4);
+    expect(blockerMessage('review_diff_outdated')).toBe(ac4);
+    expect(PUBLISH_HTTP_STATUS.review_head_unknown).toBe(409);
+    expect(PUBLISH_HTTP_STATUS.review_diff_outdated).toBe(409);
     expect(PUBLISH_MESSAGES.gitlab_publish_unconfirmed).toBe(
       "GitLab didn't confirm the publish — check the MR before publishing again.",
     );

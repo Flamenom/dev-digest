@@ -3,6 +3,11 @@
    accordion's publish section; the data hooks live in `@/lib/hooks/publish`. */
 export { PublishToolbar, type PublishToolbarProps } from "./PublishToolbar";
 export { PublishBlockerNotice, type PublishBlockerNoticeProps } from "./PublishBlockerNotice";
+export {
+  PublishDeprecationNotice,
+  publishDeprecationNoticeId,
+  type PublishDeprecationNoticeProps,
+} from "./PublishDeprecationNotice";
 export { FindingPublishControl, type FindingPublishControlProps } from "./FindingPublishControl";
 export { FindingPublishAddon, FindingPublishProvider, type FindingPublishState } from "./FindingPublishAddon";
 export { PublishConfirmDialog, type PublishConfirmDialogProps } from "./PublishConfirmDialog";

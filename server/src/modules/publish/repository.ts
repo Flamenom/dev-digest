@@ -29,7 +29,11 @@ import {
   type CreatePublicationInput,
   type FindingLiveState,
   type FinishPublicationPatch,
+  type MarkItemDraftedOptions,
+  type PublicationAnchorResolution,
+  type PublicationItemAnchorKind,
   type PublicationRecord,
+  type PublicationStartDecision,
   type PublishedItemLink,
   type PublishReviewContext,
   type PublishStore,
@@ -152,6 +156,7 @@ export class PublishRepository implements PublishStore {
         item: t.reviewPublicationItems,
         publicationStatus: t.reviewPublications.status,
         createdBy: t.reviewPublications.createdBy,
+        publicationDeprecated: t.reviewPublications.deprecated,
         userName: t.users.name,
       })
       .from(t.reviewPublicationItems)
@@ -166,7 +171,7 @@ export class PublishRepository implements PublishStore {
           inArray(t.reviewPublicationItems.state, [...LIVE_STATES]),
         ),
       );
-    return rows.flatMap(({ item, publicationStatus, createdBy, userName }) => {
+    return rows.flatMap(({ item, publicationStatus, createdBy, publicationDeprecated, userName }) => {
       const state = item.state;
       if (state !== 'pending' && state !== 'drafted' && state !== 'published') return [];
       return [
@@ -180,6 +185,7 @@ export class PublishRepository implements PublishStore {
           url: item.url,
           publishedAt: item.publishedAt,
           publishedBy: toActor(createdBy, userName),
+          publicationDeprecated,
         },
       ];
     });
@@ -302,17 +308,62 @@ export class PublishRepository implements PublishStore {
     await this.db.delete(t.reviewPublications).where(eq(t.reviewPublications.id, publicationId));
   };
 
+  // ---------------------------------------------------------------- start decisions
+
+  setStartDecision = async (
+    publicationId: string,
+    decision: PublicationStartDecision,
+  ): Promise<void> => {
+    if (!isUuid(publicationId)) return;
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(t.reviewPublications)
+        .set({
+          // DB CHECK `review_publications_deprecation_ck`: deprecated ⇔ reason set.
+          deprecated: decision.deprecationReason !== null,
+          deprecationReason: decision.deprecationReason,
+          updatedAt: heartbeat(),
+        })
+        .where(eq(t.reviewPublications.id, publicationId));
+      await this.updateItemAnchorKinds(tx, publicationId, decision.items);
+    });
+  };
+
+  setAnchorResolution = async (
+    publicationId: string,
+    resolution: PublicationAnchorResolution,
+  ): Promise<void> => {
+    if (!isUuid(publicationId)) return;
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(t.reviewPublications)
+        .set({
+          reviewedVersionFound: resolution.reviewedVersionFound,
+          diffHeadSha: resolution.diffHeadSha,
+          updatedAt: heartbeat(),
+        })
+        .where(eq(t.reviewPublications.id, publicationId));
+      await this.updateItemAnchorKinds(tx, publicationId, resolution.items);
+    });
+  };
+
   // ---------------------------------------------------------------- progress
 
   markItemDrafted = async (
     publicationId: string,
     findingId: string,
     draftId: number,
+    opts: MarkItemDraftedOptions = {},
   ): Promise<void> => {
     await this.db.transaction(async (tx) => {
       const changed = await tx
         .update(t.reviewPublicationItems)
-        .set({ state: 'drafted', draftId, code: null })
+        .set({
+          state: 'drafted',
+          draftId,
+          code: null,
+          ...(opts.anchorKind !== undefined ? { anchorKind: opts.anchorKind } : {}),
+        })
         .where(
           and(
             this.itemWhere(publicationId, findingId),
@@ -325,6 +376,13 @@ export class PublishRepository implements PublishStore {
         .set({
           ...(changed.length > 0
             ? { drafted: sql`${t.reviewPublications.drafted} + ${changed.length}` }
+            : {}),
+          // AC-12: one general re-send after a rejected position. `general_notes`
+          // is derived from the items' final anchor kinds at finish.
+          ...(changed.length > 0 && opts.positionFallback
+            ? {
+                positionFallbacks: sql`${t.reviewPublications.positionFallbacks} + ${changed.length}`,
+              }
             : {}),
           updatedAt: heartbeat(),
         })
@@ -484,6 +542,7 @@ export class PublishRepository implements PublishStore {
         ...(c.otherDraftsPublished !== undefined
           ? { otherDraftsPublished: c.otherDraftsPublished }
           : {}),
+        ...(c.positionFallbacks !== undefined ? { positionFallbacks: c.positionFallbacks } : {}),
         ...(patch.diffHeadSha !== undefined ? { diffHeadSha: patch.diffHeadSha } : {}),
         updatedAt: heartbeat(),
       })
@@ -512,6 +571,35 @@ export class PublishRepository implements PublishStore {
   };
 
   // ---------------------------------------------------------------- internals
+
+  /**
+   * Per-item `anchor_kind` update, scoped by `publication_id` — one statement
+   * per distinct kind (at most 4), inside the caller's transaction.
+   */
+  private async updateItemAnchorKinds(
+    tx: PublishTx,
+    publicationId: string,
+    items: readonly PublicationItemAnchorKind[],
+  ): Promise<void> {
+    const byKind = new Map<PublicationItemAnchorKind['anchorKind'], string[]>();
+    for (const { findingId, anchorKind } of items) {
+      if (!isUuid(findingId)) continue;
+      const list = byKind.get(anchorKind);
+      if (list) list.push(findingId);
+      else byKind.set(anchorKind, [findingId]);
+    }
+    for (const [anchorKind, findingIds] of byKind) {
+      await tx
+        .update(t.reviewPublicationItems)
+        .set({ anchorKind })
+        .where(
+          and(
+            eq(t.reviewPublicationItems.publicationId, publicationId),
+            inArray(t.reviewPublicationItems.findingId, findingIds),
+          ),
+        );
+    }
+  }
 
   private itemWhere(publicationId: string, findingId: string) {
     return and(

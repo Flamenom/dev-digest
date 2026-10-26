@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { AuditEventInput, HostRepoRef, Severity } from '@devdigest/shared';
-import { ReviewPublishAuditMetadata } from '@devdigest/shared';
+import { ReviewPublishAuditMetadataWithDeprecation } from '@devdigest/shared';
 import { MockGitLabClient, type MockGitLabOptions } from '../src/adapters/mocks.js';
 import { PublishExecutor, type PublishRunInput } from '../src/modules/publish/executor.js';
 import { resolveAnchor } from '../src/modules/publish/anchor.js';
@@ -85,6 +85,10 @@ function record(findings: PublishFindingRow[], over: Partial<PublicationRecord> 
     hasSummary: false,
     applySuggestions: false,
     diffHeadSha: null,
+    deprecated: false,
+    deprecationReason: null,
+    reviewedVersionFound: null,
+    positionFallbacks: 0,
     bulkPublishSentAt: null,
     createdAt: new Date('2026-10-21T00:00:00Z'),
     updatedAt: new Date('2026-10-21T00:00:00Z'),
@@ -129,6 +133,8 @@ class FakeStore implements PublishStore {
     throw new Error('not used');
   };
   deletePublication = async () => {};
+  setStartDecision = async () => {};
+  setAnchorResolution = async () => {};
   markItemDrafted = async (p: string, f: string, draftId: number) => {
     const it = this.item(f, p);
     it.state = 'drafted';
@@ -213,6 +219,9 @@ function setup(opts: {
     applySuggestions: false,
     footerName: opts.footerName ?? null,
     budget: { remainingMs: 60_000 },
+    deprecation: null,
+    anchorSource: 'persisted',
+    reviewHeadSha: REFS.headSha,
   };
   return { host, store, events, logs, run: () => executor.run(input) };
 }
@@ -293,7 +302,7 @@ describe('PublishExecutor — happy path (AC-23, AC-25, AC-26)', () => {
     expect(t.events).toHaveLength(1);
     const ev = t.events[0]!;
     expect(ev).toMatchObject({ workspaceId: WS, actorUserId: ACTOR, action: 'review.publish', targetType: 'review', targetId: REVIEW });
-    expect(ReviewPublishAuditMetadata.parse(ev.metadata)).toEqual({
+    expect(ReviewPublishAuditMetadataWithDeprecation.parse(ev.metadata)).toEqual({
       provider: 'gitlab',
       publication_id: PUB,
       pr_id: PR,
@@ -305,6 +314,11 @@ describe('PublishExecutor — happy path (AC-23, AC-25, AC-26)', () => {
       other_drafts_published: 2,
       applicable_suggestions: 0,
       has_summary: true,
+      // Outdated-findings AC-26: always present; a non-deprecated persisted run.
+      deprecated: false,
+      deprecation_reason: null,
+      reviewed_version_found: null,
+      position_fallbacks: 0,
     });
     const meta = JSON.stringify(ev.metadata);
     // The strict toEqual above already proves no draft / note id is present.

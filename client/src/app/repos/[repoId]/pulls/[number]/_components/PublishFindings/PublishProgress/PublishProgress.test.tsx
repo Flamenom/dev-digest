@@ -6,7 +6,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "@/test/render-with-providers";
-import { publication } from "../test-fixtures";
+import { deprecatedPublication, publication } from "../test-fixtures";
 import { PublishProgress } from "./PublishProgress";
 
 vi.mock("next/navigation", () => ({
@@ -106,5 +106,28 @@ describe("PublishProgress", () => {
     const unsafe = within(screen.getByTestId("unsafe")).getByRole("alert");
     expect(unsafe).toHaveTextContent("GitLab didn't confirm the publish");
     expect(within(unsafe).queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("deprecated publication: 'as deprecated' result plus the general-comment count only when > 0", () => {
+    renderWithProviders(
+      <>
+        <div data-testid="general">
+          <PublishProgress publication={deprecatedPublication({ general_notes: 2 })} mrUrl={MR} />
+        </div>
+        <div data-testid="positioned">
+          <PublishProgress publication={deprecatedPublication({ general_notes: 0 })} mrUrl={MR} />
+        </div>
+      </>,
+    );
+
+    const general = within(screen.getByTestId("general")).getByRole("status");
+    expect(general).toHaveTextContent("Published 3 findings to GitLab as deprecated");
+    expect(general).toHaveTextContent("2 were posted as general MR comments");
+    expect(within(general).getByRole("link", { name: "View merge request" })).toHaveAttribute("href", MR);
+
+    const positioned = within(screen.getByTestId("positioned")).getByRole("status");
+    expect(positioned).toHaveTextContent("Published 3 findings to GitLab as deprecated");
+    expect(positioned).not.toHaveTextContent("posted as general MR comments");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

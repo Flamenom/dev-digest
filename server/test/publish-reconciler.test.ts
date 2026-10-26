@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { AuditEventInput, HostRepoRef, PublicationStatus } from '@devdigest/shared';
+import { ReviewPublishAuditMetadataWithDeprecation } from '@devdigest/shared';
 import { MockGitLabClient, type MockGitLabOptions } from '../src/adapters/mocks.js';
 import { PublishReconciler } from '../src/modules/publish/reconciler.js';
 import { PUBLISH_UNCONFIRMED_MESSAGE } from '../src/modules/publish/codes.js';
@@ -64,6 +65,10 @@ function record(status: PublicationStatus, items: PublicationItemRecord[], over:
     hasSummary: true,
     applySuggestions: false,
     diffHeadSha: 'head0000',
+    deprecated: false,
+    deprecationReason: null,
+    reviewedVersionFound: null,
+    positionFallbacks: 0,
     bulkPublishSentAt: null,
     createdAt: new Date('2026-10-21T00:00:00Z'),
     updatedAt: new Date('2026-10-21T00:00:00Z'),
@@ -95,6 +100,8 @@ class FakeStore implements PublishStore {
     throw new Error('not used');
   };
   deletePublication = async () => {};
+  setStartDecision = async () => {};
+  setAnchorResolution = async () => {};
   markItemDrafted = async () => {
     throw new Error('reconciler must not draft');
   };
@@ -188,6 +195,40 @@ describe('PublishReconciler (AC-32 – AC-34)', () => {
     expect(t.store.rec.items[0]).toMatchObject({ state: 'published', noteId: 501, url: 'https://gitlab.com/acme/app/-/merge_requests/5#note_501' });
     expect(writeKinds(t.host)).toEqual([]);
     expect(t.events).toHaveLength(1);
+  });
+
+  it('deprecated run: settles a general fallback by marker and audits the 4 deprecation fields, no SHA (outdated AC-26, AC-27)', async () => {
+    const t = setup(
+      record('unconfirmed', [item(1, 'drafted', 7000), item(2, 'drafted', 7001)], {
+        bulkPublishSentAt: NOW,
+        deprecated: true,
+        deprecationReason: 'head_moved',
+        reviewedVersionFound: true,
+        positionFallbacks: 1,
+        diffHeadSha: 'abcdef0123456789abcdef0123456789abcdef01',
+      }),
+      {
+        mrNotes: {
+          [IID]: [
+            { id: 501, discussionId: 'd1', author: BOT, body: `a\n\n${marker(1)}`, system: false },
+            { id: 502, discussionId: 'd2', author: BOT, body: `general fallback\n\n${marker(2)}`, system: false },
+          ],
+        },
+      },
+    );
+    await t.reconciler.reconcileAll();
+    expect(t.store.rec).toMatchObject({ status: 'published', published: 2, generalNotes: 1, positionFallbacks: 1 });
+    expect(writeKinds(t.host)).toEqual([]);
+    expect(t.events).toHaveLength(1);
+    const meta = ReviewPublishAuditMetadataWithDeprecation.parse(t.events[0]!.metadata);
+    expect(meta).toMatchObject({
+      deprecated: true,
+      deprecation_reason: 'head_moved',
+      reviewed_version_found: true,
+      position_fallbacks: 1,
+      general_notes: 1,
+    });
+    expect(JSON.stringify(t.events[0]!.metadata)).not.toMatch(/abcdef01|head0000/);
   });
 
   it('ignores a copied marker on a note by another author (AC-24)', async () => {

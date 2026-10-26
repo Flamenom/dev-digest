@@ -5,9 +5,16 @@
    a live counter, the google-mode attribution note, and Publish / Cancel.
 
    Built on the design-system `Modal` (focus trap, Esc, focus restore to the
-   trigger). Owns its two data hooks: the read-only other-drafts count (one
-   GitLab list request while open) and the publish mutation (local error
-   channel — the failure renders inline, once). */
+   trigger). Owns its two data hooks: the read-only publish plan (other
+   drafts + live deprecation + placement, AC-21) and the publish mutation
+   (local error channel — the failure renders inline, once).
+
+   Outdated runs (spec 2026-10-23, AC-22/AC-23): while the plan — or, when the
+   plan is unavailable, the preview — reports a deprecation, the "Outdated
+   review" warning replaces the toggle, the confirm reads "Publish as
+   deprecated" and the request acknowledges it. A 409 head code keeps the
+   dialog open; the refreshed preview / plan bring the warning, and only a
+   new click sends again (never retried). */
 "use client";
 
 import React, { useId, useState } from "react";
@@ -16,10 +23,12 @@ import { Button, Icon, Modal, Toggle } from "@devdigest/ui";
 import { PUBLISH_SUMMARY_MAX_CHARS } from "@devdigest/shared";
 import { ApiError } from "@/lib/api";
 import { useCan } from "@/lib/hooks/permissions";
-import { useCreatePublication, useOtherDraftsCount } from "@/lib/hooks/publish";
-import type { Publication } from "@/lib/types";
+import { isDeprecation409, useCreatePublication, usePublishPlan } from "@/lib/hooks/publish";
+import type { Publication, PublishDeprecation } from "@/lib/types";
 import { RERUN_ERROR_CODES } from "../constants";
 import { knownPublishCode, summarizeSelection, type SelectedFinding } from "../helpers";
+import { effectiveDeprecation } from "./helpers";
+import { OutdatedWarning } from "./OutdatedWarning";
 import { s } from "./styles";
 
 export interface PublishConfirmDialogProps {
@@ -33,30 +42,48 @@ export interface PublishConfirmDialogProps {
   onPublished: (publication: Publication) => void;
   /** Offered when the publish is rejected because the review's diff is outdated (AC-12). */
   onRerun?: () => void;
+  /** The preview's review-level deprecation — the fallback when the plan can't be read (AC-22). */
+  previewDeprecation?: PublishDeprecation | null;
 }
 
-export function PublishConfirmDialog({ reviewId, mrIid, selected, onClose, onPublished, onRerun }: PublishConfirmDialogProps) {
+export function PublishConfirmDialog({
+  reviewId,
+  mrIid,
+  selected,
+  onClose,
+  onPublished,
+  onRerun,
+  previewDeprecation,
+}: PublishConfirmDialogProps) {
   const t = useTranslations("prHost.publish");
   const { mode } = useCan();
-  const otherDrafts = useOtherDraftsCount(reviewId);
+  const findingIds = selected.map((f) => f.entry.finding_id);
+  const plan = usePublishPlan(reviewId, findingIds);
   const create = useCreatePublication(reviewId, { errorChannel: "local" });
   const [summary, setSummary] = useState("");
   const [applySuggestions, setApplySuggestions] = useState(false);
   const summaryId = useId();
   const counterId = useId();
 
-  const { bySeverity, general, suggestionEligible } = summarizeSelection(selected);
-  const otherCount = otherDrafts.data?.other_drafts;
+  const { bySeverity, general: previewGeneral, suggestionEligible } = summarizeSelection(selected);
+  const otherCount = plan.data?.other_drafts;
+  // Derived from what THIS render shows: the warning is on screen iff non-null.
+  const deprecation = effectiveDeprecation(plan.data, previewDeprecation);
+  const general = plan.data?.placement?.general ?? previewGeneral;
+  // AC-23: after a 409 head code, wait for the refreshed plan before a new confirm can be sent.
+  const refreshing = isDeprecation409(create.error) && plan.isFetching;
   const errorCode = create.error instanceof ApiError ? create.error.code : undefined;
   const known = knownPublishCode(errorCode);
 
   const publish = () => {
-    if (create.isPending) return;
+    if (create.isPending || refreshing) return;
     create.mutate(
       {
-        finding_ids: selected.map((f) => f.entry.finding_id),
+        finding_ids: findingIds,
         summary: summary.trim() ? summary : undefined,
-        apply_suggestions: suggestionEligible > 0 && applySuggestions,
+        apply_suggestions: deprecation === null && suggestionEligible > 0 && applySuggestions,
+        // Only true when the outdated warning was displayed at the time of the click.
+        acknowledge_deprecated: deprecation !== null,
       },
       { onSuccess: onPublished },
     );
@@ -67,8 +94,8 @@ export function PublishConfirmDialog({ reviewId, mrIid, selected, onClose, onPub
       <Button kind="secondary" onClick={onClose}>
         {t("dialog.cancel")}
       </Button>
-      <Button kind="primary" icon="Upload" loading={create.isPending} onClick={publish}>
-        {t("dialog.publish")}
+      <Button kind="primary" icon="Upload" loading={create.isPending} disabled={refreshing} onClick={publish}>
+        {deprecation ? t("dialog.publishDeprecated") : t("dialog.publish")}
       </Button>
     </div>
   );
@@ -88,9 +115,11 @@ export function PublishConfirmDialog({ reviewId, mrIid, selected, onClose, onPub
             suggestion: bySeverity.SUGGESTION,
           })}
         </div>
-        {general > 0 && <div>{t("dialog.general", { count: general })}</div>}
+        {deprecation === null && general > 0 && <div>{t("dialog.general", { count: general })}</div>}
 
-        {suggestionEligible > 0 && (
+        {deprecation && <OutdatedWarning deprecation={deprecation} plan={plan.data} />}
+
+        {deprecation === null && suggestionEligible > 0 && (
           <div style={s.toggleRow}>
             <Toggle on={applySuggestions} onChange={setApplySuggestions} label={t("dialog.applicable")} />
             <span>{t("dialog.applicable")}</span>

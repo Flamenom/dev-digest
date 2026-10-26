@@ -8,7 +8,13 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { OtherDraftsCount, Publication, PublishPreview, type HostRepoRef } from '@devdigest/shared';
+import {
+  OtherDraftsCount,
+  PublicationWithDeprecation as Publication,
+  PublishPlan,
+  PublishPreviewWithDeprecation as PublishPreview,
+  type HostRepoRef,
+} from '@devdigest/shared';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/platform/config.js';
 import { MockAuthProvider, MockGitLabClient } from '../src/adapters/mocks.js';
@@ -101,6 +107,10 @@ function fakeStore() {
         hasSummary: input.hasSummary,
         applySuggestions: input.applySuggestions,
         diffHeadSha: null,
+        deprecated: false,
+        deprecationReason: null,
+        reviewedVersionFound: null,
+        positionFallbacks: 0,
         bulkPublishSentAt: null,
         createdAt: now,
         updatedAt: now,
@@ -121,6 +131,7 @@ function fakeStore() {
       records.set(record.id, record);
       return record;
     },
+    setStartDecision: async () => undefined,
     deletePublication: async (id) => void records.delete(id),
     getPublication: async (ws, id) => (ws === WS ? (records.get(id) ?? null) : null),
     listForReview: async (ws, reviewId) =>
@@ -213,6 +224,7 @@ describe('publish routes (hermetic, local mode)', () => {
     for (const url of [
       `/reviews/${FOREIGN_REVIEW}/publish-preview`,
       `/reviews/${FOREIGN_REVIEW}/publish-other-drafts`,
+      `/reviews/${FOREIGN_REVIEW}/publish-plan?finding_ids=${F1}`,
       `/reviews/${FOREIGN_REVIEW}/publications`,
       `/publications/${FOREIGN_REVIEW}`,
     ]) {
@@ -263,6 +275,53 @@ describe('publish routes (hermetic, local mode)', () => {
 
     const one = await h.app.inject({ method: 'GET', url: `/publications/${PUB}` });
     expect(one.statusCode).toBe(200);
-    expect(Publication.parse(one.json()).status).toBe('in_progress');
+    const parsedOne = Publication.parse(one.json());
+    expect(parsedOne).toMatchObject({ status: 'in_progress', deprecated: false, deprecation_reason: null, position_fallbacks: 0 });
+  });
+
+  it('GET /reviews/:id/publish-plan → PublishPlan from GETs only; a malformed selection → 400 publish_selection_invalid (outdated-findings AC-21)', async () => {
+    const res = await h.app.inject({ method: 'GET', url: `/reviews/${REVIEW}/publish-plan?finding_ids=${F1}` });
+    expect(res.statusCode).toBe(200);
+    expect(PublishPlan.parse(res.json())).toEqual({
+      other_drafts: 0,
+      plan_available: true,
+      deprecation: null,
+      placement: { positioned: 1, general: 0 },
+    });
+    expect(h.host.calls.map((c) => c.kind).sort()).toEqual(['diff_refs', 'draft_notes']);
+    expect(h.host.draftWrites).toEqual([]);
+
+    h.host.calls = [];
+    for (const qs of ['', '?finding_ids=nope', `?finding_ids=${F1},${F1}`]) {
+      const bad = await h.app.inject({ method: 'GET', url: `/reviews/${REVIEW}/publish-plan${qs}` });
+      expect(bad.statusCode, qs).toBe(400);
+      expect(bad.json().error.code).toBe('publish_selection_invalid');
+    }
+    expect(h.host.calls).toEqual([]);
+  });
+
+  it('a moved head: POST without the flag → 409 review_diff_outdated; with it → 202 deprecated, and the preview serialises `deferred` anchors', async () => {
+    h.host.opts.diffRefs = { [IID]: { headSha: 'newhead' } };
+    const refused = await h.app.inject({ method: 'POST', url: `/reviews/${REVIEW}/publications`, payload: { finding_ids: [F1] } });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error.code).toBe('review_diff_outdated');
+    const ok = await h.app.inject({
+      method: 'POST',
+      url: `/reviews/${REVIEW}/publications`,
+      payload: { finding_ids: [F1], acknowledge_deprecated: true },
+    });
+    expect(ok.statusCode).toBe(202);
+    expect(Publication.parse(ok.json())).toMatchObject({ deprecated: true, deprecation_reason: 'head_moved' });
+
+    CTX.pr.headSha = 'newhead';
+    try {
+      const pv = await h.app.inject({ method: 'GET', url: `/reviews/${REVIEW}/publish-preview` });
+      expect(pv.statusCode).toBe(200);
+      const preview = PublishPreview.parse(pv.json());
+      expect(preview.deprecation).toEqual({ reason: 'head_moved', reviewed_head_sha: HEAD });
+      expect(preview.findings[0]!.anchor.kind).toBe('deferred');
+    } finally {
+      CTX.pr.headSha = HEAD;
+    }
   });
 });

@@ -1,7 +1,15 @@
 /**
  * The background publish algorithm (spec `specs/2026-10-21-gitlab-publish-findings.md`,
- * AC-12 refs use, AC-13, AC-23 – AC-33, AC-41, AC-42; plan T8). Application
- * ring: no Container, no Fastify, no Drizzle.
+ * AC-12 refs use, AC-13, AC-23 – AC-33, AC-41, AC-42; plan T8), extended for
+ * deprecated runs (spec `specs/2026-10-23-gitlab-publish-outdated-findings.md`,
+ * AC-6 – AC-12, AC-14 – AC-17, AC-25 – AC-28; plan T8). Application ring: no
+ * Container, no Fastify, no Drizzle.
+ *
+ * Anchor source (decided once by the service, never re-read here — AC-28):
+ * `persisted` = the service's anchors + live refs (base, byte-identical);
+ * `reviewed_version` = step 0 looks up the reviewed MR diff version and plans
+ * against it with the version's own SHAs (AC-6, AC-7); `none` = every finding
+ * general (AC-9).
  *
  * Write rules (the duplicate / stray-draft guarantees):
  * - a draft create or `bulk_publish` is NEVER re-sent after an `unconfirmed`
@@ -15,6 +23,7 @@
 import type {
   FindingCategory,
   GitLabDiffRefs,
+  GitLabDiffVersionsHost,
   GitLabDraftNotesHost,
   GitLabDraftPosition,
   GitLabWriteFailure,
@@ -24,7 +33,8 @@ import type {
   WaitBudget,
 } from '@devdigest/shared';
 import { parseMarker, buildMarker } from '../_shared/publish-marker.js';
-import { compareForSend, singleLineFallback, type PlannedAnchor } from './anchor.js';
+import { compareForSend, generalAnchor, singleLineFallback, type PlannedAnchor } from './anchor.js';
+import { planAnchors, resolveReviewedVersion, type PlanAnchorSource } from './anchor-source.js';
 import { PUBLISH_MESSAGES, PUBLISH_UNCONFIRMED_MESSAGE, failureToPublicationCode } from './codes.js';
 import {
   composeFindingNote,
@@ -34,8 +44,12 @@ import {
   type NoteFinding,
 } from './note-body.js';
 import type {
+  AnchorSource,
   FinishPublicationPatch,
+  MarkItemDraftedOptions,
+  PublicationItemAnchorKind,
   PublishAudit,
+  PublishDeprecationState,
   PublishClock,
   PublishFindingRow,
   PublishLogger,
@@ -56,8 +70,25 @@ import {
 
 export interface PublishRunItem {
   finding: PublishFindingRow;
-  /** Planned against the persisted MR diff (AC-9 – AC-11). */
+  /**
+   * Planned against the persisted MR diff (AC-9 – AC-11) when `anchorSource` is
+   * `persisted`; null = decided in the background (step 0) for `reviewed_version`
+   * / `none` (outdated-findings AC-6, AC-9, AC-11).
+   */
+  anchor: PlannedAnchor | null;
+}
+
+/** An item after step 0: its anchor is final. */
+interface ResolvedRunItem {
+  finding: PublishFindingRow;
   anchor: PlannedAnchor;
+}
+
+/** The anchors + refs every create of this run uses — fixed after step 0 (AC-28). */
+interface ResolvedRun {
+  items: ResolvedRunItem[];
+  /** The live refs (persisted) or the reviewed version's own SHAs (AC-7). */
+  refs: GitLabDiffRefs;
 }
 
 /** Everything one background publish needs; built by the service after its synchronous checks. */
@@ -72,12 +103,16 @@ export interface PublishRunInput {
   iid: number;
   /** Project web URL (no trailing slash needed). */
   webUrl: string;
-  /** The diff refs read synchronously before the 202 (AC-12); every positioned draft uses them. */
+  /**
+   * The live diff refs read synchronously before the 202 (AC-12). Positions use
+   * them only for `anchorSource: 'persisted'`; a version-anchored run uses the
+   * version's SHAs instead (outdated-findings AC-7).
+   */
   refs: GitLabDiffRefs;
   /** The token user — only its notes are matched by marker (AC-24). */
   serviceAccount: string;
   /** The gated client resolved by the service (never re-resolved here). */
-  host: GitLabDraftNotesHost;
+  host: GitLabDraftNotesHost & GitLabDiffVersionsHost;
   items: PublishRunItem[];
   /** Raw user summary (validated); null when none. Never logged. */
   summary: string | null;
@@ -86,6 +121,15 @@ export interface PublishRunInput {
   footerName: string | null;
   /** Shared 429 wait budget of this publication (AC-28). */
   budget: WaitBudget;
+  /**
+   * Decided once at publish start (outdated-findings AC-3, AC-28): null = not
+   * deprecated (base bodies, no AC-12 fallback).
+   */
+  deprecation: PublishDeprecationState | null;
+  /** Where the anchors come from (plan "Anchor-source decision"). */
+  anchorSource: AnchorSource;
+  /** The review's `head_sha` — the head the reviewed version is looked up by (AC-6). */
+  reviewHeadSha: string | null;
 }
 
 export interface PublishExecutorDeps {
@@ -102,6 +146,8 @@ interface DraftedItem {
   findingId: string;
   anchorKind: PublishAnchorKind;
   applicable: boolean;
+  /** Drafted by the AC-12 general re-send. */
+  fallback: boolean;
 }
 
 interface RunState {
@@ -112,6 +158,8 @@ interface RunState {
   /** A create answered `unconfirmed` (its draft may have landed). */
   uncertainCreate: boolean;
   otherDrafts: number;
+  /** null when no version lookup happened (AC-25). */
+  reviewedVersionFound: boolean | null;
 }
 
 function toNoteFinding(f: PublishFindingRow): NoteFinding {
@@ -161,7 +209,14 @@ export class PublishExecutor {
 
   /** Runs one publication to a terminal (or `unconfirmed`) state. Never throws. */
   async run(input: PublishRunInput): Promise<void> {
-    const state: RunState = { wrote: false, drafted: [], failed: [], uncertainCreate: false, otherDrafts: 0 };
+    const state: RunState = {
+      wrote: false,
+      drafted: [],
+      failed: [],
+      uncertainCreate: false,
+      otherDrafts: 0,
+      reviewedVersionFound: null,
+    };
     try {
       await this.execute(input, state);
     } catch (err) {
@@ -185,6 +240,10 @@ export class PublishExecutor {
   private async execute(input: PublishRunInput, state: RunState): Promise<void> {
     const { store } = this.deps;
     const { host, repoRef, iid, publicationId, workspaceId } = input;
+
+    // 0. Anchor source (outdated-findings AC-6 – AC-11). Fixed from here on (AC-28).
+    const run = await this.resolveRun(input, state);
+    if (!run) return;
 
     // 1. Existing drafts (AC-23).
     let existing: { id: number; note: string }[];
@@ -234,9 +293,9 @@ export class PublishExecutor {
     await store.setOtherDrafts(publicationId, state.otherDrafts);
 
     // 2. One draft per finding, in send order (AC-25).
-    const ordered = [...input.items].sort((a, b) => compareForSend(a.finding, b.finding));
+    const ordered = [...run.items].sort((a, b) => compareForSend(a.finding, b.finding));
     for (const item of ordered) {
-      const stop = await this.createOne(input, state, item);
+      const stop = await this.createOne(input, state, item, run.refs);
       if (stop) {
         await this.rollback(input, state, stop);
         return;
@@ -255,7 +314,7 @@ export class PublishExecutor {
     const result = await host.bulkPublishDraftNotes(
       repoRef,
       iid,
-      { note: input.summary != null ? composeSummary(input.summary, input.footerName) : null },
+      { note: input.summary != null ? composeSummary(input.summary, input.footerName, input.deprecation) : null },
       { waitBudget: input.budget },
     );
     if (result.ok) {
@@ -269,8 +328,74 @@ export class PublishExecutor {
     await this.rollback(input, state, bulkFailureCode(result.failure));
   }
 
-  /** Creates one draft (with the AC-13 single-line re-send). Returns a stop code, or null to continue. */
-  private async createOne(input: PublishRunInput, state: RunState, item: PublishRunItem): Promise<PublishErrorCode | null> {
+  /**
+   * Step 0: the final anchors and refs of this run. `persisted` keeps the
+   * service's anchors and the live refs (base). `reviewed_version` reads the
+   * versions list + one version diff (AC-6); `none` reads nothing (AC-9).
+   * Returns null when the publication already ended (`fatal`, AC-8): 0 writes,
+   * items rolled back, no audit.
+   */
+  private async resolveRun(input: PublishRunInput, state: RunState): Promise<ResolvedRun | null> {
+    if (input.anchorSource === 'persisted') {
+      return {
+        // A persisted run always carries its anchors; null is not expected (defensive general).
+        items: input.items.map((i) => ({
+          finding: i.finding,
+          anchor: i.anchor ?? generalAnchor(i.finding, 'not_on_diff_line'),
+        })),
+        refs: input.refs,
+      };
+    }
+
+    const findings = input.items.map((i) => i.finding);
+    let source: PlanAnchorSource;
+    let refs = input.refs;
+    if (input.anchorSource === 'reviewed_version' && input.reviewHeadSha != null) {
+      const resolved = await resolveReviewedVersion(
+        input.host,
+        input.repoRef,
+        input.iid,
+        input.reviewHeadSha,
+        this.deps.log,
+      );
+      if (resolved.kind === 'fatal') {
+        // AC-8: no access — nothing was written; release the findings (selectable again).
+        await this.deps.store.markItemsRolledBack(input.publicationId, findings.map((f) => f.id));
+        await this.finalize(input, state, this.failedPatch(state, resolved.code));
+        return null;
+      }
+      state.reviewedVersionFound = resolved.kind === 'found';
+      if (resolved.kind === 'found') refs = resolved.refs; // AC-7: the version's SHAs, never the live refs
+      source = resolved;
+    } else {
+      source = { kind: 'none' };
+    }
+
+    const planned = planAnchors(findings, source);
+    const items: ResolvedRunItem[] = findings.map((f) => ({
+      finding: f,
+      anchor: planned.get(f.id) ?? generalAnchor(f, 'reviewed_version_unavailable'),
+    }));
+    const kinds: PublicationItemAnchorKind[] = items.map((i) => ({ findingId: i.finding.id, anchorKind: i.anchor.kind }));
+    await this.deps.store.setAnchorResolution(input.publicationId, {
+      reviewedVersionFound: state.reviewedVersionFound,
+      items: kinds,
+      diffHeadSha: source.kind === 'found' ? refs.headSha : null,
+    });
+    return { items, refs };
+  }
+
+  /**
+   * Creates one draft: the AC-13 single-line re-send, then — deprecated runs only —
+   * one AC-12 general re-send after a definitive 400/422. At most 3 creates.
+   * Returns a stop code, or null to continue.
+   */
+  private async createOne(
+    input: PublishRunInput,
+    state: RunState,
+    item: ResolvedRunItem,
+    refs: GitLabDiffRefs,
+  ): Promise<PublishErrorCode | null> {
     const { store } = this.deps;
     const { host, repoRef, iid, publicationId } = input;
     const finding = toNoteFinding(item.finding);
@@ -284,22 +409,24 @@ export class PublishExecutor {
       applySuggestion: input.applySuggestions,
       marker,
       footerName: input.footerName,
+      deprecation: input.deprecation,
     };
 
-    const send = async (anchor: PlannedAnchor, note: ComposedNote) => {
+    const send = async (anchor: PlannedAnchor, note: ComposedNote, opts?: MarkItemDraftedOptions) => {
       state.wrote = true;
       const res = await host.createDraftNote(
         repoRef,
         iid,
-        { note: note.body, position: toDraftPosition(anchor, input.refs) },
+        { note: note.body, position: toDraftPosition(anchor, refs) },
         { waitBudget: input.budget },
       );
       if (res.ok) {
-        await store.markItemDrafted(publicationId, item.finding.id, res.value.id);
+        await store.markItemDrafted(publicationId, item.finding.id, res.value.id, opts);
         state.drafted.push({
           findingId: item.finding.id,
           anchorKind: anchor.kind,
           applicable: note.suggestionApplicable,
+          fallback: opts?.positionFallback === true,
         });
       } else if (res.failure.kind === 'unconfirmed') {
         state.uncertainCreate = true;
@@ -310,6 +437,7 @@ export class PublishExecutor {
     const first = await send(item.anchor, composeFindingNote({ ...base, anchor: item.anchor }));
     if (first.ok) return null;
     if (first.failure.kind !== 'rejected') return failureToPublicationCode(first.failure);
+    let lastStatus = first.failure.status;
 
     if (item.anchor.kind === 'multi_line' && first.failure.status === 400) {
       // AC-13: one single-line re-send at `end`; a range-dependent suggestion is downgraded.
@@ -317,6 +445,23 @@ export class PublishExecutor {
       const second = await send(fallback, downgradeForSingleLine({ ...base, anchor: fallback }));
       if (second.ok) return null;
       if (second.failure.kind !== 'rejected') return failureToPublicationCode(second.failure);
+      lastStatus = second.failure.status;
+    }
+
+    if (
+      input.deprecation != null &&
+      item.anchor.kind !== 'general' &&
+      (lastStatus === 400 || lastStatus === 422)
+    ) {
+      // Outdated-findings AC-12: one general re-send (same marker) after a definitive
+      // position rejection. Never after `unconfirmed` — handled above.
+      const general = generalAnchor(item.finding, 'position_rejected');
+      const third = await send(general, composeFindingNote({ ...base, anchor: general }), {
+        anchorKind: 'general',
+        positionFallback: true,
+      });
+      if (third.ok) return null;
+      if (third.failure.kind !== 'rejected') return failureToPublicationCode(third.failure);
     }
 
     // AC-29: a definitive per-finding rejection — fail this finding, continue.
@@ -475,6 +620,7 @@ export class PublishExecutor {
       generalNotes: facts.filter((d) => d.anchorKind === 'general').length,
       applicableSuggestions: facts.filter((d) => d.applicable).length,
       otherDraftsPublished: facts.length > 0 ? state.otherDrafts : 0,
+      positionFallbacks: facts.filter((d) => d.fallback).length,
     };
   }
 
@@ -503,6 +649,10 @@ export class PublishExecutor {
       otherDraftsPublished: c.otherDraftsPublished ?? 0,
       applicableSuggestions: c.applicableSuggestions ?? 0,
       hasSummary: input.summary != null,
+      deprecated: input.deprecation != null,
+      deprecationReason: input.deprecation?.reason ?? null,
+      reviewedVersionFound: state.reviewedVersionFound,
+      positionFallbacks: c.positionFallbacks ?? 0,
     });
   }
 }

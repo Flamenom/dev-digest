@@ -2,17 +2,19 @@
    GitLab + Member + a publishable preview → per-finding checkboxes and the
    "Publish N to GitLab" button; a reload while a publication runs resumes its
    progress from server state with the selection frozen; `viewer_can_publish:
-   false` hides every publish affordance. */
+   false` hides every publish affordance. An outdated run (spec 2026-10-23,
+   AC-20, AC-22) shows the non-blocking deprecation notice, keeps Publish
+   enabled and described by it, and the dialog opens with the warning. */
 import React from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { screen, cleanup, waitFor } from "@testing-library/react";
+import { screen, cleanup, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { FindingRecord, ReviewRecordWithActor } from "@devdigest/shared";
 import type { PublishPreview } from "@/lib/types";
 import type { HostLinkRepo } from "@/lib/host-urls";
 import { renderWithProviders, sessionFor } from "@/test/render-with-providers";
 import { FindingHostProvider } from "../FindingCard";
-import { previewEntry, publication } from "../PublishFindings/test-fixtures";
+import { deprecatedPreview, previewEntry, publication, publishPlan } from "../PublishFindings/test-fixtures";
 import { ReviewRunAccordion } from "./ReviewRunAccordion";
 
 vi.mock("next/navigation", () => ({
@@ -143,5 +145,42 @@ describe("ReviewRunAccordion — publish to GitLab", () => {
     // Let the preview resolve before asserting absence.
     await waitFor(() => expect(screen.queryByRole("button", { name: /to GitLab$/ })).not.toBeInTheDocument());
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  it("head_moved preview → non-blocking notice, Publish stays enabled, the dialog warns and confirms as deprecated", async () => {
+    const user = userEvent.setup();
+    renderAccordion({
+      "GET /reviews/:id/publish-preview": deprecatedPreview("head_moved", [F1, F2]),
+      "GET /reviews/:id/publish-plan": publishPlan(),
+    });
+
+    const notice = await screen.findByText(/This review ran on `abcdef12`; the MR has changed since\./);
+    expect(screen.getByRole("button", { name: "Re-run review" })).toBeInTheDocument();
+    // Selection stays enabled while deprecated (AC-20).
+    await user.click(screen.getByRole("checkbox", { name: /^Select Unchecked input/ }));
+    const button = screen.getByRole("button", { name: "Publish 1 to GitLab" });
+    expect(button).not.toHaveAttribute("aria-disabled");
+    const noticeEl = notice.closest("[role='note']");
+    expect(noticeEl).not.toBeNull();
+    expect(button).toHaveAttribute("aria-describedby", noticeEl!.id);
+
+    await user.click(button);
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Outdated review")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Publish as deprecated" })).toBeInTheDocument();
+  });
+
+  it("head_unknown preview → the head-unknown notice text", async () => {
+    renderAccordion({ "GET /reviews/:id/publish-preview": deprecatedPreview("head_unknown", [F1, F2]) });
+
+    expect(
+      await screen.findByText(
+        "This review predates commit tracking. Findings will be published as deprecated general comments.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Publish 0 to GitLab" })).toHaveAttribute(
+      "aria-describedby",
+      "publish-deprecation-rev-1",
+    );
   });
 });

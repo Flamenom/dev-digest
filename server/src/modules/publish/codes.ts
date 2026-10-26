@@ -11,13 +11,18 @@ import type {
 } from '@devdigest/shared';
 import { AppError } from '../../platform/errors.js';
 
-/** AC-4 — exact spec text. */
-export const REVIEW_HEAD_UNKNOWN_MESSAGE =
-  'This review predates publish support — re-run the review to publish its findings.';
+/**
+ * Outdated-findings spec AC-4 — exact text of the 409 for a deprecated publish
+ * sent without `acknowledge_deprecated: true` (both head codes).
+ */
+export const DEPRECATED_NOT_ACKNOWLEDGED_MESSAGE =
+  'This review is outdated — confirm publishing its findings as deprecated.';
 
-/** AC-5 / AC-12 — exact spec text. */
-export const REVIEW_DIFF_OUTDATED_MESSAGE =
-  'New commits were pushed since this review — re-run the review to publish.';
+/** `review_head_unknown` message — kept as an alias (still imported by tests). */
+export const REVIEW_HEAD_UNKNOWN_MESSAGE = DEPRECATED_NOT_ACKNOWLEDGED_MESSAGE;
+
+/** `review_diff_outdated` message — kept as an alias (still imported by tests). */
+export const REVIEW_DIFF_OUTDATED_MESSAGE = DEPRECATED_NOT_ACKNOWLEDGED_MESSAGE;
 
 /** AC-33 — exact spec text. */
 export const PUBLISH_UNCONFIRMED_MESSAGE =

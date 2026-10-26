@@ -1,11 +1,16 @@
 /* FindingPublishControl (AC-36): reason text for unpublishable findings, the
-   off-diff label, and the published state with a safe-only GitLab link. */
+   off-diff label, and the published state with a safe-only GitLab link.
+   Outdated runs (spec 2026-10-23): the deferred-anchor label on a FindingCard
+   addon (AC-19) and "Published as deprecated by …" (AC-24). */
 import React from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "@/test/render-with-providers";
-import { previewEntry } from "../test-fixtures";
+import type { FindingRecord } from "@devdigest/shared";
+import type { PublishPreviewFindingWithDeprecation } from "@/lib/types";
+import { deferredEntry, previewEntry } from "../test-fixtures";
+import { FindingPublishAddon, FindingPublishProvider } from "../FindingPublishAddon";
 import { FindingPublishControl } from "./FindingPublishControl";
 
 vi.mock("next/navigation", () => ({
@@ -103,5 +108,41 @@ describe("FindingPublishControl", () => {
       expect(scope.getByText("Published — link unavailable")).toBeInTheDocument();
     }
     expect(screen.getAllByRole("link")).toHaveLength(1);
+  });
+
+  it("FindingCard addon with a deferred anchor: labelled checkbox + the placement-decided-at-publish label", async () => {
+    const user = userEvent.setup();
+    const onToggle = vi.fn();
+    const entries = new Map<string, PublishPreviewFindingWithDeprecation>([["f7", deferredEntry("f7")]]);
+    renderWithProviders(
+      <FindingPublishProvider value={{ entries, isSelected: () => false, onToggle, disabled: false }}>
+        <FindingPublishAddon finding={{ id: "f7", title: "Race condition" } as FindingRecord} />
+      </FindingPublishProvider>,
+    );
+
+    const box = screen.getByRole("checkbox", { name: "Select Race condition (src/app.ts:10–12)" });
+    expect(screen.getByText("Placement decided at publish (outdated review)")).toBeInTheDocument();
+    expect(screen.queryByText("Posts as a general MR comment (not on a changed line)")).not.toBeInTheDocument();
+    await user.click(box);
+    expect(onToggle).toHaveBeenCalledWith("f7");
+  });
+
+  it("published by a deprecated publication: 'Published as deprecated by …' + View on GitLab", () => {
+    renderWithProviders(
+      <FindingPublishControl
+        entry={deferredEntry("f8", {
+          publishable: false,
+          reason: "already_published",
+          published: { ...PUBLISHED, deprecated: true },
+        })}
+        title="Bug"
+        checked={false}
+        onToggle={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/^Published as deprecated by Ann Admin · /)).toBeInTheDocument();
+    expect(screen.queryByText(/^Published by /)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View on GitLab" })).toHaveAttribute("href", PUBLISHED.url);
   });
 });

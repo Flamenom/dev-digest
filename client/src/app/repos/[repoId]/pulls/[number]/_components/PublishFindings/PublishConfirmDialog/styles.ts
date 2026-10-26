@@ -29,6 +29,8 @@ export const s = {
     lineHeight: 1.45,
   } satisfies CSSProperties,
   warningIcon: { flexShrink: 0, marginTop: 2, color: "var(--warn)" } satisfies CSSProperties,
+  warningBody: { display: "flex", flexDirection: "column", gap: 4 } satisfies CSSProperties,
+  warningHeading: { fontWeight: 600, color: "var(--text-primary)" } satisfies CSSProperties,
   field: { display: "flex", flexDirection: "column", gap: 6 } satisfies CSSProperties,
   label: { fontWeight: 550, color: "var(--text-primary)" } satisfies CSSProperties,
   textarea: {

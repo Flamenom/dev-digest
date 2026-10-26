@@ -2,14 +2,15 @@
  * Pure: plan where each finding's GitLab note lands (spec AC-9 – AC-11, AC-13,
  * AC-25). No I/O.
  *
- * Anchors are decided ONLY against the persisted GitLab MR diff (`pr_files`),
- * never the review's local diff (AC-9). New-side lines = added (`+`) and
+ * Anchors are decided against a GitLab MR diff — the persisted one (`pr_files`)
+ * or, for an outdated run, the reviewed MR diff version (outdated-findings
+ * AC-6, via `anchor-source.ts`) — never the review's local diff (AC-9). New-side lines = added (`+`) and
  * context (` `) lines; removed (`-`) lines have no new-side number.
  *
  * A small local hunk walker on purpose (plan Rec4): `pulls/comment-position.ts`
  * is a sibling module, and `adapters/git/diff-parser.ts` is an outer ring.
  */
-import type { OffDiffReason, PublishAnchor, Severity } from '@devdigest/shared';
+import type { OffDiffReasonAll, PublishAnchorWithDeprecation, Severity } from '@devdigest/shared';
 import type { PersistedFileLike } from './ports.js';
 
 // ---------- Types ----------
@@ -71,7 +72,7 @@ export interface GeneralAnchor {
   path: string;
   startLine: number;
   endLine: number;
-  offDiffReason: OffDiffReason;
+  offDiffReason: OffDiffReasonAll;
   allAdded: false;
   anchorIsAdded: false;
 }
@@ -143,7 +144,7 @@ function general(
   path: string,
   startLine: number,
   endLine: number,
-  offDiffReason: OffDiffReason,
+  offDiffReason: OffDiffReasonAll,
 ): GeneralAnchor {
   return { kind: 'general', path, startLine, endLine, offDiffReason, allAdded: false, anchorIsAdded: false };
 }
@@ -245,8 +246,34 @@ export function singleLineFallback(anchor: PlannedAnchor): PlannedAnchor {
   };
 }
 
+/**
+ * A general (unpositioned) anchor over the finding's normalised range. Used
+ * for `review_head_unknown`, `reviewed_version_unavailable`, `position_rejected`
+ * and as the AC-18 worst-case bound anchor of a deferred finding.
+ */
+export function generalAnchor(finding: AnchorableFinding, reason: OffDiffReasonAll): GeneralAnchor {
+  const lo = Math.min(finding.start_line, finding.end_line);
+  const hi = Math.max(finding.start_line, finding.end_line);
+  return general(finding.file, lo, hi, reason);
+}
+
+/**
+ * Preview anchor of a finding whose placement is decided at publish, against
+ * the reviewed MR diff version (outdated-findings AC-19). Not a `PlannedAnchor`
+ * variant: "deferred" is a preview / item state, not a placement.
+ */
+export function deferredPublishAnchor(finding: AnchorableFinding): PublishAnchorWithDeprecation {
+  return {
+    kind: 'deferred',
+    path: finding.file,
+    start_line: Math.min(finding.start_line, finding.end_line),
+    end_line: Math.max(finding.start_line, finding.end_line),
+    off_diff_reason: null,
+  };
+}
+
 /** The contract projection of a planned anchor (preview `anchor`, AC-2). */
-export function toPublishAnchor(anchor: PlannedAnchor): PublishAnchor {
+export function toPublishAnchor(anchor: PlannedAnchor): PublishAnchorWithDeprecation {
   return {
     kind: anchor.kind,
     path: anchor.path,

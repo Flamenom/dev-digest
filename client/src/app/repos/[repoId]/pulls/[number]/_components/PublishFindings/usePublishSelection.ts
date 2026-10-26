@@ -6,7 +6,10 @@
 "use client";
 
 import { useState } from "react";
-import type { PublishPreviewFinding } from "@/lib/types";
+import type { PublishPreviewFindingWithDeprecation } from "@/lib/types";
+
+/** A preview entry — base or deprecated-aware (only id + publishable are read). */
+type PublishPreviewFinding = PublishPreviewFindingWithDeprecation;
 import { selectionState, type SelectionState } from "./helpers";
 
 export interface PublishSelection {

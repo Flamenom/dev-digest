@@ -7,7 +7,12 @@
    wraps its body (`children`) in a `FindingPublishProvider`, read by each
    card's `FindingPublishAddon`. Until the preview loads — or when the viewer
    may not publish (AC-40) — there is no provider and the body renders exactly
-   as before. */
+   as before.
+
+   Outdated runs (spec 2026-10-23-gitlab-publish-outdated-findings, AC-20,
+   AC-22, AC-23): the preview's `deprecation` (derived, never stored) shows
+   the non-blocking `PublishDeprecationNotice`, describes the still-enabled
+   Publish button, and is handed to the confirm dialog as its fallback. */
 "use client";
 
 import React, { useState } from "react";
@@ -26,13 +31,17 @@ import {
   FindingPublishProvider,
   PublishBlockerNotice,
   PublishConfirmDialog,
+  PublishDeprecationNotice,
   PublishProgress,
   PublishToolbar,
   primaryBlocker,
   publishBlockerNoticeId,
+  publishDeprecationNoticeId,
   selectedFindings,
   usePublishSelection,
 } from "../../../PublishFindings";
+// Not re-exported by the PublishFindings barrel.
+import { previewDeprecation } from "../../../PublishFindings/helpers";
 import { s } from "./styles";
 
 export interface ReviewPublishSectionProps {
@@ -68,6 +77,8 @@ export function ReviewPublishSection({ review, prId, children }: ReviewPublishSe
     !!blocker && !(blocker.code === "publish_in_progress" && running && blocker.publication_id === publication?.id);
   const busy = running || blocker?.code === "publish_in_progress";
   const noticeId = publishBlockerNoticeId(review.id);
+  const deprecation = previewDeprecation(data);
+  const deprecationNoticeId = publishDeprecationNoticeId(review.id);
   const entries = new Map(data.findings.map((e) => [e.finding_id, e]));
   const titleById = new Map(review.findings.map((f) => [f.id, f.title]));
   const mrUrl = host?.repo && data.mr_iid != null ? hostPrUrl(host.repo, data.mr_iid) : null;
@@ -98,6 +109,14 @@ export function ReviewPublishSection({ review, prId, children }: ReviewPublishSe
         {showBlocker && blocker && (
           <PublishBlockerNotice id={noticeId} blocker={blocker} onRerun={onRerun} rerunPending={rerun.isPending} />
         )}
+        {deprecation && (
+          <PublishDeprecationNotice
+            id={deprecationNoticeId}
+            deprecation={deprecation}
+            onRerun={onRerun}
+            rerunPending={rerun.isPending}
+          />
+        )}
         <PublishToolbar
           state={sel.state}
           count={sel.count}
@@ -105,6 +124,7 @@ export function ReviewPublishSection({ review, prId, children }: ReviewPublishSe
           onToggleAll={sel.toggleAll}
           onPublish={openDialog}
           blockerNoticeId={showBlocker ? noticeId : null}
+          noticeId={deprecation ? deprecationNoticeId : null}
           busy={busy}
         />
       </div>
@@ -121,6 +141,7 @@ export function ReviewPublishSection({ review, prId, children }: ReviewPublishSe
           onClose={() => setDialogOpen(false)}
           onPublished={onPublished}
           onRerun={onRerun}
+          previewDeprecation={deprecation}
         />
       )}
     </>

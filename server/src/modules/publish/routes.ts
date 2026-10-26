@@ -1,7 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { OtherDraftsCount, Publication, PublishPreview } from '@devdigest/shared';
+import {
+  OtherDraftsCount,
+  PublicationWithDeprecation,
+  PublishPlan,
+  PublishPreviewWithDeprecation,
+} from '@devdigest/shared';
 import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
 import { lookupPolicy, roleSatisfies } from '../../platform/auth/route-policy.js';
@@ -13,6 +18,7 @@ import { lookupPolicy, roleSatisfies } from '../../platform/auth/route-policy.js
  *
  *   GET  /reviews/:id/publish-preview       → PublishPreview (0 GitLab requests, AC-2)
  *   GET  /reviews/:id/publish-other-drafts  → OtherDraftsCount (one list read, AC-38)
+ *   GET  /reviews/:id/publish-plan          → PublishPlan (live reads only, outdated-findings AC-21)
  *   POST /reviews/:id/publications          → 202 Publication (in progress, AC-21)
  *   GET  /reviews/:id/publications          → Publication[] (newest first)
  *   GET  /publications/:id                  → Publication
@@ -29,7 +35,7 @@ export default async function publishRoutes(appBase: FastifyInstance) {
 
   app.get(
     '/reviews/:id/publish-preview',
-    { schema: { params: IdParams, response: { 200: PublishPreview } } },
+    { schema: { params: IdParams, response: { 200: PublishPreviewWithDeprecation } } },
     async (req) => {
       const { workspaceId, role } = await getContext(container, req);
       // Q6: the client's publish affordance follows the SAME table row the guard
@@ -48,11 +54,22 @@ export default async function publishRoutes(appBase: FastifyInstance) {
     },
   );
 
+  // NO querystring schema: the service parses `finding_ids` with `PublishPlanQuery`
+  // so a malformed selection answers `publish_selection_invalid` like the publish.
+  app.get(
+    '/reviews/:id/publish-plan',
+    { schema: { params: IdParams, response: { 200: PublishPlan } } },
+    async (req) => {
+      const { workspaceId } = await getContext(container, req);
+      return container.publishService.publishPlan(workspaceId, req.params.id, req.query);
+    },
+  );
+
   // NO body schema: the service parses the body so AC-20's validation ORDER
   // (review → selection → summary → blockers → findings) and codes hold.
   app.post(
     PUBLISH_ROUTE.url,
-    { schema: { params: IdParams, response: { 202: Publication } } },
+    { schema: { params: IdParams, response: { 202: PublicationWithDeprecation } } },
     async (req, reply) => {
       const { workspaceId, userId } = await getContext(container, req);
       const publication = await container.publishService.create(
@@ -68,7 +85,7 @@ export default async function publishRoutes(appBase: FastifyInstance) {
 
   app.get(
     '/reviews/:id/publications',
-    { schema: { params: IdParams, response: { 200: z.array(Publication) } } },
+    { schema: { params: IdParams, response: { 200: z.array(PublicationWithDeprecation) } } },
     async (req) => {
       const { workspaceId } = await getContext(container, req);
       return container.publishService.listForReview(workspaceId, req.params.id);
@@ -77,7 +94,7 @@ export default async function publishRoutes(appBase: FastifyInstance) {
 
   app.get(
     '/publications/:id',
-    { schema: { params: IdParams, response: { 200: Publication } } },
+    { schema: { params: IdParams, response: { 200: PublicationWithDeprecation } } },
     async (req) => {
       const { workspaceId } = await getContext(container, req);
       return container.publishService.get(workspaceId, req.params.id);

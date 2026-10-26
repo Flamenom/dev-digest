@@ -12,14 +12,15 @@
  * The settle helpers below are shared with the executor's AC-32 path.
  */
 import type {
+  DeprecationReason,
   GitLabDraftNotesHost,
   GitLabMrNote,
   HostRepoRef,
   PublicationStatus,
-  PublishAnchorKind,
+  PublishAnchorKindAll,
   PublishErrorCode,
 } from '@devdigest/shared';
-import { ReviewPublishAuditMetadata } from '@devdigest/shared';
+import { ReviewPublishAuditMetadataWithDeprecation } from '@devdigest/shared';
 import { AppError } from '../../platform/errors.js';
 import { parseMarker } from '../_shared/publish-marker.js';
 import { PUBLISH_MESSAGES, PUBLISH_UNCONFIRMED_MESSAGE } from './codes.js';
@@ -81,7 +82,8 @@ export function matchPublishedNotes(
 export interface SettleItem {
   findingId: string;
   state: 'pending' | 'drafted';
-  anchorKind: PublishAnchorKind;
+  /** `deferred` only when the run stopped before its background anchor resolution (Q7). */
+  anchorKind: PublishAnchorKindAll;
 }
 
 export interface SettleTarget extends PublishScope {
@@ -98,7 +100,7 @@ export type SettleResult =
       kind: 'settled';
       links: PublishedItemLink[];
       /** anchor kinds of the published findings (for `general_notes`). */
-      publishedKinds: PublishAnchorKind[];
+      publishedKinds: PublishAnchorKindAll[];
       rolledBack: string[];
       deletedAny: boolean;
       deleteFailed: boolean;
@@ -145,7 +147,7 @@ export async function settleFromHost(
 
   const landed = found.size > 0;
   const links: PublishedItemLink[] = [];
-  const publishedKinds: PublishAnchorKind[] = [];
+  const publishedKinds: PublishAnchorKindAll[] = [];
   const rolledBack: string[] = [];
   for (const item of items) {
     const note = found.get(item.findingId);
@@ -205,6 +207,12 @@ export interface PublishAuditFacts {
   otherDraftsPublished: number;
   applicableSuggestions: number;
   hasSummary: boolean;
+  /** Outdated-findings AC-26: the run was published as deprecated. */
+  deprecated: boolean;
+  deprecationReason: DeprecationReason | null;
+  /** null when no version lookup happened. */
+  reviewedVersionFound: boolean | null;
+  positionFallbacks: number;
 }
 
 /**
@@ -219,7 +227,8 @@ export async function recordPublishAudit(
 ): Promise<void> {
   if (!audit) return;
   try {
-    const metadata = ReviewPublishAuditMetadata.parse({
+    // Strict: counts, ids and the 4 deprecation facts only — no SHA, body or note id (AC-26).
+    const metadata = ReviewPublishAuditMetadataWithDeprecation.parse({
       provider: 'gitlab',
       publication_id: facts.publicationId,
       pr_id: facts.prId,
@@ -231,6 +240,10 @@ export async function recordPublishAudit(
       other_drafts_published: facts.otherDraftsPublished,
       applicable_suggestions: facts.applicableSuggestions,
       has_summary: facts.hasSummary,
+      deprecated: facts.deprecated,
+      deprecation_reason: facts.deprecationReason,
+      reviewed_version_found: facts.reviewedVersionFound,
+      position_fallbacks: facts.positionFallbacks,
     });
     await audit.record({
       workspaceId: facts.workspaceId,
@@ -392,6 +405,7 @@ export class PublishReconciler {
       generalNotes,
       applicableSuggestions: published > 0 ? Math.min(record.applicableSuggestions, published) : 0,
       otherDraftsPublished: published > 0 ? record.otherDraftsPublished : 0,
+      positionFallbacks: published > 0 ? Math.min(record.positionFallbacks, published) : 0,
     };
     const won = await store.finish(record.id, from, {
       status: outcome.status,
@@ -423,6 +437,10 @@ export class PublishReconciler {
       otherDraftsPublished: counters.otherDraftsPublished ?? 0,
       applicableSuggestions: counters.applicableSuggestions ?? 0,
       hasSummary: record.hasSummary,
+      deprecated: record.deprecated,
+      deprecationReason: record.deprecationReason,
+      reviewedVersionFound: record.reviewedVersionFound,
+      positionFallbacks: counters.positionFallbacks ?? 0,
     });
   }
 }

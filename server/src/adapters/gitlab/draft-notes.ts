@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { GitLabDraftNote, GitLabDraftPosition, GitLabMrNote } from '@devdigest/shared';
+import type { GitLabDraftNote, GitLabDraftPosition, GitLabMrDiffVersion, GitLabMrNote } from '@devdigest/shared';
 import { toApiPosition, type ApiTextPosition, type RestDiscussion } from './discussions.js';
 
 /**
@@ -28,6 +28,20 @@ export interface ApiDraftPosition extends ApiTextPosition {
   line_range?: { start: ApiLineRangeEnd; end: ApiLineRangeEnd };
 }
 
+/** One entry of `GET …/merge_requests/:iid/versions` (only the fields we read). */
+export interface RestDiffVersion {
+  id?: unknown;
+  head_commit_sha?: unknown;
+  base_commit_sha?: unknown;
+  start_commit_sha?: unknown;
+  created_at?: unknown;
+}
+
+/** `GET …/merge_requests/:iid/versions/:id` — the version plus its file diffs. */
+export interface RestDiffVersionDetail extends RestDiffVersion {
+  diffs?: unknown;
+}
+
 const isPositiveInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v > 0;
 
 // ---------- draft notes ----------
@@ -43,6 +57,37 @@ export function mapDraftNotes(raw: readonly (RestDraftNote | null)[] | null | un
   const out: GitLabDraftNote[] = [];
   for (const d of raw ?? []) {
     const mapped = mapDraftNote(d);
+    if (mapped) out.push(mapped);
+  }
+  return out;
+}
+
+// ---------- MR diff versions (outdated-review publish) ----------
+const isSha = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+
+/**
+ * A raw MR diff version → domain version; null when the id is not a positive
+ * integer or any of the three SHAs is not a non-empty string. A non-string
+ * `created_at` becomes `''` (it is informational only).
+ */
+export function mapDiffVersion(raw: RestDiffVersion | null | undefined): GitLabMrDiffVersion | null {
+  if (!raw || typeof raw !== 'object') return null;
+  if (!isPositiveInt(raw.id)) return null;
+  if (!isSha(raw.head_commit_sha) || !isSha(raw.base_commit_sha) || !isSha(raw.start_commit_sha)) return null;
+  return {
+    id: raw.id,
+    headSha: raw.head_commit_sha,
+    baseSha: raw.base_commit_sha,
+    startSha: raw.start_commit_sha,
+    createdAt: typeof raw.created_at === 'string' ? raw.created_at : '',
+  };
+}
+
+/** A raw version list → the well-formed versions, host order kept (malformed entries dropped). */
+export function mapDiffVersions(raw: readonly (RestDiffVersion | null)[] | null | undefined): GitLabMrDiffVersion[] {
+  const out: GitLabMrDiffVersion[] = [];
+  for (const v of raw ?? []) {
+    const mapped = mapDiffVersion(v);
     if (mapped) out.push(mapped);
   }
   return out;

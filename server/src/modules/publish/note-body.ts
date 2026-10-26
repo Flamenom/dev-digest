@@ -9,8 +9,21 @@
  * and `stripAttribution` relies on it being the final line).
  *
  * Length is measured in UTF-16 code units, as in the comments spec (AC-15).
+ *
+ * Deprecated runs (spec `specs/2026-10-23-gitlab-publish-outdated-findings.md`,
+ * AC-14 – AC-18): a deprecated line directly after the header, reason-specific
+ * location-line suffixes, never an applicable suggestion, the deprecated line
+ * at the top of the summary, and a worst-case overhead always counted in the
+ * length bound. A non-deprecated body stays byte-identical to the base (AC-5).
  */
-import type { FindingCategory, FindingKind, Severity, TrifectaEvidence } from '@devdigest/shared';
+import type {
+  DeprecationReason,
+  FindingCategory,
+  FindingKind,
+  OffDiffReasonAll,
+  Severity,
+  TrifectaEvidence,
+} from '@devdigest/shared';
 import { PUBLISH_BODY_MAX_CHARS, PUBLISH_SUGGESTION_MAX_SPAN } from '@devdigest/shared';
 import {
   FOOTER_NAME_MAX,
@@ -50,7 +63,20 @@ export type NoteAnchor =
       /** The anchor line itself is an added line. */
       anchorIsAdded: boolean;
     }
-  | { kind: 'general'; path: string; startLine: number; endLine: number };
+  | {
+      kind: 'general';
+      path: string;
+      startLine: number;
+      endLine: number;
+      /** Picks the AC-15 location-line suffix on a deprecated run; ignored otherwise. */
+      offDiffReason?: OffDiffReasonAll;
+    };
+
+/** A deprecated run (AC-14): why, and the review's `head_sha` (null when unknown). */
+export interface NoteDeprecation {
+  reason: DeprecationReason;
+  reviewedHeadSha: string | null;
+}
 
 export interface ComposeFindingNoteInput {
   finding: NoteFinding;
@@ -61,6 +87,8 @@ export interface ComposeFindingNoteInput {
   marker: string;
   /** Sanitised footer name in google mode; null in local mode (AC-42). */
   footerName: string | null;
+  /** Set for a deprecated run (AC-14 – AC-16); absent / null = base behaviour. */
+  deprecation?: NoteDeprecation | null;
 }
 
 export interface ComposedNote {
@@ -77,6 +105,38 @@ export const SECRET_LEAK_SENTENCE =
  * quotes the credential, so no finding-provided text reaches GitLab.
  */
 export const SECRET_LEAK_TITLE = 'Possible secret detected';
+
+/** Q6: a lowercase-hex commit SHA; anything else falls back to the `head_unknown` wording. */
+const HEX_SHA = /^[0-9a-f]{7,64}$/;
+
+/** AC-14 `head_unknown` wording (also used when the SHA is not lowercase hex). */
+export const DEPRECATED_LINE_HEAD_UNKNOWN =
+  '⚠ Deprecated: the reviewed commit is unknown; the MR may have changed since.';
+
+/**
+ * The AC-14 deprecated line. `head_moved` with a lowercase-hex SHA shows its
+ * first 8 characters in inline code (hex only, so it cannot carry a mention or
+ * a quick action); otherwise the `head_unknown` wording.
+ */
+export function deprecatedLine(dep: NoteDeprecation): string {
+  const sha = dep.reviewedHeadSha;
+  if (dep.reason === 'head_moved' && sha != null && HEX_SHA.test(sha)) {
+    return `⚠ Deprecated: reviewed at \`${sha.slice(0, 8)}\`; the MR has changed since.`;
+  }
+  return DEPRECATED_LINE_HEAD_UNKNOWN;
+}
+
+/** Base AC-14 item 2 suffix — a non-deprecated general note, byte for byte. */
+const BASE_LOCATION_SUFFIX = '(not on a changed line of this MR)';
+
+/** AC-15: the location-line suffix of a deprecated run's general note, per `off_diff_reason`. */
+export const DEPRECATED_LOCATION_SUFFIX: Readonly<Record<OffDiffReasonAll, string>> = {
+  not_on_diff_line: '(not on a changed line of the reviewed version)',
+  patch_unavailable: "(the reviewed version's diff of this file is unavailable)",
+  reviewed_version_unavailable: '(the reviewed version of the diff was not found on GitLab)',
+  review_head_unknown: '(the reviewed commit is unknown)',
+  position_rejected: '(GitLab could not place it on the reviewed version)',
+};
 
 // ---------------------------------------------------------------------------
 // Small text helpers
@@ -203,7 +263,13 @@ function renderPlainSuggestion(suggestion: string): string {
  * Every AC-17 condition EXCEPT the confirm-dialog toggle — the preview's
  * `suggestion_eligible` flag.
  */
-export function suggestionEligibility(finding: NoteFinding, anchor: NoteAnchor): boolean {
+export function suggestionEligibility(
+  finding: NoteFinding,
+  anchor: NoteAnchor,
+  deprecated = false,
+): boolean {
+  // AC-16: never applicable on a deprecated run.
+  if (deprecated) return false;
   if (anchor.kind === 'general') return false;
   if (finding.kind != null && finding.kind !== 'finding') return false;
   if (finding.suggestion == null) return false;
@@ -225,10 +291,24 @@ function headerLine(finding: NoteFinding): string {
   return `**${finding.severity}** · ${finding.category} · ${title}`;
 }
 
-function locationLine(anchor: NoteAnchor): string {
-  const range =
-    anchor.startLine === anchor.endLine ? `${anchor.startLine}` : `${anchor.startLine}–${anchor.endLine}`;
-  return `📍 \`${codeSpanPath(anchor.path)}:${range}\` (not on a changed line of this MR)`;
+function locationLineWith(path: string, startLine: number, endLine: number, suffix: string): string {
+  const range = startLine === endLine ? `${startLine}` : `${startLine}–${endLine}`;
+  return `📍 \`${codeSpanPath(path)}:${range}\` ${suffix}`;
+}
+
+function locationLine(anchor: NoteAnchor & { kind: 'general' }, deprecated: boolean): string {
+  const suffix = deprecated
+    ? DEPRECATED_LOCATION_SUFFIX[anchor.offDiffReason ?? 'not_on_diff_line']
+    : BASE_LOCATION_SUFFIX;
+  return locationLineWith(anchor.path, anchor.startLine, anchor.endLine, suffix);
+}
+
+/** Header line, then (deprecated) the deprecated line, then (general) the location line. */
+function headBlock(finding: NoteFinding, anchor: NoteAnchor, deprecation: NoteDeprecation | null): string {
+  const lines = [headerLine(finding)];
+  if (deprecation != null) lines.push(deprecatedLine(deprecation));
+  if (anchor.kind === 'general') lines.push(locationLine(anchor, deprecation != null));
+  return lines.join('\n');
 }
 
 function finish(blocks: string[], footerName: string | null): string {
@@ -239,7 +319,8 @@ function finish(blocks: string[], footerName: string | null): string {
 /** The AC-14 note body (AC-19 redacted form for `secret_leak`). */
 export function composeFindingNote(input: ComposeFindingNoteInput): ComposedNote {
   const { finding, anchor, marker, footerName } = input;
-  const head = anchor.kind === 'general' ? `${headerLine(finding)}\n${locationLine(anchor)}` : headerLine(finding);
+  const deprecation = input.deprecation ?? null;
+  const head = headBlock(finding, anchor, deprecation);
 
   if (finding.kind === 'secret_leak') {
     // AC-19: the title (fixed header text), rationale, suggestion and evidence are never read.
@@ -253,7 +334,7 @@ export function composeFindingNote(input: ComposeFindingNoteInput): ComposedNote
   let suggestionApplicable = false;
   const suggestion = finding.suggestion?.trim() ? finding.suggestion : null;
   if (suggestion != null) {
-    const applicable = input.applySuggestion && suggestionEligibility(finding, anchor);
+    const applicable = input.applySuggestion && suggestionEligibility(finding, anchor, deprecation != null);
     let rendered: string;
     if (applicable) {
       const code = soleFencedBlock(suggestion)!.code.join('\n');
@@ -279,7 +360,8 @@ export function composeFindingNote(input: ComposeFindingNoteInput): ComposedNote
 /**
  * AC-13 re-send after a 400 on a multi-line draft: the note for a single-line
  * anchor at `end`. A suggestion that depended on the range (span > 0) is
- * downgraded to a plain block.
+ * downgraded to a plain block. A deprecated run never applies one (AC-16 —
+ * enforced in `composeFindingNote`).
  */
 export function downgradeForSingleLine(input: ComposeFindingNoteInput): ComposedNote {
   const { anchor } = input;
@@ -287,9 +369,18 @@ export function downgradeForSingleLine(input: ComposeFindingNoteInput): Composed
   return composeFindingNote({ ...input, applySuggestion: input.applySuggestion && !ranged });
 }
 
-/** The review summary for `bulk_publish`: neutralised (no mention guard, AC-16) + footer. */
-export function composeSummary(summary: string, footerName: string | null): string {
-  const text = neutraliseQuickActions(summary);
+/**
+ * The review summary for `bulk_publish`: neutralised (no mention guard, AC-16) +
+ * footer. A deprecated run's summary begins with the deprecated line and a blank
+ * line (new-spec AC-17).
+ */
+export function composeSummary(
+  summary: string,
+  footerName: string | null,
+  deprecation?: NoteDeprecation | null,
+): string {
+  const full = deprecation != null ? `${deprecatedLine(deprecation)}\n\n${summary}` : summary;
+  const text = neutraliseQuickActions(full);
   return footerName == null ? text : text + footerFor(footerName);
 }
 
@@ -297,15 +388,38 @@ export function composeSummary(summary: string, footerName: string | null): stri
 const WORST_FOOTER_NAME = '\u{1D400}'.repeat(FOOTER_NAME_MAX);
 const PLACEHOLDER_MARKER = '<'.padEnd(MARKER_LINE_LENGTH, 'x');
 
+/** The longest AC-14 deprecated line (the 8-char `head_moved` or the `head_unknown` wording). */
+const LONGEST_DEPRECATED_LINE = Math.max(
+  deprecatedLine({ reason: 'head_moved', reviewedHeadSha: 'f'.repeat(40) }).length,
+  DEPRECATED_LINE_HEAD_UNKNOWN.length,
+);
+
+const ALL_LOCATION_SUFFIXES = [BASE_LOCATION_SUFFIX, ...Object.values(DEPRECATED_LOCATION_SUFFIX)];
+
+/**
+ * AC-18 worst-case overhead for a finding at `path:start–end`: the longest
+ * deprecated line + 1 newline + the longest location line (under the longest
+ * suffix) + 1 newline. Charged to every anchor, positioned ones included, so
+ * the preview and the publish can never disagree about `body_too_long`.
+ */
+export function generalOverheadFor(path: string, startLine: number, endLine: number): number {
+  const longestLocation = Math.max(
+    ...ALL_LOCATION_SUFFIXES.map((s) => locationLineWith(path, startLine, endLine, s).length),
+  );
+  return LONGEST_DEPRECATED_LINE + 1 + longestLocation + 1;
+}
+
 /**
  * An upper bound (UTF-16 units) of the composed body, whatever the toggle,
- * marker ids or footer name — for the AC-18 preview / validation check.
+ * marker ids, footer name or deprecation — for the AC-18 preview / validation
+ * check. The base composition plus the worst-case deprecated overhead.
  */
 export function noteLengthUpperBound(finding: NoteFinding, anchor: NoteAnchor): number {
   const base = { finding, anchor, marker: PLACEHOLDER_MARKER, footerName: WORST_FOOTER_NAME };
+  const overhead = generalOverheadFor(anchor.path, anchor.startLine, anchor.endLine);
   const plain = composeFindingNote({ ...base, applySuggestion: false }).body.length;
-  if (!suggestionEligibility(finding, anchor)) return plain;
-  return Math.max(plain, composeFindingNote({ ...base, applySuggestion: true }).body.length);
+  if (!suggestionEligibility(finding, anchor)) return plain + overhead;
+  return Math.max(plain, composeFindingNote({ ...base, applySuggestion: true }).body.length) + overhead;
 }
 
 /** AC-18: whether the composed body may exceed GitLab's note limit. */

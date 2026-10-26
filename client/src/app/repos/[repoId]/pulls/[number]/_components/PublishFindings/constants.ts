@@ -3,7 +3,11 @@
 import type { PublishBlockerCode, PublishErrorCode, Severity } from "@devdigest/shared";
 import type { BlockingGitLabHealth } from "@/lib/gitlab-token";
 
-/** Blockers whose notice offers "Re-run review" (AC-37). */
+/**
+ * Blockers whose notice offers "Re-run review" (AC-37). Since spec
+ * 2026-10-23 the server no longer reports these two as blockers (outdated
+ * runs publish as deprecated, AC-2); kept so an older response still renders.
+ */
 export const RERUN_BLOCKERS: ReadonlySet<PublishBlockerCode> = new Set<PublishBlockerCode>([
   "review_head_unknown",
   "review_diff_outdated",

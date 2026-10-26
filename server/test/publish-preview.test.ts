@@ -1,11 +1,16 @@
 /**
  * Pure publish preview (spec `specs/2026-10-21-gitlab-publish-findings.md`,
- * AC-2 – AC-8, AC-17, AC-18; plan T9).
+ * AC-2 – AC-8, AC-17, AC-18; plan T9; outdated-findings spec AC-1, AC-2,
+ * AC-16, AC-18, AC-19, plan T7).
  */
 import { describe, it, expect } from 'vitest';
-import { PublishPreview } from '@devdigest/shared';
-import { buildPreview, reviewBlockers } from '../src/modules/publish/preview.js';
-import { REVIEW_DIFF_OUTDATED_MESSAGE, REVIEW_HEAD_UNKNOWN_MESSAGE } from '../src/modules/publish/codes.js';
+import { PublishPreviewWithDeprecation } from '@devdigest/shared';
+import {
+  boundAnchorFor,
+  buildPreview,
+  previewDeprecation,
+  reviewBlockers,
+} from '../src/modules/publish/preview.js';
 import type {
   FindingLiveState,
   PublishFindingRow,
@@ -86,6 +91,7 @@ function live(findingId: string, over: Partial<FindingLiveState> = {}): FindingL
     url: 'https://gitlab.com/group/sub/proj/-/merge_requests/5#note_42',
     publishedAt: new Date('2026-10-20T10:00:00Z'),
     publishedBy: { id: 'u-1', name: 'Jane' },
+    publicationDeprecated: false,
     ...over,
   };
 }
@@ -112,8 +118,9 @@ describe('buildPreview — per-finding reasons and anchors (AC-2, AC-9, AC-17, A
       ],
     });
 
-    expect(PublishPreview.safeParse(preview).success).toBe(true);
+    expect(PublishPreviewWithDeprecation.safeParse(preview).success).toBe(true);
     expect(preview.blockers).toEqual([]);
+    expect(preview.deprecation).toBeNull();
     expect(preview.mr_iid).toBe(5);
     expect(preview.viewer_can_publish).toBe(true);
 
@@ -129,6 +136,7 @@ describe('buildPreview — per-finding reasons and anchors (AC-2, AC-9, AC-17, A
       published_at: '2026-10-20T10:00:00.000Z',
       published_by: { id: 'u-1', name: 'Jane' },
       publication_id: 'pub-1',
+      deprecated: false,
     });
     expect(by.get(F.unconfirmed)).toMatchObject({ publishable: false, reason: 'publish_unconfirmed', published: null });
     expect(by.get(F.tooLong)).toMatchObject({ publishable: false, reason: 'body_too_long' });
@@ -166,16 +174,14 @@ describe('reviewBlockers (AC-3 – AC-8)', () => {
     expect(buildPreview({ ...base, ctx: c }).mr_iid).toBeNull();
   });
 
-  it('legacy review → review_head_unknown with the exact spec message (AC-4)', () => {
-    const blockers = reviewBlockers({ ctx: ctx({ reviewHead: null }), inProgress: null, tokenHealth: 'ok' });
-    expect(blockers).toEqual([{ code: 'review_head_unknown', message: REVIEW_HEAD_UNKNOWN_MESSAGE }]);
+  it('legacy review → no review_head_unknown blocker any more, publishable (outdated AC-2)', () => {
+    expect(codes(ctx({ reviewHead: null }))).toEqual([]);
   });
 
-  it('head moved or detail head stale → review_diff_outdated (AC-5)', () => {
-    const moved = reviewBlockers({ ctx: ctx({ prHead: 'beef' }), inProgress: null, tokenHealth: 'ok' });
-    expect(moved).toEqual([{ code: 'review_diff_outdated', message: REVIEW_DIFF_OUTDATED_MESSAGE }]);
-    expect(codes(ctx({ detailHead: 'beef' }))).toEqual(['review_diff_outdated']);
-    expect(codes(ctx({ detailHead: null }))).toEqual(['review_diff_outdated']);
+  it('head moved or detail head stale → no review_diff_outdated blocker any more (outdated AC-2)', () => {
+    expect(codes(ctx({ prHead: 'beef' }))).toEqual([]);
+    expect(codes(ctx({ detailHead: 'beef' }))).toEqual([]);
+    expect(codes(ctx({ detailHead: null }))).toEqual([]);
   });
 
   it('an in-progress publication → publish_in_progress with its id (AC-6)', () => {
@@ -200,11 +206,100 @@ describe('reviewBlockers (AC-3 – AC-8)', () => {
     const c = ctx({ reviewHead: null, status: 'merged' });
     const preview = buildPreview({ ...base, ctx: c, inProgress: { id: 'pub-9' }, tokenHealth: null });
     expect(preview.blockers.map((b) => b.code)).toEqual([
-      'review_head_unknown',
       'pr_not_open',
       'publish_in_progress',
       'gitlab_token_missing',
     ]);
     expect(preview.findings).toHaveLength(1);
+  });
+});
+
+describe('buildPreview — deprecated reviews (outdated-findings AC-1, AC-2, AC-16, AC-18, AC-19)', () => {
+  const NEWER = 'c0ffee123';
+  const suggestFinding = finding(F.suggest, { suggestion: '```ts\nconst x = 1;\n```' });
+  const fixtures = {
+    legacy: ctx({ reviewHead: null, findings: [finding(F.ok), suggestFinding] }),
+    // The MR was synced to a newer head after the run: PR head + persisted files moved on.
+    outdated: ctx({ prHead: NEWER, detailHead: NEWER, findings: [finding(F.ok), suggestFinding] }),
+    current: ctx({ findings: [finding(F.ok), suggestFinding] }),
+  };
+
+  it('reports the deprecation from persisted state: head_unknown / head_moved / null (AC-1)', () => {
+    expect(previewDeprecation(fixtures.legacy)).toEqual({ reason: 'head_unknown', reviewed_head_sha: null });
+    expect(previewDeprecation(fixtures.outdated)).toEqual({ reason: 'head_moved', reviewed_head_sha: HEAD });
+    expect(previewDeprecation(fixtures.current)).toBeNull();
+    for (const [name, c] of Object.entries(fixtures)) {
+      const preview = buildPreview({ ...base, ctx: c });
+      expect(PublishPreviewWithDeprecation.safeParse(preview).success, name).toBe(true);
+      expect(preview.deprecation).toEqual(previewDeprecation(c));
+    }
+  });
+
+  it('legacy and outdated reviews are publishable with no blockers; merged still blocks (AC-2)', () => {
+    for (const c of [fixtures.legacy, fixtures.outdated]) {
+      const preview = buildPreview({ ...base, ctx: c });
+      expect(preview.blockers).toEqual([]);
+      expect(preview.findings.every((f) => f.publishable)).toBe(true);
+    }
+    const merged = buildPreview({ ...base, ctx: ctx({ reviewHead: null, status: 'merged' }) });
+    expect(merged.blockers.map((b) => b.code)).toEqual(['pr_not_open']);
+  });
+
+  it('head_moved → every anchor deferred; head_unknown → general review_head_unknown (AC-19)', () => {
+    const moved = buildPreview({ ...base, ctx: fixtures.outdated });
+    expect(moved.findings.map((f) => f.anchor)).toEqual([
+      { kind: 'deferred', path: 'src/a.ts', start_line: 2, end_line: 2, off_diff_reason: null },
+      { kind: 'deferred', path: 'src/a.ts', start_line: 2, end_line: 2, off_diff_reason: null },
+    ]);
+    const unknown = buildPreview({ ...base, ctx: fixtures.legacy });
+    for (const f of unknown.findings) {
+      expect(f.anchor).toEqual({ kind: 'general', path: 'src/a.ts', start_line: 2, end_line: 2, off_diff_reason: 'review_head_unknown' });
+    }
+  });
+
+  it('stale persisted files on a current head → deferred anchors, deprecation null (Q1)', () => {
+    const stale = buildPreview({ ...base, ctx: ctx({ detailHead: 'beef', findings: [finding(F.ok)] }) });
+    expect(stale.deprecation).toBeNull();
+    expect(stale.findings[0]!.anchor.kind).toBe('deferred');
+    expect(stale.findings[0]!.anchor.off_diff_reason).toBeNull();
+    expect(stale.findings[0]!.suggestion_eligible).toBe(false);
+  });
+
+  it('no suggestion is eligible while deprecated; the current review keeps it (AC-16)', () => {
+    for (const c of [fixtures.legacy, fixtures.outdated]) {
+      expect(buildPreview({ ...base, ctx: c }).findings.every((f) => !f.suggestion_eligible)).toBe(true);
+    }
+    const current = buildPreview({ ...base, ctx: fixtures.current });
+    expect(current.findings.find((f) => f.finding_id === F.suggest)!.suggestion_eligible).toBe(true);
+  });
+
+  it('a near-limit body → body_too_long, deferred or not, via the worst-case bound (AC-18)', () => {
+    // Fits without overhead but not with the worst-case deprecated + location overhead.
+    const near = (rationale: string) => [finding(F.tooLong, { rationale })];
+    const probe = (c: PublishReviewContext) => buildPreview({ ...base, ctx: c }).findings[0]!;
+    let lo = 900_000;
+    let hi = 1_000_000;
+    // Binary-search the longest rationale the current (positioned) review accepts.
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (probe(ctx({ findings: near('x'.repeat(mid)) })).reason == null) lo = mid;
+      else hi = mid - 1;
+    }
+    const over = 'x'.repeat(lo + 1);
+    expect(probe(ctx({ findings: near('x'.repeat(lo)) })).reason).toBeNull();
+    expect(probe(ctx({ findings: near(over) })).reason).toBe('body_too_long');
+    expect(probe(ctx({ reviewHead: null, findings: near(over) })).reason).toBe('body_too_long');
+    expect(probe(ctx({ prHead: NEWER, detailHead: NEWER, findings: near(over) })).reason).toBe('body_too_long');
+    // The deferred bound anchor is the general one.
+    expect(boundAnchorFor(finding(F.ok), null)).toMatchObject({ kind: 'general', offDiffReason: 'not_on_diff_line' });
+  });
+
+  it('a link published by a deprecated publication reads deprecated: true (AC-24, Q2)', () => {
+    const preview = buildPreview({
+      ...base,
+      ctx: ctx({ findings: [finding(F.published)] }),
+      states: [live(F.published, { publicationDeprecated: true })],
+    });
+    expect(preview.findings[0]!.published).toMatchObject({ publication_id: 'pub-1', deprecated: true });
   });
 });

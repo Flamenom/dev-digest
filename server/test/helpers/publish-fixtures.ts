@@ -1,11 +1,11 @@
 import type { FastifyInstance } from 'fastify';
-import type { Publication } from '@devdigest/shared';
+import type { DeprecationReason, PublicationWithDeprecation } from '@devdigest/shared';
 import { buildApp } from '../../src/app.js';
 import { loadConfig } from '../../src/platform/config.js';
 import type { Db } from '../../src/db/client.js';
 import * as t from '../../src/db/schema.js';
 import { MockGitClient, MockGitHubClient, MockSecretsProvider } from '../../src/adapters/mocks.js';
-import { FakeGitLab } from './fake-gitlab.js';
+import { FakeGitLab, type FakeMr, type FakeVersion } from './fake-gitlab.js';
 import type { PgFixture } from './pg.js';
 
 /**
@@ -90,7 +90,22 @@ export interface SeedPublishOptions {
   findings?: readonly FindingSeed[];
   /** Reviews to create, each with the same findings. Default 1. */
   reviews?: number;
+  /** Persisted `pr_files`; default = `MAIN_PATCH` on src/main.ts + a too-large src/huge.ts. */
+  files?: readonly PersistedFileSeed[];
 }
+
+export interface PersistedFileSeed {
+  path: string;
+  patch: string | null;
+  patchOmitted?: 'too_large' | 'collapsed' | null;
+  additions?: number;
+  deletions?: number;
+}
+
+const DEFAULT_FILES: readonly PersistedFileSeed[] = [
+  { path: 'src/main.ts', additions: 3, deletions: 1, patch: MAIN_PATCH },
+  { path: 'src/huge.ts', additions: 900, patch: null, patchOmitted: 'too_large' },
+];
 
 export interface SeededPublishPr {
   repoId: string;
@@ -135,10 +150,19 @@ export async function seedPublishPr(db: Db, opts: SeedPublishOptions): Promise<S
       status: opts.status ?? 'open',
     })
     .returning();
-  await db.insert(t.prFiles).values([
-    { prId: pr!.id, path: 'src/main.ts', additions: 3, deletions: 1, patch: MAIN_PATCH },
-    { prId: pr!.id, path: 'src/huge.ts', additions: 900, patch: null, patchOmitted: 'too_large' },
-  ]);
+  const files = opts.files ?? DEFAULT_FILES;
+  if (files.length > 0) {
+    await db.insert(t.prFiles).values(
+      files.map((f) => ({
+        prId: pr!.id,
+        path: f.path,
+        additions: f.additions ?? 0,
+        deletions: f.deletions ?? 0,
+        patch: f.patch,
+        ...(f.patchOmitted ? { patchOmitted: f.patchOmitted } : {}),
+      })),
+    );
+  }
 
   const findings = opts.findings ?? DEFAULT_FINDINGS;
   const reviewIds: string[] = [];
@@ -238,13 +262,118 @@ export async function settle(app: FastifyInstance): Promise<void> {
   await app.container.publishReconciler.whenIdle();
 }
 
-export async function getPublication(app: FastifyInstance, id: string, headers: Record<string, string> = {}): Promise<Publication> {
+export async function getPublication(
+  app: FastifyInstance,
+  id: string,
+  headers: Record<string, string> = {},
+): Promise<PublicationWithDeprecation> {
   const res = await app.inject({ method: 'GET', url: `/publications/${id}`, headers });
   if (res.statusCode !== 200) throw new Error(`GET /publications/${id} → ${res.statusCode} ${res.body}`);
-  return res.json() as Publication;
+  return res.json() as PublicationWithDeprecation;
 }
 
 /** The URL path of the MR on the fake (percent-encoded project path). */
 export function mrApiPath(fullPath: string, iid = PUB_IID): string {
   return `/api/v4/projects/${encodeURIComponent(fullPath)}/merge_requests/${iid}`;
+}
+
+// ---------- deprecated (outdated) reviews — spec 2026-10-23, plan T10 ----------
+
+/** The head the review ran on (lowercase hex ⇒ the `head_moved` deprecated line shows `a1b2c3d4`). */
+export const REVIEWED_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+/** The newer head the MR moved to after the review. */
+export const NEWER_SHA = 'f00dfeedcafe0000111122223333444455556666';
+/** The reviewed version's own base / start SHAs (≠ the live `base5` / `start5`, AC-7). */
+export const REVIEWED_VERSION_SHAS = { baseSha: 'vbase-reviewed', startSha: 'vstart-reviewed', headSha: REVIEWED_SHA };
+
+/**
+ * The persisted diff at the NEWER head: src/main.ts only changes far below
+ * the findings (lines 100+), so anchoring on it would make every finding
+ * general — a positioned note proves the reviewed version was used (AC-6).
+ */
+export const NEWER_MAIN_PATCH = '@@ -100,2 +100,3 @@\n const x = 1;\n+const y = 2;\n const z = 3;';
+
+export interface SeedDeprecatedOptions {
+  workspaceId: string;
+  fullPath: string;
+  /**
+   * `head_moved`: review at REVIEWED_SHA, MR (live + persisted) at NEWER_SHA;
+   * `head_unknown`: legacy review (`head_sha` null), MR at NEWER_SHA;
+   * null: not deprecated — review = live = persisted head (REVIEWED_SHA).
+   */
+  reason: DeprecationReason | null;
+  /** With `reason: null`: persisted files belong to another head (`detail_head_sha` ≠ head). */
+  staleFiles?: boolean;
+  findings?: readonly FindingSeed[];
+  /** Add the reviewed version (head REVIEWED_SHA) to the fake. Default true. */
+  withReviewedVersion?: boolean;
+  iid?: number;
+}
+
+export interface SeededDeprecatedPr extends SeededPublishPr {
+  fullPath: string;
+  mr: FakeMr;
+  /** The version the publish must anchor on (null when not added). */
+  reviewed: FakeVersion | null;
+}
+
+/**
+ * A deprecated (or stale-files) review over the fake GitLab. Versions on the
+ * MR, oldest → newest: an OLDER version with the same head REVIEWED_SHA but
+ * other SHAs (so picking the newest match is observable), the reviewed one
+ * (REVIEWED_VERSION_SHAS, diff = MAIN_PATCH + too-large src/huge.ts), and —
+ * when the head moved / is unknown — the NEWER head's version.
+ */
+export async function seedDeprecatedReview(
+  db: Db,
+  fake: FakeGitLab,
+  opts: SeedDeprecatedOptions,
+): Promise<SeededDeprecatedPr> {
+  const iid = opts.iid ?? PUB_IID;
+  const moved = opts.reason != null;
+  const liveHead = moved ? NEWER_SHA : REVIEWED_SHA;
+  const mr = addPublishMr(fake, opts.fullPath, { iid, headSha: liveHead });
+
+  let reviewed: FakeVersion | null = null;
+  if (opts.withReviewedVersion !== false) {
+    fake.addVersion(opts.fullPath, iid, {
+      headSha: REVIEWED_SHA,
+      baseSha: 'vbase-older',
+      startSha: 'vstart-older',
+      diffs: [{ old_path: 'src/other.ts', new_path: 'src/other.ts', diff: '@@ -1 +1 @@\n-a\n+b' }],
+    });
+    reviewed = fake.addVersion(opts.fullPath, iid, {
+      ...REVIEWED_VERSION_SHAS,
+      diffs: [
+        { old_path: 'src/main.ts', new_path: 'src/main.ts', diff: MAIN_PATCH },
+        { old_path: 'src/huge.ts', new_path: 'src/huge.ts', diff: '', too_large: true },
+      ],
+    });
+  }
+  if (moved) {
+    fake.addVersion(opts.fullPath, iid, {
+      headSha: NEWER_SHA,
+      baseSha: 'base5',
+      startSha: 'start5',
+      diffs: [{ old_path: 'src/main.ts', new_path: 'src/main.ts', diff: NEWER_MAIN_PATCH }],
+    });
+  }
+
+  const staleOrNewer = moved || opts.staleFiles === true;
+  const seeded = await seedPublishPr(db, {
+    workspaceId: opts.workspaceId,
+    fullPath: opts.fullPath,
+    iid,
+    prHead: liveHead,
+    detailHead: staleOrNewer ? NEWER_SHA : liveHead,
+    reviewHead: opts.reason === 'head_unknown' ? null : REVIEWED_SHA,
+    findings: opts.findings,
+    files: staleOrNewer
+      ? [
+          { path: 'src/main.ts', additions: 1, patch: NEWER_MAIN_PATCH },
+          { path: 'src/huge.ts', additions: 900, patch: null, patchOmitted: 'too_large' },
+        ]
+      : undefined,
+  });
+  return { ...seeded, fullPath: opts.fullPath, mr, reviewed };
 }

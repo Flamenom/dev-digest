@@ -83,6 +83,22 @@ export type {
   PublishErrorCode,
 } from "@devdigest/shared";
 
+// Publish findings from an outdated review run, marked "deprecated"
+// (contracts/review-publish-deprecation.ts, spec 2026-10-23-gitlab-publish-outdated-findings).
+export type {
+  PublishPreviewWithDeprecation,
+  PublishPreviewFindingWithDeprecation,
+  PublishAnchorWithDeprecation,
+  PublishedLinkWithDeprecation,
+  PublishDeprecation,
+  PublishLiveDeprecation,
+  PublishPlan,
+  PublicationWithDeprecation,
+  PublicationItemWithDeprecation,
+  PublishAcknowledgementInput,
+  DeprecationReason,
+} from "@devdigest/shared";
+
 import type { HostCommentInput } from "@devdigest/shared";
 
 /** The reply field of a host comment post: a GitHub reply sets `in_reply_to`

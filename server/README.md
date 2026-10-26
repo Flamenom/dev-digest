@@ -70,7 +70,7 @@ flowchart TB
   end
   subgraph Review["Review & runs"]
     reviews["reviews<br/>/pulls/:id/review · /reviews · /findings/:id/(accept|dismiss)<br/>/runs/:id/(events|trace)"]
-    publish["publish (GitLab)<br/>/reviews/:id/(publish-preview|publish-other-drafts|publications)<br/>/publications/:id"]
+    publish["publish (GitLab)<br/>/reviews/:id/(publish-preview|publish-other-drafts|publish-plan|publications)<br/>/publications/:id"]
   end
   subgraph Agents["Agents"]
     agents["agents<br/>/agents · /agents/:id"]
@@ -148,7 +148,9 @@ Spec: [`gitlab-comments`](../specs/2026-10-20-gitlab-comments.md). Routes in
 
 ### Publish findings to GitLab (batch review via draft notes)
 
-Spec: [`gitlab-publish-findings`](../specs/2026-10-21-gitlab-publish-findings.md).
+Specs: [`gitlab-publish-findings`](../specs/2026-10-21-gitlab-publish-findings.md),
+[`gitlab-publish-outdated-findings`](../specs/2026-10-23-gitlab-publish-outdated-findings.md)
+(outdated runs published as deprecated).
 Module `modules/publish/` (routes → `PublishService` → `PublishExecutor` /
 `PublishReconciler` → `publish/repository.ts`); GitLab calls go through the
 draft-notes operations of the GitLab host (`adapters/gitlab/draft-notes.ts`).
@@ -156,11 +158,12 @@ All routes are review/publication **uuid**-keyed, `member` access.
 
 | Route | Response | Notes |
 |-------|----------|-------|
-| `GET /reviews/:id/publish-preview` | `PublishPreview` | per finding: `publishable`, `reason`, planned `anchor` (`multi_line` / `single_line` / `general` + `off_diff_reason`), `suggestion_eligible`, `published` link; review-level `blockers`; `viewer_can_publish`. **0 GitLab requests**; also triggers a background reconcile of this PR's stale publications |
+| `GET /reviews/:id/publish-preview` | `PublishPreview` | per finding: `publishable`, `reason`, planned `anchor` (`multi_line` / `single_line` / `general` + `off_diff_reason`, or `deferred` when the placement is decided at publish), `suggestion_eligible` (never while deprecated), `published` link (with `deprecated`); review-level `blockers`; review-level `deprecation` (`{ reason: head_moved \| head_unknown, reviewed_head_sha }` or `null`, from persisted state); `viewer_can_publish`. **0 GitLab requests**; also triggers a background reconcile of this PR's stale publications |
 | `GET /reviews/:id/publish-other-drafts` | `OtherDraftsCount` | one draft-list read; counts the service account's drafts **without** this workspace's marker; any failure → `{ other_drafts: null }` |
-| `POST /reviews/:id/publications` | **202** `Publication` (`in_progress`) | body `PublishRequest`: `finding_ids` (1–50 unique uuids of this review), `summary?` (≤ 10,000 chars, not whitespace-only), `apply_suggestions` (default `false`); the work continues in the background |
+| `GET /reviews/:id/publish-plan?finding_ids=…` | `PublishPlan` | live reads only (other-drafts count, diff refs, MR diff versions, one version diff), never a write: `other_drafts`, live `deprecation` (adds `live_head_sha`), `placement` `{ positioned, general }` for the selection; a failed placement read → `plan_available: false`, `placement: null` |
+| `POST /reviews/:id/publications` | **202** `Publication` (`in_progress`) | body `PublishRequest`: `finding_ids` (1–50 unique uuids of this review), `summary?` (≤ 10,000 chars, not whitespace-only), `apply_suggestions` (default `false`), `acknowledge_deprecated` (default `false`); the work continues in the background |
 | `GET /reviews/:id/publications` | `Publication[]` | newest first |
-| `GET /publications/:id` | `Publication` | status, counters, per-finding `items` with `state` / `code` / `link` |
+| `GET /publications/:id` | `Publication` | status, counters, per-finding `items` with `state` / `code` / `link`; `deprecated`, `deprecation_reason`, `reviewed_version_found`, `position_fallbacks` |
 
 - **Permission.** The single row `POST /reviews/:id/publications` in
   `platform/auth/route-policy.ts` (`member`) gates publishing; the preview's
@@ -171,13 +174,31 @@ All routes are review/publication **uuid**-keyed, `member` access.
   (`400 publish_summary_invalid`) → review-level blockers → per finding
   (`400 finding_not_publishable` / `409 finding_already_published`, with ids).
   Then the per-PR lock is taken; the token is resolved and the MR's current diff
-  refs are read once — a head that differs from the review's `head_sha` →
-  `409 review_diff_outdated` and the publication row is removed.
+  refs are read once — this decides, once, whether the run is deprecated (see
+  below). A deprecated run sent without `acknowledge_deprecated: true` →
+  `409 review_diff_outdated` (head moved) / `409 review_head_unknown` (review
+  without `head_sha`), message "This review is outdated — confirm publishing its
+  findings as deprecated.", and the publication row is removed (0 writes).
 - **Blockers** (preview `blockers[]`, and the synchronous error on POST):
-  `provider_not_supported` (400, GitHub PR), `review_head_unknown` (409, review
-  without `head_sha`), `review_diff_outdated` (409), `publish_in_progress` (409,
+  `provider_not_supported` (400, GitHub PR), `publish_in_progress` (409,
   with `publication_id`), `pr_not_open` (409), `gitlab_token_missing` /
-  `gitlab_token_insufficient_scope` / `gitlab_token_invalid` (400).
+  `gitlab_token_insufficient_scope` / `gitlab_token_invalid` (400). An outdated
+  review is not a blocker — it is a deprecation.
+- **Deprecated runs** (spec `2026-10-23`). A run is deprecated when the review
+  has no `head_sha` (`head_unknown`) or its `head_sha` differs from the live MR
+  head (`head_moved`); the flag only permits such a publish and is ignored
+  otherwise, so a non-deprecated publish is unchanged. Anchor source: the
+  persisted diff when the run is not deprecated and the persisted PR detail head
+  equals `head_sha`; otherwise the executor lists the MR diff versions
+  (`listMrDiffVersions`), takes the newest one whose head is `head_sha`, reads
+  its diff (`getMrDiffVersionFiles`) and positions drafts with that version's
+  base/start/head SHAs (`publish/anchor-source.ts`). No matching version or a
+  transient read failure → general note (`reviewed_version_unavailable`); a
+  401/403/404 fails the publication; `head_unknown` → every finding is a
+  general note. On a deprecated run a definitive 400/422 position rejection is
+  re-sent once as a general note (`position_fallbacks`). Every deprecated note
+  carries a "⚠ Deprecated: …" line after its header and never an applicable
+  suggestion (`publish/note-body.ts`).
 - **One publish per PR.** A partial unique index allows at most one
   `in_progress` publication per PR (across reviews and users); a concurrent
   loser gets `409 publish_in_progress` with the running id and makes no GitLab
@@ -241,6 +262,10 @@ stateDiagram-v2
   outcome, requested, published, failed, general_notes,
   other_drafts_published, applicable_suggestions, has_summary }` — counts and
   ids only. A request rejected before any write, and `local` mode, record none.
+- **Schema — migration `0028_publish_deprecation`.** Adds
+  `review_publications.deprecated`, `deprecation_reason` (`head_moved` /
+  `head_unknown`, set iff deprecated), `reviewed_version_found` and
+  `position_fallbacks`, and allows item `anchor_kind = 'deferred'`.
 - **Schema — migration `0027_review_publications`.** Adds `reviews.head_sha`
   (the head SHA of the diff the review actually saw; `null` on older rows,
   exposed as `head_sha` on review reads) and the tables `review_publications`

@@ -1,7 +1,8 @@
 /* PublishToolbar — the per-review "Select all publishable" tri-state control
    and the "Publish N to GitLab" button (AC-36, AC-37). Presentational: the
    selection comes from `usePublishSelection`, the blocker notice from
-   `PublishBlockerNotice`.
+   `PublishBlockerNotice` (blocking) or `PublishDeprecationNotice` (not
+   blocking, AC-20).
 
    Disabled controls use `aria-disabled` (focusable, announced, activation
    ignored) rather than the native attribute, so the button's
@@ -25,6 +26,12 @@ export interface PublishToolbarProps {
   onPublish: () => void;
   /** Id of the review-level blocker notice; set ⇒ the button is disabled and described by it. */
   blockerNoticeId?: string | null;
+  /**
+   * Id of a NON-blocking notice (the outdated-review deprecation notice,
+   * AC-20); the button stays enabled and is described by it. The blocker
+   * notice wins when both are set.
+   */
+  noticeId?: string | null;
   /** A publication is in progress on this PR — selection and publish are inert (AC-39). */
   busy?: boolean;
 }
@@ -36,11 +43,13 @@ export function PublishToolbar({
   onToggleAll,
   onPublish,
   blockerNoticeId,
+  noticeId,
   busy = false,
 }: PublishToolbarProps) {
   const t = useTranslations("prHost.publish");
   const selectInert = busy || publishableCount === 0;
   const publishInert = busy || count === 0 || !!blockerNoticeId;
+  const describedBy = blockerNoticeId || noticeId || undefined;
 
   return (
     <div style={s.bar}>
@@ -65,7 +74,7 @@ export function PublishToolbar({
         size="sm"
         icon="Upload"
         aria-disabled={publishInert || undefined}
-        aria-describedby={blockerNoticeId || undefined}
+        aria-describedby={describedBy}
         onClick={() => {
           if (!publishInert) onPublish();
         }}

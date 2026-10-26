@@ -6,7 +6,13 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PublicationItemState, PublicationStatus, PublishAnchorKind } from '@devdigest/shared';
+import {
+  DeprecationReason,
+  PublicationItemState,
+  PublicationStatus,
+  PublishAnchorKind,
+  PublishAnchorKindAll,
+} from '@devdigest/shared';
 import {
   startPg,
   startEmptyPg,
@@ -16,9 +22,11 @@ import {
 } from './helpers/pg.js';
 import { seed } from '../src/db/seed.js';
 import {
+  DEPRECATION_REASONS,
   PUBLICATION_ITEM_STATES,
   PUBLICATION_STATUSES,
   PUBLISH_ANCHOR_KINDS,
+  PUBLISH_ANCHOR_KINDS_ALL,
 } from '../src/db/schema.js';
 
 /**
@@ -39,6 +47,8 @@ describe('schema literal lists mirror the contract enums', () => {
     expect([...PUBLICATION_STATUSES]).toEqual(PublicationStatus.options);
     expect([...PUBLICATION_ITEM_STATES]).toEqual(PublicationItemState.options);
     expect([...PUBLISH_ANCHOR_KINDS]).toEqual(PublishAnchorKind.options);
+    expect([...PUBLISH_ANCHOR_KINDS_ALL]).toEqual(PublishAnchorKindAll.options);
+    expect([...DEPRECATION_REASONS]).toEqual(DeprecationReason.options);
   });
 });
 
@@ -200,6 +210,73 @@ d('migration 0027 — review publications constraints', () => {
     ).resolves.toHaveLength(1);
   });
 
+  // Migration 0028 — deprecated publications (spec gitlab-publish-outdated-findings).
+  function insertDeprecationRow(cols: {
+    deprecated: boolean;
+    reason: string | null;
+    positionFallbacks?: number;
+  }) {
+    return sql`
+      INSERT INTO review_publications
+        (workspace_id, review_id, pr_id, status, requested, has_summary, finished_at,
+         deprecated, deprecation_reason, position_fallbacks)
+      VALUES (${workspaceId}, ${reviewId}, ${prId}, 'failed', 3, false, now(),
+         ${cols.deprecated}, ${cols.reason}, ${cols.positionFallbacks ?? 0})
+      RETURNING id`;
+  }
+
+  it('ties deprecated to deprecation_reason and bounds the new columns (0028)', async () => {
+    await clearPublications();
+    await expect(insertDeprecationRow({ deprecated: true, reason: null })).rejects.toMatchObject({
+      code: CHECK_VIOLATION,
+      constraint_name: 'review_publications_deprecation_ck',
+    });
+    await expect(
+      insertDeprecationRow({ deprecated: false, reason: 'head_moved' }),
+    ).rejects.toMatchObject({
+      code: CHECK_VIOLATION,
+      constraint_name: 'review_publications_deprecation_ck',
+    });
+    await expect(
+      insertDeprecationRow({ deprecated: true, reason: 'stale' }),
+    ).rejects.toMatchObject({
+      code: CHECK_VIOLATION,
+      constraint_name: 'review_publications_deprecation_reason_ck',
+    });
+    await expect(
+      insertDeprecationRow({ deprecated: false, reason: null, positionFallbacks: -1 }),
+    ).rejects.toMatchObject({
+      code: CHECK_VIOLATION,
+      constraint_name: 'review_publications_position_fallbacks_ck',
+    });
+    await expect(insertDeprecationRow({ deprecated: true, reason: 'head_unknown' })).resolves.toHaveLength(1);
+    await expect(insertDeprecationRow({ deprecated: true, reason: 'head_moved' })).resolves.toHaveLength(1);
+  });
+
+  it('defaults the 0028 columns for a row inserted without them', async () => {
+    await clearPublications();
+    const pub = await insertPublication('in_progress');
+    const [row] = await sql`
+      SELECT deprecated, deprecation_reason, reviewed_version_found, position_fallbacks
+      FROM review_publications WHERE id = ${pub}`;
+    expect(row).toEqual({
+      deprecated: false,
+      deprecation_reason: null,
+      reviewed_version_found: null,
+      position_fallbacks: 0,
+    });
+  });
+
+  it("accepts the 'deferred' anchor kind and still rejects unknown ones (0028)", async () => {
+    await clearPublications();
+    const pub = await insertPublication('in_progress');
+    await expect(insertItem(pub, findingA, 'pending', { anchorKind: 'deferred' })).resolves.toHaveLength(1);
+    await expect(insertItem(pub, findingB, 'pending', { anchorKind: 'bogus' })).rejects.toMatchObject({
+      code: CHECK_VIOLATION,
+      constraint_name: 'review_publication_items_anchor_kind_ck',
+    });
+  });
+
   it('cascades a review delete to its publications and items', async () => {
     await clearPublications();
     const rid = await insertReview();
@@ -272,5 +349,56 @@ d('migration 0027 — applies over pre-existing reviews', () => {
 
     const [row] = await sql`SELECT head_sha FROM reviews WHERE id = ${review!.id}`;
     expect(row).toEqual({ head_sha: null });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Migration 0028 is additive: a publication written before it reads the defaults.
+// ---------------------------------------------------------------------------
+
+d('migration 0028 — applies over pre-existing publications', () => {
+  let container: EmptyPgFixture;
+  let sql: postgres.Sql;
+  let oldDir: string;
+
+  beforeAll(async () => {
+    container = await startEmptyPg();
+    sql = postgres(container.url, { max: 1, onnotice: () => {} });
+    await sql`CREATE EXTENSION IF NOT EXISTS vector`;
+    oldDir = migrationsBefore('0028_');
+    await migrate(drizzle(sql), { migrationsFolder: oldDir });
+  }, 120_000);
+
+  afterAll(async () => {
+    await sql?.end({ timeout: 5 });
+    await container?.stop();
+    if (oldDir) rmSync(oldDir, { recursive: true, force: true });
+  });
+
+  it('keeps old publication rows as not deprecated with zero fallbacks', async () => {
+    const [ws] = await sql`INSERT INTO workspaces (name) VALUES ('Old') RETURNING id`;
+    const [repo] = await sql`
+      INSERT INTO repos (workspace_id, owner, name, full_name) VALUES (${ws!.id}, 'o', 'r', 'o/r') RETURNING id`;
+    const [pr] = await sql`
+      INSERT INTO pull_requests (workspace_id, repo_id, number, title, author, branch, base, head_sha)
+      VALUES (${ws!.id}, ${repo!.id}, 1, 'pr', 'octo', 'feat', 'main', 'sha') RETURNING id`;
+    const [review] = await sql`
+      INSERT INTO reviews (workspace_id, pr_id, kind, score, head_sha)
+      VALUES (${ws!.id}, ${pr!.id}, 'review', 70, 'sha') RETURNING id`;
+    const [pub] = await sql`
+      INSERT INTO review_publications (workspace_id, review_id, pr_id, status, requested, has_summary, finished_at)
+      VALUES (${ws!.id}, ${review!.id}, ${pr!.id}, 'published', 1, false, now()) RETURNING id`;
+
+    await migrate(drizzle(sql), { migrationsFolder: MIGRATIONS_DIR });
+
+    const [row] = await sql`
+      SELECT deprecated, deprecation_reason, reviewed_version_found, position_fallbacks
+      FROM review_publications WHERE id = ${pub!.id}`;
+    expect(row).toEqual({
+      deprecated: false,
+      deprecation_reason: null,
+      reviewed_version_found: null,
+      position_fallbacks: 0,
+    });
   });
 });

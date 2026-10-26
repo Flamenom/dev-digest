@@ -9,6 +9,7 @@ import type {
   GitLabClient,
   GitLabCommentsHost,
   GitLabDraftNotesHost,
+  GitLabDiffVersionsHost,
   GitLabScopeCheck,
   GitCredential,
   GitCredentialResolver,
@@ -138,7 +139,7 @@ export interface ContainerOverrides {
    * gitlab.com client (read side + diff discussions) — tests inject
    * `MockGitLabClient`. Also answers the token scope check (`checkTokenScopes`).
    */
-  gitlab?: GitLabClient & GitLabCommentsHost & GitLabDraftNotesHost;
+  gitlab?: GitLabClient & GitLabCommentsHost & GitLabDraftNotesHost & GitLabDiffVersionsHost;
   /** fetch used by the real GitLab client (it-tests run a fake GitLab over it). */
   gitlabFetch?: FetchLike;
   /** fetch used by the real GitHub client (it-tests count requests at this level). */
@@ -982,7 +983,7 @@ export class Container {
    * responses back to the health gate (`onAuthFailure`, AC-24/29).
    */
   private async resolveGitLab(): Promise<{
-    client: GitLabClient & GitLabCommentsHost & GitLabDraftNotesHost;
+    client: GitLabClient & GitLabCommentsHost & GitLabDraftNotesHost & GitLabDiffVersionsHost;
     usable: UsableGitLabToken | null;
   }> {
     if (this.config.hostsOffline) {

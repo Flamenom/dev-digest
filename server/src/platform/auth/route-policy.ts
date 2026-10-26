@@ -215,6 +215,8 @@ export const ROUTE_POLICY: Readonly<Record<string, RoutePolicy>> = Object.freeze
   'POST /reviews/:id/publications': { access: 'member' },
   'GET /reviews/:id/publish-preview': MEMBER,
   'GET /reviews/:id/publish-other-drafts': MEMBER,
+  // Outdated-findings AC-21: the dialog's read-only publish plan (GETs only).
+  'GET /reviews/:id/publish-plan': MEMBER,
   'GET /reviews/:id/publications': MEMBER,
   'GET /publications/:id': MEMBER,
 

@@ -36,10 +36,12 @@ import type {
   GitLabCommentsHost,
   GitLabDiffNote,
   GitLabDiffRefs,
+  GitLabDiffVersionsHost,
   GitLabDiscussionRef,
   GitLabDraftNote,
   GitLabDraftNotesHost,
   GitLabDraftPosition,
+  GitLabMrDiffVersion,
   GitLabMrNote,
   GitLabScopeCheck,
   GitLabWriteFailure,
@@ -51,6 +53,7 @@ import type {
   HostRepoRef,
   IssueMetaHost,
   PrDetailHost,
+  PrFileHost,
   PrMetaHost,
   PrStatus,
   PullDetailOptions,
@@ -297,7 +300,9 @@ export type MockGitLabCallKind =
   | 'create_draft_note' // POST /merge_requests/:iid/draft_notes
   | 'delete_draft_note' // DELETE /merge_requests/:iid/draft_notes/:id
   | 'bulk_publish' //     POST /merge_requests/:iid/draft_notes/bulk_publish
-  | 'mr_notes'; //        GET /merge_requests/:iid/discussions (every non-system note)
+  | 'mr_notes' //         GET /merge_requests/:iid/discussions (every non-system note)
+  | 'mr_versions' //      GET /merge_requests/:iid/versions (one per page)
+  | 'mr_version'; //      GET /merge_requests/:iid/versions/:id (one version's diffs)
 
 /** Draft-note write kinds — these never throw; they are scripted via `writeScript`. */
 export type MockGitLabWriteKind = 'create_draft_note' | 'bulk_publish';
@@ -363,6 +368,22 @@ export interface MockGitLabOptions {
   drafts?: Record<number, MockGitLabDraft[]>;
   /** Every non-system MR note per iid returned by `listMrNotes`; `bulk_publish` appends here. */
   mrNotes?: Record<number, GitLabMrNote[]>;
+  /**
+   * MR diff versions per iid, host order (newest first), returned by
+   * `listMrDiffVersions` (default: none ⇒ explicit `[]`). One `mr_versions` call is
+   * recorded per simulated page of `versionsPageSize` (default 100).
+   */
+  versions?: Record<number, GitLabMrDiffVersion[]>;
+  /** Page size for the `mr_versions` page simulation (default 100). */
+  versionsPageSize?: number;
+  /**
+   * Files per diff-version id returned by `getMrDiffVersionFiles`. An id absent
+   * here ⇒ the real host's 404 (`gitlab_project_inaccessible`); an explicit `[]`
+   * ⇒ a version with no files.
+   */
+  versionFiles?: Record<number, PrFileHost[]>;
+  /** Scripted errors for the version reads, consumed one per call (exhausted ⇒ normal behaviour). */
+  versionErrors?: Partial<Record<'mr_versions' | 'mr_version', Error[]>>;
   /** Scripted outcomes per write kind, consumed one per call (exhausted ⇒ `'ok'`). */
   writeScript?: Partial<Record<MockGitLabWriteKind, MockGitLabWriteStep[]>>;
 }
@@ -389,7 +410,9 @@ const MOCK_GITLAB_DEFAULT_MR: PrMetaHost = {
  * (move a head SHA, un-draft an MR, inject an error) between calls. `calls`
  * records one entry per simulated host request, by endpoint kind.
  */
-export class MockGitLabClient implements GitLabClient, GitLabCommentsHost, GitLabDraftNotesHost {
+export class MockGitLabClient
+  implements GitLabClient, GitLabCommentsHost, GitLabDraftNotesHost, GitLabDiffVersionsHost
+{
   readonly provider = 'gitlab' as const;
   readonly readOnly = false;
   public calls: MockGitLabCall[] = [];
@@ -696,6 +719,51 @@ export class MockGitLabClient implements GitLabClient, GitLabCommentsHost, GitLa
     this.record('mr_notes', ref.fullName, iid);
     return (this.opts.mrNotes?.[iid] ?? []).filter((n) => !n.system).map((n) => ({ ...n }));
   };
+
+  // ---------- GitLabDiffVersionsHost ----------
+
+  /**
+   * Bounded like the real client: at most `maxPages` simulated pages, `truncated`
+   * when more remained. Explicit `[]` when the MR has no versions.
+   */
+  listMrDiffVersions = async (
+    ref: HostRepoRef,
+    iid: number,
+    opts: { maxPages: number },
+  ): Promise<{ versions: GitLabMrDiffVersion[]; truncated: boolean }> => {
+    const all = this.opts.versions?.[iid] ?? [];
+    const pageSize = this.opts.versionsPageSize ?? 100;
+    const totalPages = Math.max(1, Math.ceil(all.length / pageSize));
+    const maxPages = Number.isInteger(opts.maxPages) && opts.maxPages > 0 ? opts.maxPages : 1;
+    const pages = Math.min(totalPages, maxPages);
+    for (let i = 0; i < pages; i++) this.recordVersionRead('mr_versions', ref.fullName, iid);
+    return {
+      versions: all.slice(0, pages * pageSize).map((v) => ({ ...v })),
+      truncated: totalPages > maxPages,
+    };
+  };
+
+  getMrDiffVersionFiles = async (ref: HostRepoRef, iid: number, versionId: number): Promise<PrFileHost[]> => {
+    if (!Number.isInteger(versionId) || versionId <= 0) {
+      throw new AppError('validation_error', `Invalid GitLab diff version id: ${versionId}`, 422);
+    }
+    this.recordVersionRead('mr_version', ref.fullName, iid);
+    const files = this.opts.versionFiles?.[versionId];
+    if (!files) {
+      throw new AppError('gitlab_project_inaccessible', 'GitLab project not found or token has no access.', 404);
+    }
+    return files.map((f) => ({ ...f }));
+  };
+
+  /** Records the call, then throws the next scripted version error, else the sticky `errors[kind]`. */
+  private recordVersionRead(kind: 'mr_versions' | 'mr_version', fullPath: string | undefined, n: number): void {
+    const scripted = this.opts.versionErrors?.[kind]?.shift();
+    if (scripted) {
+      this.calls.push({ kind, fullPath, n });
+      throw scripted;
+    }
+    this.record(kind, fullPath, n);
+  }
 
   private nextWriteStep(kind: MockGitLabWriteKind): MockGitLabWriteStep {
     return this.opts.writeScript?.[kind]?.shift() ?? 'ok';

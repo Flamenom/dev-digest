@@ -10,7 +10,9 @@ import type { FetchLike } from '../../src/adapters/gitlab/index.js';
  * Default handlers model a tiny GitLab: tokens (→ user + scopes), projects,
  * merge requests (diff_refs), their discussions and — for publish (spec
  * 2026-10-21-gitlab-publish-findings, plan T11) — per-author draft notes with
- * `bulk_publish`. One-shot overrides (`when(...)`) script failures — a status
+ * `bulk_publish` and — for publish from an outdated review (spec
+ * 2026-10-23-gitlab-publish-outdated-findings, plan T10) — MR diff versions
+ * (`…/versions[/:id]`, paginated), a position validator and `setHead`. One-shot overrides (`when(...)`) script failures — a status
  * (with headers/body), a timeout or a network error — for the next N matching
  * requests; `applyFirst` lets the write land before the failure is answered,
  * `delayMs` / `latencyMs` / `gate` slow requests down.
@@ -110,6 +112,35 @@ export interface FakeMr {
   headSha: string;
   discussions: FakeDiscussion[];
   drafts: FakeDraft[];
+  /** MR diff versions (`GET …/versions`), in insertion order; listed newest first. */
+  versions: FakeVersion[];
+  /**
+   * Position validator (outdated-findings T10): when set, a positioned draft
+   * whose SHAs differ from `shas` is rejected with `status`.
+   */
+  positionCheck: { shas: { baseSha: string; startSha: string; headSha: string }; status: 400 | 422 } | null;
+}
+
+/** One file diff of a diff version, as GitLab returns it in `…/versions/:id`. */
+export interface FakeVersionDiff {
+  old_path: string;
+  new_path: string;
+  diff: string;
+  new_file?: boolean;
+  renamed_file?: boolean;
+  deleted_file?: boolean;
+  too_large?: boolean;
+  collapsed?: boolean;
+}
+
+/** One MR diff version (outdated-findings AC-6). */
+export interface FakeVersion {
+  id: number;
+  headSha: string;
+  baseSha: string;
+  startSha: string;
+  createdAt: string;
+  diffs: FakeVersionDiff[];
 }
 
 interface FakeProject {
@@ -132,6 +163,7 @@ export class FakeGitLab {
   private nextDiscussion = 1;
   private nextProjectId = 7_000;
   private nextDraftId = 50_000;
+  private nextVersionId = 800;
   private readonly hiddenNotes = new Set<number>();
   private readonly hiddenNotePredicates: ((note: FakeNote) => boolean)[] = [];
   /** Global latency (ms) added before answering EVERY request. */
@@ -176,6 +208,8 @@ export class FakeGitLab {
       headSha: shas.headSha,
       discussions: [],
       drafts: [],
+      versions: [],
+      positionCheck: null,
     };
     project.mrs.set(iid, mr);
     return mr;
@@ -191,6 +225,52 @@ export class FakeGitLab {
   when(method: string, path: string | RegExp, reply: FakeReply, times = 1, opts: WhenOptions = {}): this {
     this.rules.push({ method, path, reply, remaining: times, skip: opts.skip ?? 0, match: opts.match });
     return this;
+  }
+
+  // ---------- diff versions (publish from an outdated review) ----------
+
+  /** Adds a diff version to the MR (`id` defaults to the next free one). */
+  addVersion(
+    fullPath: string,
+    iid: number,
+    v: Partial<Omit<FakeVersion, 'headSha'>> & { headSha: string },
+  ): FakeVersion {
+    const mr = this.mr(fullPath, iid);
+    const version: FakeVersion = {
+      id: v.id ?? this.nextVersionId++,
+      headSha: v.headSha,
+      baseSha: v.baseSha ?? `base-${v.headSha}`,
+      startSha: v.startSha ?? `start-${v.headSha}`,
+      createdAt: v.createdAt ?? new Date(Date.UTC(2026, 9, 1) + mr.versions.length * 60_000).toISOString(),
+      diffs: v.diffs ?? [],
+    };
+    mr.versions.push(version);
+    return version;
+  }
+
+  /** Moves the MR's live head (`diff_refs.head_sha` / `sha`), e.g. mid-run (AC-28). */
+  setHead(fullPath: string, iid: number, headSha: string): this {
+    this.mr(fullPath, iid).headSha = headSha;
+    return this;
+  }
+
+  /**
+   * Only positions carrying exactly `shas` are accepted; any other positioned
+   * draft create is rejected with `status` (400 or 422). `null` clears it.
+   */
+  acceptPositionsOnly(
+    fullPath: string,
+    iid: number,
+    shas: { baseSha: string; startSha: string; headSha: string } | null,
+    status: 400 | 422 = 400,
+  ): this {
+    this.mr(fullPath, iid).positionCheck = shas ? { shas, status } : null;
+    return this;
+  }
+
+  /** The request log as `METHOD path` lines (query omitted), in order. */
+  get log(): string[] {
+    return this.requests.map((r) => `${r.method} ${r.path}`);
   }
 
   // ---------- draft notes (publish) ----------
@@ -361,6 +441,16 @@ export class FakeGitLab {
     if (req.method === 'GET' && (mrSub === '/diffs' || mrSub === '/commits' || mrSub === '/closes_issues')) {
       return json(200, [], { 'x-next-page': '' });
     }
+    if (req.method === 'GET' && mrSub === '/versions') {
+      const newestFirst = [...mr.versions].reverse().map(restVersion);
+      return paginate(newestFirst, req.query);
+    }
+    const vMatch = /^\/versions\/(\d+)$/.exec(mrSub);
+    if (req.method === 'GET' && vMatch) {
+      const version = mr.versions.find((v) => v.id === Number(vMatch[1]));
+      if (!version) return json(404, { message: '404 Not found' });
+      return json(200, { ...restVersion(version), diffs: version.diffs });
+    }
     if (mrSub === '/discussions') {
       if (req.method === 'GET') return paginate(this.visibleDiscussions(mr), req.query);
       if (req.method === 'POST') return this.createDiscussion(mr, req.body, user?.username ?? 'anonymous');
@@ -415,6 +505,13 @@ export class FakeGitLab {
         const position = input.position ?? null;
         if (position !== null && !validDraftPosition(position)) {
           return json(400, { message: '400 Bad request - position is invalid' });
+        }
+        if (position !== null && mr.positionCheck) {
+          const p = position as Record<string, unknown>;
+          const want = mr.positionCheck.shas;
+          if (p.base_sha !== want.baseSha || p.start_sha !== want.startSha || p.head_sha !== want.headSha) {
+            return json(mr.positionCheck.status, { message: `${mr.positionCheck.status} position is invalid` });
+          }
         }
         const draft: FakeDraft = {
           id: this.nextDraftId++,
@@ -697,6 +794,19 @@ function restMr(project: FakeProject, mr: FakeMr) {
     author: { username: mr.author },
     created_at: FAKE_CREATED_AT,
     updated_at: FAKE_CREATED_AT,
+  };
+}
+
+function restVersion(v: FakeVersion) {
+  return {
+    id: v.id,
+    head_commit_sha: v.headSha,
+    base_commit_sha: v.baseSha,
+    start_commit_sha: v.startSha,
+    created_at: v.createdAt,
+    merge_request_id: 1,
+    state: 'collected',
+    real_size: String(v.diffs.length),
   };
 }
 

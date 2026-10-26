@@ -6,7 +6,7 @@
  * `host.calls`.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { Publication, type GitLabTokenHealth, type HostRepoRef } from '@devdigest/shared';
+import { PublicationWithDeprecation, type GitLabTokenHealth, type HostRepoRef } from '@devdigest/shared';
 import { MockGitLabClient } from '../src/adapters/mocks.js';
 import { buildMarker } from '../src/modules/_shared/publish-marker.js';
 import { PublishService, type PublishServiceDeps } from '../src/modules/publish/service.js';
@@ -17,6 +17,7 @@ import {
   type CreatePublicationInput,
   type FindingLiveState,
   type PublicationRecord,
+  type PublicationStartDecision,
   type PublishFindingRow,
   type PublishReviewContext,
   type PublishStore,
@@ -126,6 +127,10 @@ class FakeStore implements Partial<PublishStore> {
       hasSummary: input.hasSummary,
       applySuggestions: input.applySuggestions,
       diffHeadSha: null,
+      deprecated: false,
+      deprecationReason: null,
+      reviewedVersionFound: null,
+      positionFallbacks: 0,
       bulkPublishSentAt: null,
       createdAt: now,
       updatedAt: now,
@@ -145,6 +150,10 @@ class FakeStore implements Partial<PublishStore> {
     };
     this.records.set(record.id, record);
     return record;
+  };
+  startDecisions: { id: string; decision: PublicationStartDecision }[] = [];
+  setStartDecision = async (id: string, decision: PublicationStartDecision) => {
+    this.startDecisions.push({ id, decision });
   };
   deletePublication = async (id: string) => {
     this.deleted.push(id);
@@ -273,11 +282,12 @@ describe('PublishService.create — AC-20 validation table (0 GitLab requests ea
     expect(h.host.calls).toEqual([]);
   });
 
-  it('a legacy review → 409 review_head_unknown', async () => {
+  it('a legacy review without the acknowledgement → 409 review_head_unknown after the refs read, publication deleted (outdated-findings AC-4)', async () => {
     h.store.ctx = makeCtx({ reviewHead: null });
     const err = await rejection(h.service.create(WS, REVIEW, { finding_ids: [F_OK] }, 'u-1'));
     expect(err).toMatchObject({ code: 'review_head_unknown', statusCode: 409 });
-    expect(h.host.calls).toEqual([]);
+    expect(h.host.calls.map((c) => c.kind)).toEqual(['diff_refs']);
+    expect(h.store.deleted).toHaveLength(1);
   });
 
   it('a GitHub review → 400 provider_not_supported', async () => {
@@ -325,7 +335,7 @@ describe('PublishService.create — lock, gate, refs, background (AC-12, AC-21, 
       { finding_ids: [F_OK, F_OFFDIFF, F_CRIT], summary: 'LGTM overall' },
       'u-1',
     );
-    expect(Publication.safeParse(pub).success).toBe(true);
+    expect(PublicationWithDeprecation.safeParse(pub).success).toBe(true);
     expect(pub).toMatchObject({ status: 'in_progress', requested: 3, has_summary: true, apply_suggestions: false });
 
     // One diff-refs read, no writes (AC-12).
@@ -360,7 +370,7 @@ describe('PublishService.create — lock, gate, refs, background (AC-12, AC-21, 
     expect(h.started[0]!.footerName).toBe('Jane Doe');
   });
 
-  it('refs head ≠ review head → 409 review_diff_outdated, 1 read, 0 writes, publication deleted', async () => {
+  it('refs head ≠ review head, no acknowledgement → 409 review_diff_outdated, 1 read, 0 writes, publication deleted', async () => {
     h.host.opts.diffRefs = { 5: { headSha: 'newhead' } };
     const err = await rejection(h.service.create(WS, REVIEW, { finding_ids: [F_OK] }, 'u-1'));
     expect(err).toMatchObject({ code: 'review_diff_outdated', statusCode: 409 });
@@ -448,7 +458,7 @@ describe('PublishService.get / listForReview', () => {
     h.triggered.length = 0;
 
     const got = await h.service.get(WS, pub.id);
-    expect(Publication.safeParse(got).success).toBe(true);
+    expect(PublicationWithDeprecation.safeParse(got).success).toBe(true);
     expect(got.items).toEqual([{ finding_id: F_OK, state: 'pending', code: null, link: null }]);
     expect(h.triggered).toEqual(['pr-1']);
 

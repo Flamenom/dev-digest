@@ -107,6 +107,10 @@ function record(input: CreatePublicationInput): PublicationRecord {
     hasSummary: input.hasSummary,
     applySuggestions: input.applySuggestions,
     diffHeadSha: null,
+    deprecated: false,
+    deprecationReason: null,
+    reviewedVersionFound: null,
+    positionFallbacks: 0,
     bulkPublishSentAt: null,
     createdAt: now,
     updatedAt: now,
@@ -127,6 +131,7 @@ describe('publish route policy (AC-40, google mode, hermetic)', () => {
       findingStates: async () => [],
       inProgressForPr: async () => null,
       createPublication: async (input) => (created++, record(input)),
+      setStartDecision: async () => undefined,
       deletePublication: async () => undefined,
     };
     const publishService = new PublishService({
@@ -164,6 +169,7 @@ describe('publish route policy (AC-40, google mode, hermetic)', () => {
     for (const key of [
       'GET /reviews/:id/publish-preview',
       'GET /reviews/:id/publish-other-drafts',
+      'GET /reviews/:id/publish-plan',
       'GET /reviews/:id/publications',
       'GET /publications/:id',
     ]) {
@@ -212,11 +218,20 @@ describe('publish route policy (AC-40, google mode, hermetic)', () => {
     expect((await t.app.inject(asSession(admin, post))).statusCode).toBe(202);
   });
 
+  it('the publish plan is a member read: a Member session gets 200', async () => {
+    const res = await t.app.inject(
+      asSession(t.principals.session('member'), { method: 'GET', url: `/reviews/${REVIEW}/publish-plan?finding_ids=${F1}` }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ plan_available: true });
+  });
+
   it('unauthenticated → 401 on every publish route with 0 GitLab requests', async () => {
     for (const req of [
       post,
       preview,
       { method: 'GET' as const, url: `/reviews/${REVIEW}/publish-other-drafts` },
+      { method: 'GET' as const, url: `/reviews/${REVIEW}/publish-plan?finding_ids=${F1}` },
       { method: 'GET' as const, url: `/reviews/${REVIEW}/publications` },
       { method: 'GET' as const, url: `/publications/${REVIEW}` },
     ]) {

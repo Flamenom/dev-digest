@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import type { Publication, PublishPreview } from '@devdigest/shared';
+import type { PublicationWithDeprecation as Publication, PublishPreview } from '@devdigest/shared';
 import { startPg, dockerAvailable, type PgFixture } from './helpers/pg.js';
 import { seed } from '../src/db/seed.js';
 import { FakeGitLab, type FakeRequest } from './helpers/fake-gitlab.js';
@@ -12,6 +12,7 @@ import {
   getPublication,
   mrApiPath,
   newPublishFake,
+  seedDeprecatedReview,
   seedPublishPr,
   settle,
 } from './helpers/publish-fixtures.js';
@@ -297,5 +298,65 @@ d('publish findings to GitLab — failure paths (fake GitLab, Testcontainers pg)
     expect(again.statusCode).toBe(409);
     expect(again.json().error.code).toBe('finding_already_published');
     expect(fake.writes).toEqual([]);
+  });
+
+  // ---------- outdated-findings AC-27: the base failure paths with a DEPRECATED run ----------
+
+  async function setupDeprecated() {
+    seq += 1;
+    const fullPath = `gl-fail-dep/team-${seq}/svc`;
+    const seeded = await seedDeprecatedReview(pg.handle.db, fake, { workspaceId, fullPath, reason: 'head_moved' });
+    const ordered = [seeded.ids.multi!, seeded.ids.single!, seeded.ids.withheld!, seeded.ids.offdiff!];
+    return { ...seeded, fullPath, ordered };
+  }
+  const ack = (finding_ids: string[]) => ({ finding_ids, acknowledge_deprecated: true });
+
+  it('outdated AC-27 + AC-30: deprecated run, a 400 fallback then a landed 502 → no re-send; every own draft (fallback included) deleted, others untouched', async () => {
+    const s = await setupDeprecated();
+    const human = fake.addHumanDraft(s.fullPath, PUB_IID, SERVICE_ACCOUNT, 'A human draft');
+    // multi: 400 (multi-line) → 400 (single-line) → general fallback lands; single: 502 that landed.
+    fake.when('POST', /\/draft_notes$/, { status: 400 }, 2);
+    fake.when('POST', /\/draft_notes$/, { status: 502, applyFirst: true }, 1, { skip: 1 });
+    const pub = await publishAndSettle(s.reviewId, ack(s.ordered));
+    expect(pub).toMatchObject({ status: 'failed', code: 'gitlab_publish_failed', published: 0, deprecated: true });
+    expect(createsFor(s.fullPath, s.ids.multi!)).toHaveLength(3);
+    expect(createsFor(s.fullPath, s.ids.single!)).toHaveLength(1); // never re-sent after a 502
+    // Every create (the general fallback included) carries the marker of its finding.
+    for (const r of creates(s.fullPath)) expect((r.body as { note: string }).note).toMatch(/<!-- devdigest:publish:v1 /);
+    expect(fake.deletes).toHaveLength(2); // the fallback draft + the landed one
+    expect(bulks(s.fullPath)).toEqual([]);
+    expect(fake.drafts(s.fullPath, PUB_IID)).toEqual([human]);
+    expect(fake.notes(s.fullPath, PUB_IID)).toEqual([]);
+    expect(pub.items.every((i) => i.state === 'rolled_back')).toBe(true);
+  });
+
+  it('outdated AC-27 + AC-32: deprecated run, bulk_publish lands then 504 → reconciled by marker, fallback included; never re-sent', async () => {
+    const s = await setupDeprecated();
+    fake.when('POST', /\/draft_notes$/, { status: 422 }, 1, { skip: 1 }); // single → general fallback
+    fake.when('POST', /\/bulk_publish$/, { status: 504, applyFirst: true });
+    const pub = await publishAndSettle(s.reviewId, ack(s.ordered));
+    expect(pub).toMatchObject({ status: 'published', published: 4, deprecated: true, position_fallbacks: 1, general_notes: 3 });
+    expect(bulks(s.fullPath)).toHaveLength(1);
+    expect(pub.items.every((i) => i.state === 'published' && i.link?.url)).toBe(true);
+    expectAtMostOneNotePerFinding(s.fullPath, s.ordered);
+    expect(fake.markerCount(s.fullPath, PUB_IID, 'notes')).toBe(4);
+  });
+
+  it('outdated AC-27 + AC-23: deprecated run, a stale marked draft of an old publication is deleted first; no duplicate publish', async () => {
+    const s = await setupDeprecated();
+    fake.when('POST', /\/draft_notes$/, { status: 502 }, 1, { skip: 1 }); // 2nd create fails (not landed)
+    fake.when('DELETE', /\/draft_notes\/\d+$/, { status: 500, headers: NOW }, 4); // the rollback cannot delete
+    const first = await publishAndSettle(s.reviewId, ack(s.ordered));
+    expect(first).toMatchObject({ status: 'failed', code: 'gitlab_drafts_left_behind', deprecated: true });
+    const left = [...fake.drafts(s.fullPath, PUB_IID)];
+    expect(left).toHaveLength(1);
+
+    fake.reset();
+    const second = await publishAndSettle(s.reviewId, ack(s.ordered));
+    expect(second).toMatchObject({ status: 'published', published: 4, deprecated: true, reviewed_version_found: true });
+    expect(fake.deletes[0]!.path).toBe(`${mrApiPath(s.fullPath)}/draft_notes/${left[0]!.id}`);
+    expect(fake.requests.indexOf(fake.deletes[0]!)).toBeLessThan(fake.requests.indexOf(creates(s.fullPath)[0]!));
+    expect(fake.markerCount(s.fullPath, PUB_IID, 'drafts')).toBe(0);
+    expectAtMostOneNotePerFinding(s.fullPath, s.ordered);
   });
 });

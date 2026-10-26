@@ -1,7 +1,8 @@
 /**
  * Pure: the publish preview of one review (spec
  * `specs/2026-10-21-gitlab-publish-findings.md`, AC-2 – AC-8, AC-17, AC-18;
- * plan T9). No I/O — the service gathers the inputs from the store and the
+ * plan T9; extended by `specs/2026-10-23-gitlab-publish-outdated-findings.md`
+ * AC-1, AC-2, AC-16, AC-18, AC-19). No I/O — the service gathers the inputs from the store and the
  * token-health cache, so the preview makes 0 GitLab requests (AC-2).
  *
  * The blocker list and the per-finding reason are exported separately because
@@ -14,11 +15,19 @@ import type {
   GitLabTokenHealth,
   PublishBlocker,
   PublishBlockerCode,
-  PublishedLink,
-  PublishPreview,
-  PublishPreviewFinding,
+  PublishDeprecation,
+  PublishedLinkWithDeprecation,
+  PublishPreviewFindingWithDeprecation,
+  PublishPreviewWithDeprecation,
 } from '@devdigest/shared';
-import { resolveAnchor, toPublishAnchor, type PlannedAnchor } from './anchor.js';
+import {
+  deferredPublishAnchor,
+  generalAnchor,
+  resolveAnchor,
+  toPublishAnchor,
+  type AnchorableFinding,
+  type PlannedAnchor,
+} from './anchor.js';
 import { blockerMessage } from './codes.js';
 import { isBodyTooLong, suggestionEligibility, type NoteFinding } from './note-body.js';
 import type { FindingLiveState, PublishFindingRow, PublishReviewContext } from './ports.js';
@@ -55,20 +64,54 @@ function tokenBlocker(health: GitLabTokenHealth | null): PublishBlocker | null {
 }
 
 /**
+ * Review-level deprecation from persisted state only — 0 I/O (outdated-findings
+ * AC-1): `head_sha` null → `head_unknown`; ≠ the PR's persisted head →
+ * `head_moved`; else null. The publish re-decides against the live refs (AC-3).
+ */
+export function previewDeprecation(ctx: PublishReviewContext): PublishDeprecation | null {
+  const head = ctx.review.headSha;
+  if (head == null) return { reason: 'head_unknown', reviewed_head_sha: null };
+  if (head !== ctx.pr.headSha) return { reason: 'head_moved', reviewed_head_sha: head };
+  return null;
+}
+
+/**
+ * The preview placement of one finding (outdated-findings AC-19, plan Q1):
+ * - `head_unknown` → general `review_head_unknown`;
+ * - `head_moved`, or the persisted files are stale (`headSha ≠ detailHeadSha`)
+ *   → `null` = deferred: the publish anchors on the reviewed MR diff version;
+ * - else the base resolution against the persisted MR diff.
+ */
+export function previewPlannedAnchor(
+  ctx: PublishReviewContext,
+  deprecation: PublishDeprecation | null,
+  finding: AnchorableFinding,
+): PlannedAnchor | null {
+  if (deprecation?.reason === 'head_unknown') return generalAnchor(finding, 'review_head_unknown');
+  if (deprecation?.reason === 'head_moved' || ctx.review.headSha !== ctx.pr.detailHeadSha) return null;
+  return resolveAnchor(finding, ctx.files);
+}
+
+/**
+ * The anchor `findingReason` checks `body_too_long` against. A deferred
+ * finding (null) is bound by its general anchor — the AC-18 worst-case
+ * overhead is charged to every anchor kind, so the bound is the same whatever
+ * placement the publish later picks.
+ */
+export function boundAnchorFor(finding: AnchorableFinding, planned: PlannedAnchor | null): PlannedAnchor {
+  return planned ?? generalAnchor(finding, 'not_on_diff_line');
+}
+
+/**
  * Review-level blockers in the AC-3 – AC-8 order. A GitHub review reports
- * `provider_not_supported` and nothing else (AC-3).
+ * `provider_not_supported` and nothing else (AC-3). An unknown or moved head
+ * is no longer a blocker — it is a deprecation (outdated-findings AC-2).
  */
 export function reviewBlockers(input: Omit<BuildPreviewInput, 'states' | 'viewerCanPublish'>): PublishBlocker[] {
   const { ctx, inProgress, tokenHealth } = input;
   if (ctx.repo.provider !== 'gitlab') return [blocker('provider_not_supported')];
 
   const out: PublishBlocker[] = [];
-  const head = ctx.review.headSha;
-  if (head == null) {
-    out.push(blocker('review_head_unknown'));
-  } else if (head !== ctx.pr.headSha || head !== ctx.pr.detailHeadSha) {
-    out.push(blocker('review_diff_outdated'));
-  }
   if (CLOSED_PR_STATES.has(ctx.pr.status)) out.push(blocker('pr_not_open'));
   if (inProgress) out.push(blocker('publish_in_progress', inProgress.id));
   const token = tokenBlocker(tokenHealth);
@@ -115,7 +158,7 @@ export function safeHttpsUrl(url: string | null): string | null {
   return url != null && url.startsWith('https://') ? url : null;
 }
 
-function publishedLink(live: FindingLiveState): PublishedLink {
+function publishedLink(live: FindingLiveState): PublishedLinkWithDeprecation {
   return {
     discussion_id: live.discussionId,
     note_id: live.noteId,
@@ -123,24 +166,29 @@ function publishedLink(live: FindingLiveState): PublishedLink {
     published_at: live.publishedAt ? live.publishedAt.toISOString() : '',
     published_by: live.publishedBy,
     publication_id: live.publicationId,
+    deprecated: live.publicationDeprecated,
   };
 }
 
-/** `GET /reviews/:id/publish-preview` (AC-2). */
-export function buildPreview(input: BuildPreviewInput): PublishPreview {
+/** `GET /reviews/:id/publish-preview` (AC-2; outdated-findings AC-1, AC-19). */
+export function buildPreview(input: BuildPreviewInput): PublishPreviewWithDeprecation {
   const { ctx, states, viewerCanPublish } = input;
   const liveByFinding = new Map(states.map((s) => [s.findingId, s]));
+  const deprecation = previewDeprecation(ctx);
 
-  const findings: PublishPreviewFinding[] = ctx.findings.map((finding) => {
-    const anchor = resolveAnchor(finding, ctx.files);
+  const findings: PublishPreviewFindingWithDeprecation[] = ctx.findings.map((finding) => {
+    const planned = previewPlannedAnchor(ctx, deprecation, finding);
+    const bound = boundAnchorFor(finding, planned);
     const live = liveByFinding.get(finding.id);
-    const reason = findingReason(finding, anchor, live);
+    const reason = findingReason(finding, bound, live);
     return {
       finding_id: finding.id,
       publishable: reason == null,
       reason,
-      anchor: toPublishAnchor(anchor),
-      suggestion_eligible: suggestionEligibility(toNoteFinding(finding), anchor),
+      anchor: planned == null ? deferredPublishAnchor(finding) : toPublishAnchor(planned),
+      // AC-16: never applicable while deprecated; a deferred placement is unknown.
+      suggestion_eligible:
+        deprecation == null && planned != null && suggestionEligibility(toNoteFinding(finding), planned),
       published: live?.state === 'published' ? publishedLink(live) : null,
     };
   });
@@ -151,6 +199,7 @@ export function buildPreview(input: BuildPreviewInput): PublishPreview {
     mr_iid: ctx.repo.provider === 'gitlab' ? ctx.pr.number : null,
     viewer_can_publish: viewerCanPublish,
     blockers: reviewBlockers(input),
+    deprecation,
     findings,
   };
 }

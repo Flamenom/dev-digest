@@ -11,15 +11,17 @@
  */
 import type {
   AuditEventInput,
+  DeprecationReason,
   FindingKind,
   GitLabCommentsHost,
+  GitLabDiffVersionsHost,
   GitLabDraftNotesHost,
   HostRepoRef,
   PrStatus,
   PublicationItemState,
   PublicationStatus,
   PublishActor,
-  PublishAnchorKind,
+  PublishAnchorKindAll,
   PublishErrorCode,
   RepoProvider,
   Severity,
@@ -100,7 +102,8 @@ export interface PublicationItemRecord {
   position: number;
   state: PublicationItemState;
   code: string | null;
-  anchorKind: PublishAnchorKind;
+  /** `deferred` until the background anchor resolution sets the final kind (Q7). */
+  anchorKind: PublishAnchorKindAll;
   draftId: number | null;
   discussionId: string | null;
   noteId: number | null;
@@ -128,6 +131,14 @@ export interface PublicationRecord {
   hasSummary: boolean;
   applySuggestions: boolean;
   diffHeadSha: string | null;
+  /** The run was published as deprecated (outdated-findings spec AC-3, AC-25). */
+  deprecated: boolean;
+  /** Non-null iff `deprecated` (DB CHECK). */
+  deprecationReason: DeprecationReason | null;
+  /** null when no version lookup happened (AC-25). */
+  reviewedVersionFound: boolean | null;
+  /** AC-12 general re-sends after a rejected position; included in `generalNotes`. */
+  positionFallbacks: number;
   bulkPublishSentAt: Date | null;
   createdAt: Date;
   /** Heartbeat for the 10-minute stale rule (AC-34). */
@@ -148,6 +159,8 @@ export interface FindingLiveState {
   url: string | null;
   publishedAt: Date | null;
   publishedBy: PublishActor | null;
+  /** The live item's publication is deprecated (outdated-findings Q2 / AC-24). */
+  publicationDeprecated: boolean;
 }
 
 export interface CreatePublicationInput {
@@ -158,7 +171,7 @@ export interface CreatePublicationInput {
   hasSummary: boolean;
   applySuggestions: boolean;
   /** `requested` = items.length (1–50). */
-  items: { findingId: string; position: number; anchorKind: PublishAnchorKind }[];
+  items: { findingId: string; position: number; anchorKind: PublishAnchorKindAll }[];
 }
 
 export interface PublishedItemLink {
@@ -183,8 +196,52 @@ export interface FinishPublicationPatch {
     generalNotes: number;
     applicableSuggestions: number;
     otherDraftsPublished: number;
+    positionFallbacks: number;
   }>;
   diffHeadSha?: string | null;
+}
+
+/** Item kinds decided at publish start / by the background anchor resolution. */
+export interface PublicationItemAnchorKind {
+  findingId: string;
+  anchorKind: PublishAnchorKindAll;
+}
+
+/** Recorded once, right after the live refs read (AC-3, AC-28). */
+export interface PublicationStartDecision {
+  deprecationReason: DeprecationReason | null;
+  items: readonly PublicationItemAnchorKind[];
+}
+
+/** Recorded once the background anchor resolution finished (AC-6 – AC-11, Q7). */
+export interface PublicationAnchorResolution {
+  reviewedVersionFound: boolean | null;
+  items: readonly PublicationItemAnchorKind[];
+  diffHeadSha: string | null;
+}
+
+/** Options of `markItemDrafted` (all optional ⇒ the base behaviour). */
+export interface MarkItemDraftedOptions {
+  /** The final kind the draft was sent with (e.g. `general` after an AC-12 fallback). */
+  anchorKind?: PublishAnchorKindAll;
+  /** The draft is an AC-12 general re-send: bumps `position_fallbacks` + `general_notes`. */
+  positionFallback?: boolean;
+}
+
+// ---------- Deprecation / anchor source (outdated-findings spec) ----------
+
+/**
+ * Where a run's anchors come from (plan "Anchor-source decision"):
+ * `persisted` = the persisted MR diff (base behaviour), `reviewed_version` =
+ * the MR diff version whose head is the reviewed head, `none` = no lookup
+ * (head unknown → every finding general).
+ */
+export type AnchorSource = 'persisted' | 'reviewed_version' | 'none';
+
+/** A deprecated run's state, decided once at publish start (AC-3, AC-28). */
+export interface PublishDeprecationState {
+  reason: DeprecationReason;
+  reviewedHeadSha: string | null;
 }
 
 /**
@@ -206,8 +263,20 @@ export interface PublishStore {
   createPublication: (input: CreatePublicationInput) => Promise<PublicationRecord>;
   /** Removes a publication (items cascade) — used when the synchronous pre-checks fail (Q1). */
   deletePublication: (publicationId: string) => Promise<void>;
+  /**
+   * Sets `deprecated` / `deprecation_reason` and the items' anchor kinds, in
+   * one transaction (AC-3, Q7).
+   */
+  setStartDecision: (publicationId: string, decision: PublicationStartDecision) => Promise<void>;
+  /** Sets `reviewed_version_found`, `diff_head_sha` and the items' final anchor kinds (Q7). */
+  setAnchorResolution: (publicationId: string, resolution: PublicationAnchorResolution) => Promise<void>;
   /** item → `drafted` with its draft id; bumps `drafted` + `updated_at` (AC-25 progress). */
-  markItemDrafted: (publicationId: string, findingId: string, draftId: number) => Promise<void>;
+  markItemDrafted: (
+    publicationId: string,
+    findingId: string,
+    draftId: number,
+    opts?: MarkItemDraftedOptions,
+  ) => Promise<void>;
   markItemFailed: (publicationId: string, findingId: string, code: PublishErrorCode) => Promise<void>;
   markItemsPublished: (publicationId: string, links: readonly PublishedItemLink[]) => Promise<void>;
   markItemsRolledBack: (publicationId: string, findingIds: readonly string[]) => Promise<void>;
@@ -251,8 +320,13 @@ export interface PublishStore {
 
 // ---------- Outside world ----------
 
-/** The draft-review host plus the diff-refs read (AC-12). */
-export type PublishGitLabHost = GitLabDraftNotesHost & Pick<GitLabCommentsHost, 'getDiffRefs'>;
+/**
+ * The draft-review host, the MR diff-versions reads (outdated-findings AC-6)
+ * and the diff-refs read (AC-12).
+ */
+export type PublishGitLabHost = GitLabDraftNotesHost &
+  GitLabDiffVersionsHost &
+  Pick<GitLabCommentsHost, 'getDiffRefs'>;
 
 /**
  * Resolves the workspace GitLab token through the token gate. null ⇒ no token

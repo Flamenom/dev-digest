@@ -8,13 +8,13 @@
 
 import React from "react";
 import type { FindingRecord } from "@devdigest/shared";
-import type { PublishPreviewFinding } from "@/lib/types";
+import type { PublishPreviewFindingWithDeprecation } from "@/lib/types";
 import { FindingPublishControl } from "../FindingPublishControl";
 import { s } from "./styles";
 
 export interface FindingPublishState {
   /** finding_id → its publish preview entry. */
-  entries: ReadonlyMap<string, PublishPreviewFinding>;
+  entries: ReadonlyMap<string, PublishPreviewFindingWithDeprecation>;
   isSelected: (findingId: string) => boolean;
   onToggle: (findingId: string) => void;
   /** Selection is frozen (a publication is in progress, AC-39). */

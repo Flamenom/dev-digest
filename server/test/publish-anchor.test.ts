@@ -5,6 +5,8 @@ import { describe, it, expect } from 'vitest';
 import {
   buildNewSideIndex,
   compareForSend,
+  deferredPublishAnchor,
+  generalAnchor,
   resolveAnchor,
   singleLineFallback,
   toPublishAnchor,
@@ -238,5 +240,40 @@ describe('compareForSend (AC-25)', () => {
     const a: SortableFinding = { id: 'a', severity: 'WARNING', file: 'x', start_line: 10, end_line: 2 };
     const b: SortableFinding = { id: 'b', severity: 'WARNING', file: 'x', start_line: 5, end_line: 5 };
     expect([b, a].sort(compareForSend).map((x) => x.id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('generalAnchor / deferredPublishAnchor (outdated-findings AC-8, AC-9, AC-12, AC-19)', () => {
+  it.each(['review_head_unknown', 'reviewed_version_unavailable', 'position_rejected'] as const)(
+    'generalAnchor(%s) is a general anchor over the normalised range',
+    (reason) => {
+      const a = generalAnchor(at(9, 4), reason);
+      expect(a).toEqual({
+        kind: 'general',
+        path: 'src/a.ts',
+        startLine: 4,
+        endLine: 9,
+        offDiffReason: reason,
+        allAdded: false,
+        anchorIsAdded: false,
+      });
+      expect(toPublishAnchor(a)).toEqual({
+        kind: 'general',
+        path: 'src/a.ts',
+        start_line: 4,
+        end_line: 9,
+        off_diff_reason: reason,
+      });
+    },
+  );
+
+  it('deferredPublishAnchor carries path + normalised lines and no off-diff reason', () => {
+    expect(deferredPublishAnchor(at(12, 3))).toEqual({
+      kind: 'deferred',
+      path: 'src/a.ts',
+      start_line: 3,
+      end_line: 12,
+      off_diff_reason: null,
+    });
   });
 });

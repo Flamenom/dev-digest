@@ -8,11 +8,12 @@
  * literal lists; an unknown value never crashes a read.
  */
 import {
+  DeprecationReason,
   FindingKind,
   PrStatus,
   PublicationItemState,
   PublicationStatus,
-  PublishAnchorKind,
+  PublishAnchorKindAll,
   PublishErrorCode,
   Severity,
   type PublishActor,
@@ -40,7 +41,8 @@ const isFindingKind = oneOf(FindingKind.options);
 const isPrStatus = oneOf(PrStatus.options);
 const isPublicationStatus = oneOf(PublicationStatus.options);
 const isItemState = oneOf(PublicationItemState.options);
-const isAnchorKind = oneOf(PublishAnchorKind.options);
+const isAnchorKind = oneOf(PublishAnchorKindAll.options);
+const isDeprecationReason = oneOf(DeprecationReason.options);
 const isPublishErrorCode = oneOf(PublishErrorCode.options);
 
 /**
@@ -95,8 +97,14 @@ export function toItemState(value: string): PublicationItemState {
   return isItemState(value) ? value : 'failed';
 }
 
-export function toAnchorKind(value: string): PublishAnchorKind {
+/** Includes `deferred` (migration 0028, outdated-findings Q7). */
+export function toAnchorKind(value: string): PublishAnchorKindAll {
   return isAnchorKind(value) ? value : 'general';
+}
+
+/** `null` for a missing / unknown reason (the DB CHECK makes the fallback unreachable). */
+export function toDeprecationReason(value: string | null): DeprecationReason | null {
+  return isDeprecationReason(value) ? value : null;
 }
 
 export function toItemRecord(row: PublicationItemRow): PublicationItemRecord {
@@ -142,6 +150,11 @@ export function toPublicationRecord(
     hasSummary: row.hasSummary,
     applySuggestions: row.applySuggestions,
     diffHeadSha: row.diffHeadSha,
+    // DB CHECK `review_publications_deprecation_ck`: deprecated ⇔ reason set.
+    deprecated: row.deprecated,
+    deprecationReason: row.deprecated ? toDeprecationReason(row.deprecationReason) : null,
+    reviewedVersionFound: row.reviewedVersionFound,
+    positionFallbacks: row.positionFallbacks,
     bulkPublishSentAt: row.bulkPublishSentAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

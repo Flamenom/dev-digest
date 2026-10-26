@@ -112,4 +112,33 @@ describe("PublishToolbar with usePublishSelection", () => {
     await user.click(publish);
     expect(onPublish).not.toHaveBeenCalled();
   });
+
+  it("a non-blocking notice id keeps Publish enabled; a blocker id wins when both are set", async () => {
+    const user = userEvent.setup();
+    const onPublish = vi.fn();
+    const props = { state: "some" as const, count: 1, publishableCount: 2, onToggleAll: vi.fn(), onPublish };
+    renderWithProviders(
+      <>
+        <div id="dep">Outdated review</div>
+        <div id="blk">Blocked</div>
+        <div data-testid="notice">
+          <PublishToolbar {...props} noticeId="dep" />
+        </div>
+        <div data-testid="both">
+          <PublishToolbar {...props} noticeId="dep" blockerNoticeId="blk" />
+        </div>
+      </>,
+    );
+
+    const [enabled, blocked] = screen.getAllByRole("button", { name: "Publish 1 to GitLab" });
+    expect(enabled).not.toHaveAttribute("aria-disabled");
+    expect(enabled).toHaveAccessibleDescription("Outdated review");
+    await user.click(enabled!);
+    expect(onPublish).toHaveBeenCalledTimes(1);
+
+    expect(blocked).toHaveAttribute("aria-disabled", "true");
+    expect(blocked).toHaveAccessibleDescription("Blocked");
+    await user.click(blocked!);
+    expect(onPublish).toHaveBeenCalledTimes(1);
+  });
 });

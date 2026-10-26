@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import type { HostComment, Publication, PublishPreview } from '@devdigest/shared';
+import type { HostComment, Publication, PublishPreviewWithDeprecation as PublishPreview } from '@devdigest/shared';
 import { startPg, dockerAvailable, type PgFixture } from './helpers/pg.js';
 import { seed } from '../src/db/seed.js';
 import * as t from '../src/db/schema.js';
@@ -205,16 +205,34 @@ d('publish findings to GitLab (local mode, fake GitLab, Testcontainers pg)', () 
     expect(await getPublication(app, id)).toMatchObject({ status: 'published', drafted: 4, published: 4 });
   });
 
-  it('AC-12: MR head moved since the review → 409 review_diff_outdated after 1 MR read and 0 writes; no publication left', async () => {
+  it('AC-12 (superseded by outdated-findings AC-3/AC-4): MR head moved → 409 review_diff_outdated without the ack (1 MR read, 0 writes, 0 rows); 202 with the ack', async () => {
     const s = await setup({ mrHead: 'pushed9999' });
     const res = await publish(s.reviewId, { finding_ids: [s.ids.multi!] });
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe('review_diff_outdated');
+    expect(res.json().error.message).toBe('This review is outdated — confirm publishing its findings as deprecated.');
     expect(fake.matching(new RegExp(`${escapeRe(mrApiPath(s.fullPath))}$`), 'GET')).toHaveLength(1);
     expect(fake.writes).toEqual([]);
     expect(fake.deletes).toEqual([]);
     const rows = await pg.handle.db.select().from(t.reviewPublications).where(eq(t.reviewPublications.reviewId, s.reviewId));
     expect(rows).toEqual([]);
+
+    // Acknowledged → accepted as a deprecated publication. No version on the fake MR
+    // matches the review head → every finding general (outdated-findings AC-8).
+    fake.reset();
+    const acked = await publish(s.reviewId, { finding_ids: [s.ids.multi!], acknowledge_deprecated: true });
+    expect(acked.statusCode, acked.body).toBe(202);
+    await settle(app);
+    const done = await getPublication(app, (acked.json() as Publication).id);
+    expect(done).toMatchObject({
+      status: 'published',
+      published: 1,
+      general_notes: 1,
+      deprecated: true,
+      deprecation_reason: 'head_moved',
+      reviewed_version_found: false,
+    });
+    expect(creates(s.fullPath)[0]!.body).not.toHaveProperty('position');
   });
 
   it('AC-15 + AC-16: no quick action and no mention / reference / image trigger outside code in any body or the summary', async () => {
@@ -322,8 +340,13 @@ d('publish findings to GitLab (local mode, fake GitLab, Testcontainers pg)', () 
     expect(byId.get(s.ids.withheld!)!.anchor).toMatchObject({ kind: 'general', off_diff_reason: 'patch_unavailable' });
     expect(byId.get(s.ids.offdiff!)!.anchor).toMatchObject({ kind: 'general', off_diff_reason: 'not_on_diff_line' });
 
+    expect(p.deprecation).toBeNull();
+
+    // Outdated-findings AC-1 / AC-2 / AC-19: a legacy review is no longer blocked —
+    // it reports `head_unknown` and every anchor is general `review_head_unknown`.
     const legacyPreview = await preview(legacy!.id);
-    expect(legacyPreview.blockers.map((b) => b.code)).toEqual(['review_head_unknown']);
+    expect(legacyPreview.blockers).toEqual([]);
+    expect(legacyPreview.deprecation).toEqual({ reason: 'head_unknown', reviewed_head_sha: null });
     expect(fake.requests).toEqual([]);
 
     // After a publish the preview carries the published link (who, when, URL).

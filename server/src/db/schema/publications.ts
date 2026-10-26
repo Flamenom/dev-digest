@@ -17,6 +17,8 @@ import type {
   PublicationStatus,
   PublicationItemState,
   PublishAnchorKind,
+  PublishAnchorKindAll,
+  DeprecationReason,
 } from '@devdigest/shared';
 import { now } from './_shared';
 import { workspaces, users } from './core';
@@ -63,6 +65,19 @@ export const PUBLISH_ANCHOR_KINDS = enumList<PublishAnchorKind>()([
   'single_line',
   'general',
 ]);
+/**
+ * Migration 0028 (spec `specs/2026-10-23-gitlab-publish-outdated-findings.md`):
+ * the persisted item anchor kinds gain `deferred` (a finding whose anchor is
+ * resolved in the background against the reviewed MR diff version).
+ */
+export const PUBLISH_ANCHOR_KINDS_ALL = enumList<PublishAnchorKindAll>()([
+  'multi_line',
+  'single_line',
+  'general',
+  'deferred',
+]);
+/** Why a publication is deprecated (migration 0028). */
+export const DEPRECATION_REASONS = enumList<DeprecationReason>()(['head_moved', 'head_unknown']);
 
 /** `a in ('x','y',…)` from a contract's literal list, so schema and contract cannot drift. */
 const inList = (col: AnyPgColumn, values: readonly string[]): SQL =>
@@ -110,6 +125,14 @@ export const reviewPublications = pgTable(
     /** The MR diff-refs head the positioned drafts were sent against (ids only). */
     diffHeadSha: text('diff_head_sha'),
     bulkPublishSentAt: timestamp('bulk_publish_sent_at', { withTimezone: true }),
+    /** Migration 0028 — the run was published from an outdated / head-less review (decided once). */
+    deprecated: boolean('deprecated').notNull().default(false),
+    /** Set iff `deprecated` (see `review_publications_deprecation_ck`). */
+    deprecationReason: text('deprecation_reason', { enum: DEPRECATION_REASONS }),
+    /** Whether the reviewed MR diff version was found; null when no version lookup ran. */
+    reviewedVersionFound: boolean('reviewed_version_found'),
+    /** Findings that fell back to a general note because their position was rejected (AC-12). */
+    positionFallbacks: integer('position_fallbacks').notNull().default(0),
     createdAt: now(),
     /** Heartbeat — drives the 10-minute stale rule of the reconciler (AC-34). */
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -130,6 +153,19 @@ export const reviewPublications = pgTable(
     finishedCk: check(
       'review_publications_finished_ck',
       sql`not (${inList(t.status, TERMINAL_STATUSES)}) or ${t.finishedAt} is not null`,
+    ),
+    deprecationReasonCk: check(
+      'review_publications_deprecation_reason_ck',
+      sql`${t.deprecationReason} is null or ${inList(t.deprecationReason, DEPRECATION_REASONS)}`,
+    ),
+    /** A deprecated publication always carries its reason, and only then. */
+    deprecationCk: check(
+      'review_publications_deprecation_ck',
+      sql`${t.deprecated} = (${t.deprecationReason} is not null)`,
+    ),
+    positionFallbacksCk: check(
+      'review_publications_position_fallbacks_ck',
+      sql`${t.positionFallbacks} >= 0`,
     ),
     /** AC-22 — at most one in-progress publication per PR, race-proof at the DB. */
     prInProgressUq: uniqueIndex('review_publications_pr_in_progress_uq')
@@ -166,7 +202,7 @@ export const reviewPublicationItems = pgTable(
     position: integer('position').notNull(),
     state: text('state', { enum: PUBLICATION_ITEM_STATES }).notNull().default('pending'),
     code: text('code'),
-    anchorKind: text('anchor_kind', { enum: PUBLISH_ANCHOR_KINDS }).notNull(),
+    anchorKind: text('anchor_kind', { enum: PUBLISH_ANCHOR_KINDS_ALL }).notNull(),
     draftId: bigint('draft_id', { mode: 'number' }),
     discussionId: text('discussion_id'),
     noteId: bigint('note_id', { mode: 'number' }),
@@ -182,7 +218,7 @@ export const reviewPublicationItems = pgTable(
     stateCk: check('review_publication_items_state_ck', inList(t.state, PUBLICATION_ITEM_STATES)),
     anchorKindCk: check(
       'review_publication_items_anchor_kind_ck',
-      inList(t.anchorKind, PUBLISH_ANCHOR_KINDS),
+      inList(t.anchorKind, PUBLISH_ANCHOR_KINDS_ALL),
     ),
     urlCk: check(
       'review_publication_items_url_ck',

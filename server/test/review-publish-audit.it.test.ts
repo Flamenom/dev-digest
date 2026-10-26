@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
-import type { Publication, PublishPreview } from '@devdigest/shared';
+import type { PublicationWithDeprecation as Publication, PublishPreview } from '@devdigest/shared';
 import { startPg, dockerAvailable, type PgFixture } from './helpers/pg.js';
 import * as t from '../src/db/schema.js';
 import { MockGitClient, MockSecretsProvider } from '../src/adapters/mocks.js';
@@ -9,9 +9,13 @@ import { FakeGitLab, type FakeRequest } from './helpers/fake-gitlab.js';
 import {
   PUB_IID,
   PUB_TOKEN,
+  NEWER_SHA,
+  REVIEWED_SHA,
+  REVIEWED_VERSION_SHAS,
   addPublishMr,
   mrApiPath,
   newPublishFake,
+  seedDeprecatedReview,
   seedPublishPr,
   settle,
   type FindingSeed,
@@ -139,7 +143,65 @@ d('review.publish audit + attribution (google mode, fake GitLab, Testcontainers 
       other_drafts_published: 0,
       applicable_suggestions: 0,
       has_summary: true,
+      // Outdated-findings AC-26: always present, also for a non-deprecated run.
+      deprecated: false,
+      deprecation_reason: null,
+      reviewed_version_found: null,
+      position_fallbacks: 0,
     });
+  });
+
+  it('outdated-findings AC-26: a deprecated publish → one row with the 4 deprecation fields; audit_events holds no SHA and no body text', async () => {
+    seq += 1;
+    const fullPath = `gl-audit-pub/team-${seq}/svc`;
+    const s = await seedDeprecatedReview(app.db, fake, {
+      workspaceId: app.workspaceId,
+      fullPath,
+      reason: 'head_moved',
+      findings: FINDINGS,
+    });
+    const all = Object.values(s.ids);
+    // The position validator only accepts the reviewed version's SHAs (AC-7).
+    fake.acceptPositionsOnly(fullPath, PUB_IID, REVIEWED_VERSION_SHAS);
+    const pub = await publishAndSettle(s.reviewId, {
+      finding_ids: all,
+      summary: SECRET_TEXT.summary,
+      acknowledge_deprecated: true,
+    });
+    expect(pub).toMatchObject({ status: 'published', published: 3, deprecated: true });
+
+    const rows = (await publishRows()).filter((r) => (r.metadata as { publication_id?: string }).publication_id === pub.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.metadata).toEqual({
+      provider: 'gitlab',
+      publication_id: pub.id,
+      pr_id: s.prId,
+      outcome: 'published',
+      requested: 3,
+      published: 3,
+      failed: 0,
+      general_notes: 1,
+      other_drafts_published: 0,
+      applicable_suggestions: 0,
+      has_summary: true,
+      deprecated: true,
+      deprecation_reason: 'head_moved',
+      reviewed_version_found: true,
+      position_fallbacks: 0,
+    });
+    // The notes themselves do carry the deprecated line (sent to GitLab, never stored).
+    const bodies = creates(fullPath).map(noteOf);
+    expect(bodies).toHaveLength(3);
+    for (const body of bodies) expect(body).toContain(`reviewed at \`${REVIEWED_SHA.slice(0, 8)}\``);
+
+    const audit = [...(await app.db.execute<{ row: string }>(sql.raw('select row_to_json(x)::text as row from audit_events x')))]
+      .map((r) => r.row)
+      .join('\n');
+    for (const sha of [REVIEWED_SHA, REVIEWED_SHA.slice(0, 8), NEWER_SHA, NEWER_SHA.slice(0, 8), 'vbase-reviewed', 'vstart-reviewed']) {
+      expect(audit).not.toContain(sha);
+    }
+    expect(audit).not.toContain('Deprecated');
+    expect(audit).not.toContain('MUST-NOT-REACH');
   });
 
   it('AC-14 + AC-42: google mode — every note ends with the footer, the marker sits right before it; the summary carries the footer', async () => {
@@ -220,6 +282,7 @@ d('review.publish audit + attribution (google mode, fake GitLab, Testcontainers 
       { method: 'POST' as const, url: `/reviews/${s.reviewId}/publications`, payload: { finding_ids: [s.ids.single!] } },
       { method: 'GET' as const, url: `/reviews/${s.reviewId}/publish-preview` },
       { method: 'GET' as const, url: `/reviews/${s.reviewId}/publish-other-drafts` },
+      { method: 'GET' as const, url: `/reviews/${s.reviewId}/publish-plan?finding_ids=${s.ids.single!}` },
       { method: 'GET' as const, url: `/reviews/${s.reviewId}/publications` },
       { method: 'GET' as const, url: `/publications/${s.reviewId}` },
     ];
