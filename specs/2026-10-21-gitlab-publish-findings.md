@@ -1,5 +1,12 @@
 # Spec: Publish review findings to a GitLab MR (batch, via draft notes)   |   Spec ID: SPEC-2026-10-21-gitlab-publish-findings   |   Status: Approved (2026-10-21)
-Supersedes: none. It **amends** these specs:
+Supersedes: none.
+**Superseded in part by:** [`2026-10-23-gitlab-publish-outdated-findings.md`](./2026-10-23-gitlab-publish-outdated-findings.md).
+It replaces D-1, D-2, AC-4, AC-5, the rejection half of AC-12, and AC-37 for
+`review_head_unknown` / `review_diff_outdated`. It narrows the anchor source in AC-9 and the
+refs used in AC-12. It extends AC-14, AC-17, AC-18, AC-20 step 5, AC-29, AC-38, AC-39 and
+AC-41. Read both specs together.
+
+It **amends** these specs:
 
 - [`2026-10-20-gitlab-comments.md`](./2026-10-20-gitlab-comments.md). That spec listed
   "publishing findings to the host" as a future spec, and this is that spec. Two of its
@@ -831,6 +838,8 @@ shared-sync guard. No existing contract file is edited.
   is an additional, stricter placement check on already-grounded findings.
 
 ## Decisions (2026-10-21, user-confirmed)
+- _D-1 and D-2 are superseded by D-9 / D-10 of
+  [`2026-10-23-gitlab-publish-outdated-findings.md`](./2026-10-23-gitlab-publish-outdated-findings.md)._
 - **D-1 (was OQ-1): MR head moved since the review.** The whole publish is rejected with
   `409 review_diff_outdated`, and the UI offers "Re-run review". No partial publish of
   unchanged lines, and no publish against an older diff version → AC-5, AC-12, AC-37.
