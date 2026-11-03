@@ -141,7 +141,7 @@ describe('auth guard × route policy matrix (google mode, hermetic)', () => {
     const admin = t.principals.token('admin');
     const sessionOnly = keys.filter((k) => lookupPolicy(...(k.split(' ') as [string, string])).policy.sessionOnly === true);
     expect(sessionOnly.sort()).toEqual(
-      ['DELETE /tokens/:id', 'GET /tokens', 'PATCH /members/:userId', 'POST /auth/sign-out', 'POST /tokens'].sort(),
+      ['DELETE /tokens/:id', 'GET /tokens', 'PATCH /members/:userId', 'POST /tokens'].sort(),
     );
     for (const key of sessionOnly) {
       const res = await t.app.inject(asToken(admin, toRequest(key)));

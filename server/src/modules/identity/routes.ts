@@ -15,7 +15,13 @@ import { getContext } from '../_shared/context.js';
 import { IdParams } from '../_shared/schemas.js';
 import { AppError } from '../../platform/errors.js';
 import { describeError } from '../../platform/errors-describe.js';
-import { AuthDisabledError, AuthFlowError } from '../../platform/auth-errors.js';
+import {
+  AuthDisabledError,
+  AuthFlowError,
+  CsrfRejectedError,
+  SessionRequiredError,
+} from '../../platform/auth-errors.js';
+import { passesCsrf } from '../../platform/auth/csrf.js';
 import { safeReturnTo } from '../../platform/auth/return-to.js';
 import { sessionCookieValue } from './principal-service.js';
 import {
@@ -38,7 +44,8 @@ import {
  *                                            or 302 to `<origin>/sign-in?error=<code>`
  *   GET    /auth/session                  → CurrentSession (google: 401 when signed out,
  *                                            `details.allowed_domain`); local: the system user
- *   POST   /auth/sign-out                 → { ok: true } + cleared cookie (session only)
+ *   POST   /auth/sign-out                 → { ok: true } + cleared cookie, even for an expired
+ *                                            session (public route; CSRF + session-only in the handler)
  *   GET    /members                       → MemberList
  *   PATCH  /members/:userId               → Member (Admin, session only)
  *   GET    /tokens                        → ApiTokenListItem[] (own; bare array)
@@ -49,8 +56,9 @@ import {
  * enforced by the google-mode guard; the services re-check (defense in depth).
  * The per-IP sign-in rate limit is applied from the policy too.
  *
- * Local mode: the Google routes, sign-out and tokens answer 404 `auth_disabled`;
- * `/auth/session` and `/members` work (the system user is Admin).
+ * Local mode: the Google routes, sign-out, tokens and `PATCH /members/:userId`
+ * answer 404 `auth_disabled`; `/auth/session` and `GET /members` work (the
+ * system user is Admin).
  *
  * Secrets discipline: `code`, `state`, cookie values and token values are never
  * logged or echoed. The callback route logs at `warn` so the default request
@@ -185,13 +193,20 @@ export default async function identityRoutes(app: FastifyInstance) {
 
   r.post('/auth/sign-out', { schema: { response: { 200: SignOutResult } } }, async (req, reply) => {
     requireGoogle();
-    const ctx = await getContext(container, req);
-    const signIn = await container.signIn();
-    await signIn.signOut({
-      sessionValue: sessionCookieValue(req),
-      actorUserId: ctx.userId,
-      ip: req.ip,
-    });
+    // Public route (the guard doesn't reject a dead session here), so this
+    // handler does the guard's session-route checks itself.
+    const principal = req.principal;
+    if (principal?.via === 'token') throw new SessionRequiredError();
+    if (!passesCsrf(req.method, req.headers, publicOrigin)) throw new CsrfRejectedError();
+    if (principal) {
+      const signIn = await container.signIn();
+      await signIn.signOut({
+        sessionValue: sessionCookieValue(req),
+        actorUserId: principal.userId,
+        ip: req.ip,
+      });
+    }
+    // Always clear: an expired or deleted session still has a cookie to drop.
     reply.setCookie(sessionCookie.name, '', sessionCookie.clear());
     return { ok: true as const };
   });
@@ -207,6 +222,9 @@ export default async function identityRoutes(app: FastifyInstance) {
     '/members/:userId',
     { schema: { params: MemberParams, body: MemberUpdate, response: { 200: Member } } },
     async (req) => {
+      // Local mode is unauthenticated: never let it rewrite real users' roles
+      // or status in a DB that also serves google mode.
+      requireGoogle();
       const ctx = await getContext(container, req);
       const member = await container.members.update({ ...ctx, ip: req.ip }, req.params.userId, req.body);
       return memberToDto(member);

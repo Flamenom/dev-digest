@@ -120,7 +120,10 @@ export default async function reviewsRoutes(appBase: FastifyInstance) {
   app.delete('/runs/:id', { schema: { params: IdParams } }, async (req) => {
     const { workspaceId } = await getContext(container, req);
     const ok = await service.deleteRun(workspaceId, req.params.id);
-    return { ok };
+    // 404 (not 200 {ok:false}) so the audit hook, which records any < 400,
+    // never logs a run.delete for a run that doesn't exist.
+    if (!ok) throw new NotFoundError('Run not found');
+    return { ok: true };
   });
 
   // ---- Cancel an in-flight run --------------------------------------------

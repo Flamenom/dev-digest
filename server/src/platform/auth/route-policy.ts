@@ -149,7 +149,9 @@ export const ROUTE_POLICY: Readonly<Record<string, RoutePolicy>> = Object.freeze
   'GET /auth/google/start': { access: 'public', perIpRateLimit: SIGN_IN_LIMIT },
   'GET /auth/google/callback': { access: 'public', perIpRateLimit: SIGN_IN_LIMIT },
   'GET /auth/session': { access: 'public', optionalPrincipal: true },
-  'POST /auth/sign-out': { access: 'member', sessionOnly: true },
+  // Public so an EXPIRED session still gets its cookie cleared (AC-26); the
+  // handler enforces CSRF and session-only itself.
+  'POST /auth/sign-out': { access: 'public', optionalPrincipal: true },
 
   // ── Members ────────────────────────────────────────────────────────────────
   'GET /members': MEMBER,

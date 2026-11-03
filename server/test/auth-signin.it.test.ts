@@ -407,6 +407,28 @@ d('identity routes (Postgres)', () => {
       expect(events.length).toBeGreaterThanOrEqual(1);
     });
 
+    it('AC-26: sign-out with a dead session still clears the cookie; CSRF is still enforced', async () => {
+      const { session } = await signInAs(identity());
+      const cred = { cookie: `${SESSION_COOKIE}=${session}`, sessionId: session! };
+
+      const noCsrf = await t.app.inject(asSession(cred, { method: 'POST', url: '/auth/sign-out' }, { csrf: false }));
+      expect(noCsrf.statusCode).toBe(403);
+      expect(noCsrf.json().error.code).toBe('csrf_rejected');
+      expect((await probe(session!)).statusCode).toBe(200); // the rejected call didn't sign out
+
+      expect((await t.app.inject(asSession(cred, { method: 'POST', url: '/auth/sign-out' }))).statusCode).toBe(200);
+      const before = await t.db.select().from(schema.auditEvents).where(eq(schema.auditEvents.action, 'auth.sign_out'));
+
+      // The session row is gone; the browser still holds the cookie.
+      const again = await t.app.inject(asSession(cred, { method: 'POST', url: '/auth/sign-out' }));
+      expect(again.statusCode).toBe(200);
+      expect(again.json()).toEqual({ ok: true });
+      const cleared = setCookieHeaders(again).find((c) => c.startsWith(`${SESSION_COOKIE}=`))!;
+      expect(cleared).toMatch(/Max-Age=0/i);
+      const after = await t.db.select().from(schema.auditEvents).where(eq(schema.auditEvents.action, 'auth.sign_out'));
+      expect(after).toHaveLength(before.length); // nothing signed out → no audit row
+    });
+
     it('AC-62: a plain-HTTP callback sets no cookie and does not consume the flow', async () => {
       const who = identity();
       const flow = await startFlow(t);
@@ -514,19 +536,18 @@ d('identity routes (Postgres)', () => {
       expect(res.json().allowed_domain).toBeUndefined();
     });
 
-    it('Google routes, sign-out and tokens → 404 auth_disabled; members list works', async () => {
+    it('Google routes, sign-out, tokens and member changes → 404 auth_disabled; members list works', async () => {
       for (const [method, url] of [
         ['GET', '/auth/google/start'],
         ['GET', '/auth/google/callback?code=x&state=y'],
         ['POST', '/auth/sign-out'],
         ['GET', '/tokens'],
         ['POST', '/tokens'],
+        ['PATCH', '/members/3e2a2b52-3b8c-4b34-9a34-0a4c8e2b1c11'],
       ] as const) {
-        const res = await app.inject({
-          method,
-          url,
-          ...(method === 'POST' && url === '/tokens' ? { payload: { name: 'x' } } : {}),
-        });
+        const payload =
+          method === 'POST' && url === '/tokens' ? { name: 'x' } : method === 'PATCH' ? { role: 'member' } : undefined;
+        const res = await app.inject({ method, url, ...(payload ? { payload } : {}) });
         expect(res.statusCode, `${method} ${url}`).toBe(404);
         expect(res.json().error.code).toBe('auth_disabled');
         expect(setCookieHeaders(res)).toEqual([]);

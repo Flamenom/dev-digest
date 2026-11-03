@@ -23,6 +23,17 @@ describe('routes (no DB)', () => {
     await app.close();
   });
 
+  it('an unexpected 5xx error never echoes its message (it may carry a credential)', async () => {
+    const app = await buildApp({ config });
+    app.get('/__boom', async () => {
+      throw new Error('upstream rejected Authorization: Bearer glpat-leaky-token');
+    });
+    const res = await app.inject({ method: 'GET', url: '/__boom' });
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({ error: { code: 'internal_error', message: 'Internal error' } });
+    await app.close();
+  });
+
   it('POST /settings/test-connection (github) returns structured ConnTestResult', async () => {
     const app = await buildApp({
       config,
