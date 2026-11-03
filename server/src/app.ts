@@ -13,7 +13,7 @@ import {
 } from 'fastify-type-provider-zod';
 import { sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { loadConfig, type AppConfig } from './platform/config.js';
+import { isLoopbackHost, loadConfig, type AppConfig } from './platform/config.js';
 import { createDb, type Db } from './db/client.js';
 import { Container, type ContainerOverrides } from './platform/container.js';
 import { AppError } from './platform/errors.js';
@@ -281,6 +281,12 @@ async function configureApp(
         'as the local Admin (ALLOW_UNAUTHENTICATED_LOCAL_MODE=true). Use AUTH_MODE=google for a shared deployment.',
     );
   }
+  if (!google && !isLoopbackHost(config.apiHost)) {
+    app.log.warn(
+      `AUTH_MODE=local with API_HOST=${config.apiHost}: the UNAUTHENTICATED API is reachable from the ` +
+        'network — anyone who can reach this port acts as the local Admin. Unset API_HOST to listen on loopback only.',
+    );
+  }
 
   // Reap runs left 'running' by a previous (now-dead) process — otherwise they
   // show as perpetually "running" in the UI and can't be cancelled (no runner).
@@ -435,8 +441,15 @@ async function configureApp(
     }
     app.log.error(err);
     const e = err as { statusCode?: number; message?: string };
-    reply.status(e.statusCode ?? 500).send({
-      error: { code: 'internal_error', message: e.message ?? 'Internal error' },
+    const status = e.statusCode ?? 500;
+    // 4xx here are Fastify's own client errors (bad JSON, 413, 415…) — their
+    // message is safe and useful. A 5xx message comes from an adapter/SDK and
+    // may embed a credential or URL: log it, never echo it.
+    reply.status(status).send({
+      error: {
+        code: 'internal_error',
+        message: status < 500 ? (e.message ?? 'Internal error') : 'Internal error',
+      },
     });
   });
 

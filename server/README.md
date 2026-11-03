@@ -284,6 +284,7 @@ stateDiagram-v2
 |-----|---------|-------|
 | `DATABASE_URL` | `postgres://devdigest:devdigest@localhost:5432/devdigest` | required to migrate/serve |
 | `API_PORT` / `WEB_PORT` | `3001` / `3000` | API port; `WEB_PORT` also sets the allowed CORS origin |
+| `API_HOST` | `localhost` (local mode) / `0.0.0.0` (google mode) | Listen address (IP or `localhost`). Local mode is unauthenticated, so it listens on loopback only; setting a non-loopback address there logs a warning |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` | — | optional, per-provider; also settable via Settings UI |
 | `GITHUB_TOKEN` | — | optional; PAT with repo scope (`GITHUB_PAT` accepted as a fallback) |
 | `GITLAB_TOKEN` | — | optional; gitlab.com token with the **`api`** scope (Reporter role recommended); usually set via Settings |

@@ -40,6 +40,15 @@ function configErrorMessage(env: NodeJS.ProcessEnv): string {
 }
 
 describe('config — auth mode', () => {
+  it('API_HOST: loopback by default in local mode, all interfaces in google mode, validated when set', () => {
+    expect(loadConfig(base()).apiHost).toBe('localhost');
+    expect(loadConfig(googleEnv()).apiHost).toBe('0.0.0.0');
+    expect(loadConfig(base({ API_HOST: '0.0.0.0' })).apiHost).toBe('0.0.0.0');
+    expect(loadConfig(googleEnv({ API_HOST: '10.0.0.5' })).apiHost).toBe('10.0.0.5');
+    expect(loadConfig(base({ API_HOST: '' })).apiHost).toBe('localhost');
+    expect(configErrorMessage(base({ API_HOST: 'http://evil.example' }))).toContain('API_HOST must be');
+  });
+
   it('defaults to local mode with today’s behaviour when nothing new is set', () => {
     const cfg = loadConfig(base({ WEB_PORT: '3000' }));
     expect(cfg.authMode).toBe('local');

@@ -36,6 +36,10 @@ const EnvSchema = z.object({
   // unindexed repo degrades gracefully. Per-agent override: agents.repo_intel.
   REPO_INTEL_ENABLED: z.string().optional(),
   API_PORT: z.coerce.number().int().default(3001),
+  // Listen address. Unset → loopback only in local mode (the API is
+  // unauthenticated there) and all interfaces in google mode. Validated in
+  // loadConfig: an IP literal or `localhost`.
+  API_HOST: optionalString,
   WEB_PORT: z.coerce.number().int().default(3000),
   DEVDIGEST_CLONE_DIR: z.string().optional(),
   // Offline mode for repository hosts (GitHub + GitLab): when 'true', every
@@ -119,6 +123,11 @@ export type AuthConfig = {
 export type AppConfig = AuthConfig & {
   databaseUrl: string;
   apiPort: number;
+  /**
+   * Listen address: API_HOST, else `localhost` (all loopback addresses) in
+   * local mode and `0.0.0.0` in google mode.
+   */
+  apiHost: string;
   webPort: number;
   /** Absolute path where repos are cloned (~/.devdigest/workspace by default). */
   cloneDir: string;
@@ -190,6 +199,11 @@ function isValidProxyEntry(entry: string): boolean {
   if (!/^\d{1,3}$/.test(prefix)) return false;
   const bits = Number(prefix);
   return bits <= (family === 4 ? 32 : 128);
+}
+
+/** `localhost`, 127.0.0.0/8 or ::1 — a listen address the network can't reach. */
+export function isLoopbackHost(host: string): boolean {
+  return host === 'localhost' || host === '::1' || (isIP(host) === 4 && host.startsWith('127.'));
 }
 
 function splitList(raw: string | undefined): string[] {
@@ -338,12 +352,17 @@ function configError(problems: string[]): ConfigError {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = EnvSchema.parse(env);
   const auth = validateAuthConfig(parsed);
+  if (parsed.API_HOST !== undefined && parsed.API_HOST !== 'localhost' && isIP(parsed.API_HOST) === 0) {
+    throw configError(['API_HOST must be an IP address or "localhost"']);
+  }
+  const apiHost = parsed.API_HOST ?? (auth.authMode === 'google' ? '0.0.0.0' : 'localhost');
   const cloneDirRaw =
     parsed.DEVDIGEST_CLONE_DIR ?? join(homedir(), '.devdigest', 'workspace');
   const cloneDir = isAbsolute(cloneDirRaw) ? cloneDirRaw : resolve(process.cwd(), cloneDirRaw);
   return {
     databaseUrl: parsed.DATABASE_URL,
     apiPort: parsed.API_PORT,
+    apiHost,
     webPort: parsed.WEB_PORT,
     cloneDir,
     secretsPath: join(homedir(), '.devdigest', 'secrets.json'),

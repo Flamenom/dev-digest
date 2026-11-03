@@ -271,6 +271,14 @@ d('A2 reviews + agents (Testcontainers pg)', () => {
     await app.close();
   });
 
+  it('DELETE /runs/:id of an unknown run → 404 (no {ok:false} 200 for the audit hook to record)', async () => {
+    const app = await appWith(REVIEW_FIXTURE);
+    const res = await app.inject({ method: 'DELETE', url: '/runs/3e2a2b52-3b8c-4b34-9a34-0a4c8e2b1c11' });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe('not_found');
+    await app.close();
+  });
+
   it('SSE: /runs/:id/events streams events and completes', async () => {
     const app = await appWith(REVIEW_FIXTURE);
     const { pr } = await setupRepoAndPr(pg.handle.db, workspaceId);
