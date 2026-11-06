@@ -268,7 +268,8 @@ Caddy (automatic HTTPS), with Google sign-in and secrets encrypted in Postgres.
 It adds nightly local backups, a credential-free smoke check
 (`deploy/smoke.sh`) and safe updates with automatic rollback
 (`deploy/update.sh`). Production starts with no agents and no demo data. Follow
-the runbook: [`docs/deployment.md`](docs/deployment.md).
+the runbook: [`docs/deployment.md`](docs/deployment.md). A step-by-step setup
+checklist in Russian is in [`docs/server-setup.ru.md`](docs/server-setup.ru.md).
 
 ## Useful scripts
 
