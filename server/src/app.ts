@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import cookie from '@fastify/cookie';
@@ -17,6 +17,7 @@ import { isLoopbackHost, loadConfig, type AppConfig } from './platform/config.js
 import { createDb, type Db } from './db/client.js';
 import { Container, type ContainerOverrides } from './platform/container.js';
 import { AppError } from './platform/errors.js';
+import { isReportable } from './platform/error-reporting.js';
 import { modules } from './modules/index.js';
 import { claimInstance, type InstanceClaim } from './db/instance-claim.js';
 import {
@@ -108,6 +109,9 @@ const LOG_SERIALIZERS = {
 
 /** Max wait for live publish tasks / reconciles on shutdown. */
 const PUBLISH_SHUTDOWN_GRACE_MS = 5_000;
+
+/** Max wait for pending error reports on shutdown (AC-43). */
+const ERROR_REPORT_FLUSH_MS = 2_000;
 
 /** Strict-Transport-Security in google mode (AC-62): one year, subdomains. */
 const HSTS = { maxAge: 31_536_000, includeSubDomains: true } as const;
@@ -336,6 +340,10 @@ async function configureApp(
     });
     await Promise.race([settled, timeout]);
     clearTimeout(timer);
+    // AC-43: flush pending error reports AFTER the drains (a failing publish
+    // task may still capture), bounded to 2 s on top of the existing budget.
+    // `flush` never rejects (port contract).
+    await container.errorReporter.flush(ERROR_REPORT_FLUSH_MS);
   });
 
   // Route bookkeeping + per-IP sign-in limits — before rate-limit and modules.
@@ -396,7 +404,25 @@ async function configureApp(
 
   // Structured error handler. Registered BEFORE modules so encapsulated
   // module plugins inherit it. Validation → 422; AppError → its status.
-  app.setErrorHandler((err: unknown, _req, reply) => {
+  // AC-34: every error that becomes a 5xx is reported, unless it is not an
+  // internal failure (upstream provider, cancellation — `isReportable`). Only
+  // the route TEMPLATE goes out, never `req.url` (it can carry code/state),
+  // and the user by internal id only (AC-38). Never throws (AC-42).
+  const report = (err: unknown, req: FastifyRequest, status: number): void => {
+    try {
+      if (status < 500 || !isReportable(err)) return;
+      container.errorReporter.capture(err, {
+        userId: req.principal?.userId,
+        route: req.routeOptions?.url,
+        method: req.method,
+        status,
+      });
+    } catch {
+      // reporting must never affect the response
+    }
+  };
+
+  app.setErrorHandler((err: unknown, req, reply) => {
     // Request validation failure from the zod type provider (schema.body/params).
     if (hasZodFastifySchemaValidationErrors(err)) {
       reply.status(422).send({
@@ -412,6 +438,7 @@ async function configureApp(
     // log it and return a generic 500.
     if (isResponseSerializationError(err)) {
       app.log.error({ err }, 'response serialization failed');
+      report(err, req, 500);
       reply.status(500).send({ error: { code: 'internal_error', message: 'Internal error' } });
       return;
     }
@@ -434,6 +461,7 @@ async function configureApp(
       return;
     }
     if (err instanceof AppError) {
+      report(err, req, err.statusCode);
       reply.status(err.statusCode).send({
         error: { code: err.code, message: err.message, details: err.details },
       });
@@ -442,6 +470,7 @@ async function configureApp(
     app.log.error(err);
     const e = err as { statusCode?: number; message?: string };
     const status = e.statusCode ?? 500;
+    report(err, req, status);
     // 4xx here are Fastify's own client errors (bad JSON, 413, 415…) — their
     // message is safe and useful. A 5xx message comes from an adapter/SDK and
     // may embed a credential or URL: log it, never echo it.

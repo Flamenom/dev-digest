@@ -88,6 +88,19 @@ module.exports = {
       },
     },
 
+    {
+      name: 'core-no-sentry',
+      comment:
+        'reviewer-core must stay free of error-reporting SDKs (AC-41): it is shared with the CI ' +
+        'runner and its only side effect is the injected LLMProvider. Engine errors surface in the ' +
+        'server and are reported there via the ErrorReporter port (adapters/sentry). The path ' +
+        'matches both resolved (node_modules/@sentry/…) and unresolved (@sentry/…) specifiers, so ' +
+        'the rule fires even though reviewer-core has no @sentry dependency installed.',
+      severity: 'error',
+      from: { path: REVIEWER_CORE },
+      to: { path: '(^|node_modules/)@sentry/' },
+    },
+
     // ======== the eval slice's pure modules — clean today, keep it ==========
     {
       name: 'eval-scoring-purity',

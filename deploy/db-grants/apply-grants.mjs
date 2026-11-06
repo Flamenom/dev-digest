@@ -3,11 +3,12 @@
 //
 //   node /opt/devdigest/db-grants/apply-grants.mjs
 //
-// Applies deploy/db-grants/grants.sql (mounted read-only next to this file) as the
-// owner role from DATABASE_URL. The runtime-role password comes from
-// APP_DB_PASSWORD and reaches the SQL only as a bound parameter of
-// set_config('devdigest.app_password', …) — it never appears in a statement text,
-// a log line or this process's argv.
+// Applies deploy/db-grants/grants.sql, then deploy/db-grants/backup-role.sql (both
+// mounted read-only next to this file) as the owner role from DATABASE_URL. The
+// runtime-role password comes from APP_DB_PASSWORD and the read-only backup-role
+// password from BACKUP_DB_PASSWORD; each reaches the SQL only as a bound parameter
+// of set_config('devdigest.app_password' | 'devdigest.backup_password', …) — it
+// never appears in a statement text, a log line or this process's argv.
 //
 // The API image has no psql, so this reuses the server's own postgres-js driver.
 import { createRequire } from 'node:module';
@@ -21,6 +22,7 @@ const postgres = require('postgres');
 
 const url = process.env.DATABASE_URL;
 const appPassword = process.env.APP_DB_PASSWORD;
+const backupPassword = process.env.BACKUP_DB_PASSWORD;
 if (!url) {
   console.error('✗ grants: DATABASE_URL is required');
   process.exit(1);
@@ -53,8 +55,18 @@ if (!STRONG.test(ownerPassword))
   fail('POSTGRES_PASSWORD must be >= 32 chars of [A-Za-z0-9_-]; generate one with: openssl rand -hex 24');
 if (ownerPassword === appPassword)
   fail('APP_DB_PASSWORD must differ from POSTGRES_PASSWORD');
+// The read-only backup role (pg_dump in the `backup` service): same bar, and a
+// password of its own so a leaked backup credential never grants writes.
+if (!backupPassword) fail('BACKUP_DB_PASSWORD is missing');
+if (PLACEHOLDER.test(backupPassword))
+  fail('BACKUP_DB_PASSWORD is still the .env.example placeholder; generate one with: openssl rand -hex 24');
+if (!STRONG.test(backupPassword))
+  fail('BACKUP_DB_PASSWORD must be >= 32 chars of [A-Za-z0-9_-]; generate one with: openssl rand -hex 24');
+if (backupPassword === ownerPassword || backupPassword === appPassword)
+  fail('BACKUP_DB_PASSWORD must differ from POSTGRES_PASSWORD and APP_DB_PASSWORD');
 
 const grantsSql = readFileSync(join(here, 'grants.sql'), 'utf8');
+const backupRoleSql = readFileSync(join(here, 'backup-role.sql'), 'utf8');
 // One connection for the whole run: the GUC is session-scoped.
 const sql = postgres(url, { max: 1, onnotice: () => {} });
 try {
@@ -63,6 +75,12 @@ try {
   await sql.unsafe(grantsSql).simple();
   await sql`select set_config('devdigest.app_password', '', false)`;
   console.log('✓ runtime-role grants applied (devdigest_app)');
+  // Must run AFTER grants.sql: that file revokes every database privilege from
+  // PUBLIC on each run, and backup-role.sql re-grants CONNECT to the backup role.
+  await sql`select set_config('devdigest.backup_password', ${backupPassword}, false)`;
+  await sql.unsafe(backupRoleSql).simple();
+  await sql`select set_config('devdigest.backup_password', '', false)`;
+  console.log('✓ backup-role grants applied (devdigest_backup)');
 } catch (err) {
   // Never print the error object wholesale: keep to the server's message/code.
   const e = /** @type {{ message?: string; code?: string }} */ (err);

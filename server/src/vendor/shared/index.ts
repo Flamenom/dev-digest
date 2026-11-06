@@ -50,3 +50,4 @@ export * from './contracts/review-publish.js';
 export * from './review-publish-ports.js';
 export * from './contracts/review-publish-deprecation.js';
 export * from './review-publish-versions-ports.js';
+export * from './error-reporter.js';

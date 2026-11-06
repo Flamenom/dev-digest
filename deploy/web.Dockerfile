@@ -25,7 +25,17 @@ COPY client/messages ./messages
 COPY client/src ./src
 
 ARG NEXT_PUBLIC_API_BASE=/api
+# Opt-in browser error reporting. PUBLIC build-time values: the web DSN is
+# designed to be public and is inlined into the bundle (empty = reporting off,
+# SDK never loaded). Only the web DSN (deploy/.env SENTRY_WEB_DSN) is passed
+# here — never the api's SENTRY_DSN. Build stage only; not in the runtime image env.
+ARG NEXT_PUBLIC_SENTRY_DSN=
+ARG NEXT_PUBLIC_SENTRY_ENVIRONMENT=production
+ARG NEXT_PUBLIC_SENTRY_RELEASE=unknown
 ENV NEXT_PUBLIC_API_BASE=${NEXT_PUBLIC_API_BASE} \
+    NEXT_PUBLIC_SENTRY_DSN=${NEXT_PUBLIC_SENTRY_DSN} \
+    NEXT_PUBLIC_SENTRY_ENVIRONMENT=${NEXT_PUBLIC_SENTRY_ENVIRONMENT} \
+    NEXT_PUBLIC_SENTRY_RELEASE=${NEXT_PUBLIC_SENTRY_RELEASE} \
     NEXT_TELEMETRY_DISABLED=1 \
     NODE_ENV=production
 RUN pnpm build && pnpm prune --prod

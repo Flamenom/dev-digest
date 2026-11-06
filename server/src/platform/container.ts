@@ -29,6 +29,8 @@ import type {
 import type { AppConfig } from './config.js';
 import type { Db } from '../db/client.js';
 import { JobRunner } from './jobs.js';
+import { NoopErrorReporter, type ErrorReporter } from './error-reporting.js';
+import { createSentryReporter } from '../adapters/sentry/sentry-reporter.js';
 import { runBus, type RunBus } from './sse.js';
 import { LocalSecretsProvider } from '../adapters/secrets/local.js';
 import { EncryptedSecretsProvider } from '../adapters/secrets/encrypted.js';
@@ -183,6 +185,8 @@ export interface ContainerOverrides {
   clock?: Clock;
   /** Encrypted-secret row store (google mode) — tests inject an in-memory fake. */
   secretStore?: BatchSecretStore<SecretsTx>;
+  /** Error reporter (Sentry port) — tests inject a recording fake. */
+  errorReporter?: ErrorReporter;
 }
 
 /** Q8 — which secret authenticates git network ops for each provider, and as whom. */
@@ -251,6 +255,7 @@ export class Container {
   private _members?: MembersService;
   private _tokens?: TokensService;
   private _clock?: Clock;
+  private _errorReporter?: ErrorReporter;
 
   /**
    * @param log process-level logger for DETACHED work that has no request to log
@@ -272,7 +277,56 @@ export class Container {
     this.auth = overrides.auth ?? new LocalNoAuthProvider(db);
     this.secrets = overrides.secrets ?? this.buildSecrets();
     this.runBus = runBus;
-    this.jobs = new JobRunner(db, { log: this.log?.child?.({ module: 'jobs' }) ?? this.log });
+    // Resolved eagerly so a malformed DSN warns once at boot (AC-42).
+    this.jobs = new JobRunner(db, {
+      log: this.log?.child?.({ module: 'jobs' }) ?? this.log,
+      reporter: this.errorReporter,
+    });
+  }
+
+  /**
+   * The ONE error reporter (AC-32): the override, else the no-op when no DSN is
+   * configured or `NODE_ENV=test`, else the Sentry adapter (which itself falls
+   * back to the no-op, with one warning, on a malformed DSN).
+   */
+  get errorReporter(): ErrorReporter {
+    if (this.overrides.errorReporter) return this.overrides.errorReporter;
+    if (this._errorReporter) return this._errorReporter;
+    const { sentryDsn, nodeEnv } = this.config;
+    this._errorReporter =
+      !sentryDsn || nodeEnv === 'test'
+        ? new NoopErrorReporter()
+        : createSentryReporter({
+            dsn: sentryDsn,
+            environment: this.config.sentryEnvironment,
+            release: this.config.sentryRelease,
+            // The message names the setting, never its value.
+            log: { warn: (msg) => this.log?.warn(msg) },
+            secrets: () => this.reporterSecrets(),
+          });
+    return this._errorReporter;
+  }
+
+  /** Whether errors are actually reported (bootstrap installs process handlers only then). */
+  get errorReporterActive(): boolean {
+    return !(this.errorReporter instanceof NoopErrorReporter);
+  }
+
+  /** Static deployment secrets masked verbatim in every reported event (AC-36). */
+  private reporterSecrets(): string[] {
+    const c = this.config;
+    const out: string[] = [];
+    for (const key of [c.masterKey, c.previousMasterKey]) {
+      if (key) out.push(key.toString('base64'), key.toString('base64url'), key.toString('hex'));
+    }
+    if (c.google?.clientSecret) out.push(c.google.clientSecret);
+    try {
+      const password = new URL(c.databaseUrl).password;
+      if (password) out.push(password, decodeURIComponent(password));
+    } catch {
+      // unparsable URL: nothing to add (the userinfo regex still masks it)
+    }
+    return out.filter((s) => s.length > 0);
   }
 
   /**
@@ -731,6 +785,7 @@ export class Container {
           log,
         }),
         log,
+        reporter: this.errorReporter,
       });
     }
     return this._publishRunner;

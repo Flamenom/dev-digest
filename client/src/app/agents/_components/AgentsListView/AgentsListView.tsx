@@ -3,7 +3,8 @@
 
    Multi-user (AC-33): creating an agent is Admin-only — a Member gets the
    "Add agent" control focusable but aria-disabled with the visible
-   "Admins only" hint (no menu opens), and no empty-state CTA. */
+   "Admins only" hint (no menu opens), and no empty-state CTA — the empty
+   state tells them only an Admin can create agents (AC-60). */
 "use client";
 
 import React from "react";
@@ -14,6 +15,7 @@ import { AppShell } from "@/components/app-shell";
 import { AdminOnly } from "@/components/admin-gate";
 import { useCan } from "@/lib/hooks/permissions";
 import { useAgents, useUpdateAgent } from "@/lib/hooks/agents";
+import { useQueryParam } from "@/lib/hooks/use-query-param";
 import { AgentCard } from "../AgentCard";
 import { CreateAgentModal } from "./_components/CreateAgentModal";
 import { TEMPLATES } from "./constants";
@@ -28,6 +30,16 @@ export function AgentsListView() {
   const { isAdmin } = useCan();
   const [creating, setCreating] = React.useState(false);
   const [search, setSearch] = React.useState("");
+  // `?create=1` deep link (Run-review dropdown, zero agents): an Admin lands
+  // with the create modal open; the param is consumed (replace, no history
+  // entry) so reload/back don't reopen it. A Member ignores it.
+  const [createParam, setCreateParam] = useQueryParam("create");
+  React.useEffect(() => {
+    if (createParam === "1" && isAdmin) {
+      setCreating(true);
+      setCreateParam(null);
+    }
+  }, [createParam, isAdmin, setCreateParam]);
 
   const list = filterAgents(agents ?? [], search);
 
@@ -99,7 +111,7 @@ export function AgentsListView() {
           <EmptyState
             icon="Cpu"
             title={t("list.emptyTitle")}
-            body={t("list.emptyBody")}
+            body={isAdmin ? t("list.emptyBody") : t("list.emptyBodyMember")}
             cta={isAdmin ? t("list.emptyCta") : undefined}
             onCta={isAdmin ? () => setCreating(true) : undefined}
           />

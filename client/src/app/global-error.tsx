@@ -4,6 +4,9 @@
    design system having loaded — styles are self-contained by design. */
 "use client";
 
+import { useEffect } from "react";
+import { reportRenderError } from "@/lib/monitoring";
+
 export default function GlobalError({
   error,
   reset,
@@ -11,6 +14,11 @@ export default function GlobalError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  useEffect(() => {
+    // Opt-in Sentry (no-op when the build has no DSN).
+    reportRenderError(error);
+  }, [error]);
+
   return (
     <html lang="en">
       <body

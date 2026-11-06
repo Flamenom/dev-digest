@@ -4,6 +4,7 @@ import type { Db } from '../db/client.js';
 import * as t from '../db/schema.js';
 import { withTimeout, withRetry } from './resilience.js';
 import { redactSecret } from './redact.js';
+import { isReportable, type ErrorReporter } from './error-reporting.js';
 
 /**
  * JobRunner — async work (clone, PR import, indexing, polling) on a
@@ -33,6 +34,11 @@ export interface JobRunnerOptions {
   retries?: number;
   /** Where a failed job is reported (jobId, kind, redacted message only). */
   log?: JobLogger;
+  /**
+   * Where an internal job failure is reported (AC-34) — once per job, after the
+   * final attempt. Expected failures (`isReportable` false) are not reported.
+   */
+  reporter?: ErrorReporter;
 }
 
 export interface EnqueuedJob {
@@ -51,6 +57,7 @@ export class JobRunner {
   private timeoutMs: number;
   private retries: number;
   private log?: JobLogger;
+  private reporter?: ErrorReporter;
 
   constructor(
     private db: Db,
@@ -60,6 +67,7 @@ export class JobRunner {
     this.timeoutMs = opts.timeoutMs ?? 120_000;
     this.retries = opts.retries ?? 2;
     this.log = opts.log;
+    this.reporter = opts.reporter;
   }
 
   register(kind: string, handler: JobHandler): void {
@@ -129,13 +137,19 @@ export class JobRunner {
   private reportFailure(jobId: string, kind: string, err: unknown): void {
     try {
       const log = this.log;
-      if (!log) return;
-      const message = redactSecret(err instanceof Error ? err.message : String(err));
-      const entry = { jobId, kind, err: message };
-      if (log.error) log.error(entry, 'background job failed');
-      else log.warn(entry, 'background job failed');
+      if (log) {
+        const message = redactSecret(err instanceof Error ? err.message : String(err));
+        const entry = { jobId, kind, err: message };
+        if (log.error) log.error(entry, 'background job failed');
+        else log.warn(entry, 'background job failed');
+      }
     } catch {
       // A throwing logger must not turn back into an unhandled rejection.
+    }
+    try {
+      if (this.reporter && isReportable(err)) this.reporter.capture(err, { jobKind: kind });
+    } catch {
+      // Nor may a throwing reporter (AC-42).
     }
   }
 

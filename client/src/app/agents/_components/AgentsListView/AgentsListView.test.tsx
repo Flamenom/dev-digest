@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Agent, AgentListItem } from "@devdigest/shared";
@@ -10,10 +10,21 @@ import { AgentsListView } from "./AgentsListView";
    a Member gets "Add Agent" focusable but aria-disabled with the visible
    "Admins only" hint, no menu, an aria-disabled per-card toggle and no delete. */
 
+const nav = vi.hoisted(() => ({
+  search: new URLSearchParams(),
+  router: { push: () => {}, replace: (() => {}) as (href: string, opts?: unknown) => void },
+}));
+
 vi.mock("next/navigation", () => ({
   usePathname: () => "/agents",
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRouter: () => nav.router,
+  useSearchParams: () => nav.search,
 }));
+
+beforeEach(() => {
+  nav.search = new URLSearchParams();
+  nav.router = { push: vi.fn(), replace: vi.fn() };
+});
 
 const AGENT: AgentListItem = {
   id: "ag1",
@@ -79,7 +90,44 @@ describe("AgentsListView — role gating (AC-33)", () => {
     // role (not just the data) before asserting the CTA is absent.
     await findRole("member");
     expect(await screen.findByText("No agents yet")).toBeInTheDocument();
+    // AC-60: the Member is told only an Admin can create agents — not to create one.
+    expect(screen.getByText(/Only an Admin can create agents/)).toBeInTheDocument();
+    expect(screen.queryByText(/Create one to start reviewing/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Create your first agent" })).not.toBeInTheDocument();
+  });
+
+  it("Admin with no agents: the empty state keeps its body and create CTA", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<AgentsListView />, { session: "admin", routes: agentsApi([]) });
+
+    const cta = await screen.findByRole("button", { name: "Create your first agent" });
+    expect(screen.getByText(/Create one to start reviewing/)).toBeInTheDocument();
+    expect(screen.queryByText(/Only an Admin can create agents/)).not.toBeInTheDocument();
+    await user.click(cta);
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("?create=1 + Admin: the create modal opens and the param is consumed (AC-59)", async () => {
+    nav.search = new URLSearchParams("create=1");
+    renderWithProviders(<AgentsListView />, { session: "admin", routes: agentsApi([]) });
+
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Create agent");
+    expect(nav.router.replace).toHaveBeenCalledWith(expect.not.stringContaining("create=1"), { scroll: false });
+  });
+
+  it("?create=1 + Member: the param is ignored and no modal opens", async () => {
+    nav.search = new URLSearchParams("create=1");
+    renderWithProviders(
+      <>
+        <RoleProbe />
+        <AgentsListView />
+      </>,
+      { session: "member", routes: agentsApi([]) },
+    );
+
+    await findRole("member");
+    expect(await screen.findByText("No agents yet")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("Admin: Add Agent opens the create menu; the toggle flips the agent and Delete is shown", async () => {

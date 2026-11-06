@@ -1,4 +1,5 @@
-/* providers.tsx — client provider stack: React Query + Theme + Toasts.
+/* providers.tsx — client provider stack: React Query + Theme + Toasts
+   (+ the opt-in Sentry user tag, `MonitoringUser`, when a DSN is built in).
    The auth gate + active Repo are composed by the app layer
    (`app/layout.tsx`) INSIDE <Providers>, so shared lib never depends on
    the UI component layer.
@@ -36,6 +37,7 @@ import { ApiError } from "./api";
 import { SESSION_QUERY_KEY } from "./hooks/session";
 import { redirectToSignIn } from "./sign-in-redirect";
 import { isLocalErrorChannel } from "./query-meta";
+import { MonitoringUser, isMonitoringEnabled } from "./monitoring";
 
 const AUTHZ_CODES: ReadonlySet<string> = new Set(AuthzErrorCode.options);
 
@@ -120,6 +122,8 @@ export function Providers({ children, queryDefaults }: ProvidersProps) {
 
   return (
     <QueryClientProvider client={qc}>
+      {/* Opt-in Sentry user tag (id only); absent when the build has no DSN. */}
+      {isMonitoringEnabled() && <MonitoringUser />}
       <ThemeProvider>
         <ToastProvider>{children}</ToastProvider>
       </ThemeProvider>

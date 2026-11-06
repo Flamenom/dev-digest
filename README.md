@@ -261,6 +261,15 @@ cd ../client && pnpm install && pnpm dev               # web on :3000
 Optional: `cd mcp && pnpm install` once to let Claude Code spawn the MCP server
 from the root `.mcp.json`; `cd evals && pnpm install` to run the harness evals.
 
+## Deploying for a team (server mode)
+
+For a shared install, `deploy/compose.yml` runs DevDigest on one VM behind
+Caddy (automatic HTTPS), with Google sign-in and secrets encrypted in Postgres.
+It adds nightly local backups, a credential-free smoke check
+(`deploy/smoke.sh`) and safe updates with automatic rollback
+(`deploy/update.sh`). Production starts with no agents and no demo data. Follow
+the runbook: [`docs/deployment.md`](docs/deployment.md).
+
 ## Useful scripts
 
 `server/`: `dev` · `build` · `db:migrate` · `db:seed` · `db:generate` · `test` · `typecheck` · `verify:l03` · `verify:l06`
