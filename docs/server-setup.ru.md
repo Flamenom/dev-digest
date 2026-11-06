@@ -52,7 +52,7 @@ dig +short <домен>      # печатает <IP>
 ```sh
 # обновления и утилиты
 $ sudo apt-get update && sudo apt-get -y upgrade
-$ sudo apt-get install -y git curl openssl ca-certificates ufw
+$ sudo apt-get install -y git curl openssl ca-certificates gnupg ufw
 
 # swap 2 GB (нужен для сборки образов на машине с 4 GB RAM)
 $ sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
@@ -77,15 +77,43 @@ $ sudo ufw enable
 
 ## Шаг 3. Docker и Node 22
 
+Ставим из официальных apt-репозиториев с проверкой подписи пакетов — без
+`curl … | sudo sh`: на этой VM будут лежать мастер-ключ и пароли БД, поэтому
+непроверенные скрипты от root здесь не запускаем.
+
+**Docker Engine + Compose plugin** (официальный apt-репозиторий Docker; `$ID` —
+`ubuntu` или `debian` из `/etc/os-release`):
+
 ```sh
-# Docker Engine + Compose plugin (официальный скрипт)
-$ curl -fsSL https://get.docker.com | sudo sh
+$ . /etc/os-release
+$ sudo install -m 0755 -d /etc/apt/keyrings
+$ sudo curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
+$ sudo chmod a+r /etc/apt/keyrings/docker.asc
+$ gpg --show-keys /etc/apt/keyrings/docker.asc
+```
+
+Сверь отпечаток ключа: он должен быть
+`9DC8 5822 9FC7 DD38 854A  E2D8 8D81 803C 0EBF CD88`. Если не совпадает —
+остановись и разберись, дальше не иди.
+
+```sh
+$ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable" \
+    | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+$ sudo apt-get update
+$ sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 $ sudo usermod -aG docker "$USER"
 # перелогинься (exit и снова ssh), чтобы группа docker применилась
+```
 
-# Node.js 22 LTS — нужен только скриптам check-compose.sh и update.sh, не контейнерам
-$ curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-$ sudo apt-get install -y nodejs
+**Node.js 22 LTS** — нужен только скриптам `check-compose.sh` и `update.sh`, не
+контейнерам (apt-репозиторий NodeSource, пакеты проверяются по его ключу):
+
+```sh
+$ curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+$ echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+    | sudo tee /etc/apt/sources.list.d/nodesource.list > /dev/null
+$ sudo apt-get update && sudo apt-get install -y nodejs
 ```
 
 Готово, если:
@@ -109,7 +137,26 @@ $ cat ~/.ssh/devdigest_deploy.pub
 1. Скопируй выведенный **публичный** ключ.
 2. GitHub → `Flamenom/dev-digest` → **Settings → Deploy keys → Add deploy key**.
    Вставь ключ, **галочку «Allow write access» НЕ ставь**.
-3. Пропиши ключ для github.com на VM:
+3. Проверь ключ хоста GitHub **до** первого подключения — иначе на свежей VM
+   можно молча довериться подменённому серверу, а `update.sh` потом соберёт и
+   запустит то, что он отдаст:
+
+```sh
+$ ssh-keyscan -t ed25519 github.com 2>/dev/null > /tmp/github_hostkey
+$ ssh-keygen -lf /tmp/github_hostkey
+```
+
+   Отпечаток должен быть ровно `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`
+   (сверь с официальной страницей
+   [GitHub's SSH key fingerprints](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints)).
+   Только если совпадает:
+
+```sh
+$ mkdir -p ~/.ssh && chmod 700 ~/.ssh
+$ cat /tmp/github_hostkey >> ~/.ssh/known_hosts && rm /tmp/github_hostkey
+```
+
+4. Пропиши ключ для github.com на VM:
 
 ```sh
 $ cat >> ~/.ssh/config <<'EOF'
@@ -121,7 +168,11 @@ $ chmod 600 ~/.ssh/config
 $ ssh -T git@github.com    # ответ "Hi Flamenom/dev-digest! You've successfully authenticated…"
 ```
 
-4. Клонируй репозиторий:
+   Вопроса «Are you sure you want to continue connecting?» быть не должно — ключ
+   хоста уже проверен и лежит в `known_hosts`. Если вопрос появился, ответь `no`
+   и вернись к пункту 3.
+
+5. Клонируй репозиторий:
 
 ```sh
 $ sudo mkdir -p /opt/devdigest && sudo chown "$USER":"$USER" /opt/devdigest
@@ -172,10 +223,19 @@ $ chmod 600 deploy/.env
 
 ### 6.2. Сгенерировать секреты прямо в файл
 
-Эта функция записывает значение в `.env`, не выводя его на экран:
+Эта функция записывает значение в `.env`, не выводя его на экран и не передавая
+его аргументом командной строки: значение уходит в `awk` через переменную
+окружения, поэтому его не видно в `ps`. Временный файл создаётся с правами 600
+(`umask 077`):
 
 ```sh
-$ set_env() { sed -i "s|^$1=.*|$1=$2|" deploy/.env; }
+$ set_env() (
+    umask 077
+    K="$1" V="$2" awk 'BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"] }
+                       index($0, k "=") == 1 { print k "=" v; next }
+                       { print }' deploy/.env > deploy/.env.tmp \
+      && cat deploy/.env.tmp > deploy/.env && rm -f deploy/.env.tmp
+  )
 
 $ set_env POSTGRES_PASSWORD  "$(openssl rand -hex 24)"
 $ set_env APP_DB_PASSWORD    "$(openssl rand -hex 24)"
@@ -337,8 +397,29 @@ $ sudo ls -l deploy/backups          # появился devdigest-<дата>-nig
 ```
 
 Важно: **бэкапы хранятся только на этой VM.** Если VM пропадёт — пропадут и они.
-Периодически копируй дампы куда-то ещё (например, `scp` на другую машину или в
-облачное хранилище).
+Периодически копируй дампы куда-то ещё — но **только в зашифрованном виде**: в
+дампе пользователи, аудит, данные PR и зашифрованные блобы секретов, а права 0700
+каталога `deploy/backups` при копировании не переезжают.
+
+Пример с [`age`](https://github.com/FiloSottile/age) (`sudo apt-get install -y age`).
+Ключ шифрования создаётся **на твоём компьютере**, на VM попадает только его
+публичная часть:
+
+```sh
+# на своём компьютере, один раз
+age-keygen -o devdigest-backup.agekey      # приватный ключ: в менеджер паролей, НЕ на VM
+age-keygen -y devdigest-backup.agekey      # печатает публичный ключ age1…
+
+# на VM: зашифровать дамп публичным ключом и забрать файл
+$ sudo cat deploy/backups/<дамп>.dump | age -r age1… > ~/<дамп>.dump.age
+scp <vm>:~/<дамп>.dump.age ./           # затем на VM: rm ~/<дамп>.dump.age
+```
+
+Правила хранения копий:
+- место хранения — приватное (закрытый бакет, доступ только у админов);
+- приватный ключ `age` и `SECRETS_MASTER_KEY` храни **отдельно от дампов** и не
+  в том же хранилище: тот, кто получит дамп вместе с мастер-ключом, получит и все
+  токены провайдеров.
 
 Один раз отрепетируй восстановление по разделу
 [«Restore a dump»](./deployment.md#restore-a-dump), пока данных мало и это не страшно.
@@ -380,7 +461,7 @@ $ deploy/update.sh
 | --- | --- | --- |
 | Статус сервисов | при подозрении на проблему | `deploy/dc.sh ps` |
 | Здоровье бэкапов (`backup` должен быть `healthy`) | раз в неделю | `deploy/dc.sh ps backup && sudo ls -lt deploy/backups \| head` |
-| Копия дампов вне VM | по вкусу, например раз в неделю | `scp` / rsync / облако |
+| Зашифрованная копия дампов вне VM | например раз в неделю | `age` + `scp`, см. шаг 13 |
 | Место на диске — действовать при 80 % | раз в неделю | `df -h /` |
 | Логи API | при ошибках | `deploy/dc.sh logs --tail 200 api` |
 
@@ -414,6 +495,8 @@ $ deploy/update.sh
 - [ ] DNS `<домен>` → `<IP>`, без прокси Cloudflare
 - [ ] VM: обновления, swap, ufw (22, 80, 443/tcp, 443/udp)
 - [ ] Docker ≥ 24, Compose ≥ 2.24, Node 22
+- [ ] Пакеты Docker и NodeSource из apt-репозиториев, отпечаток ключа Docker сверен
+- [ ] Ключ хоста GitHub сверен с официальным отпечатком
 - [ ] Read-only deploy key, репозиторий в `/opt/devdigest`, ветка `main` защищена
 - [ ] Google OAuth-клиент (Internal, redirect URI)
 - [ ] `deploy/.env` заполнен, `chmod 600`, секреты сохранены в менеджере паролей
@@ -423,3 +506,4 @@ $ deploy/update.sh
 - [ ] `smoke.sh` → 6 × `ok`
 - [ ] Вход админом, ключи LLM/GitHub/GitLab, создан хотя бы один агент
 - [ ] Пробный дамп создан, восстановление отрепетировано
+- [ ] Зашифрованная копия дампа вне VM, ключ `age` и `SECRETS_MASTER_KEY` хранятся отдельно от неё
