@@ -86,6 +86,16 @@ const EnvSchema = z.object({
   ALLOW_UNAUTHENTICATED_LOCAL_MODE: optionalString,
   /** Comma-separated IP/CIDR list handed to Fastify `trustProxy`. Unset = trust nothing. */
   TRUST_PROXY: optionalString,
+  // ── Error reporting (Sentry, errors only) ───────────────────────────────────
+  // Plain optional strings, no refine: a zod issue could echo the DSN (it
+  // carries the project key) into the boot log. The adapter factory validates
+  // the DSN shape and degrades to a no-op reporter with one warning naming
+  // only the setting. Empty / unset → reporting is off (behaves as today).
+  SENTRY_DSN: optionalString,
+  /** Sentry `environment` tag. Default `production`. */
+  SENTRY_ENVIRONMENT: optionalString,
+  /** Sentry `release` tag — the deployed git sha. Default `unknown`. */
+  SENTRY_RELEASE: optionalString,
 });
 
 export const AUTH_MODES = ['local', 'google'] as const;
@@ -159,6 +169,16 @@ export type AppConfig = AuthConfig & {
    * the last successful sync, and also the back-off after a failed attempt.
    */
   prSyncTtlMs: number;
+  /**
+   * SENTRY_DSN, or null when empty/unset (no reporter is initialised). The
+   * value is a credential-like setting — never log it. Shape is validated by
+   * the Sentry adapter factory, not here.
+   */
+  sentryDsn: string | null;
+  /** SENTRY_ENVIRONMENT (default `production`). */
+  sentryEnvironment: string;
+  /** SENTRY_RELEASE — deployed git sha (default `unknown`). */
+  sentryRelease: string;
 };
 
 type ParsedEnv = z.infer<typeof EnvSchema>;
@@ -376,6 +396,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     repoIntelEnabled: parsed.REPO_INTEL_ENABLED !== 'false',
     hostsOffline: parsed.DEVDIGEST_HOSTS_OFFLINE === 'true',
     prSyncTtlMs: parsed.PR_SYNC_TTL_SECONDS * 1000,
+    sentryDsn: parsed.SENTRY_DSN ?? null,
+    sentryEnvironment: parsed.SENTRY_ENVIRONMENT ?? 'production',
+    sentryRelease: parsed.SENTRY_RELEASE ?? 'unknown',
     ...auth,
   };
 }

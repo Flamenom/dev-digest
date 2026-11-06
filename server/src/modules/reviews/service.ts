@@ -3,6 +3,7 @@ import type { FindingActionKind, RunEventKind, RunTrace } from '@devdigest/share
 import { AppError, NotFoundError } from '../../platform/errors.js';
 import type { AgentRow } from '../../db/rows.js';
 import { ReviewRepository } from './repository.js';
+import { NO_ENABLED_AGENTS } from './constants.js';
 import { type ReviewDto, type ReviewDtoFinding } from './helpers.js';
 import { ReviewRunExecutor, type Logger } from './run-executor.js';
 import { actOnFinding as actOnFindingImpl } from './findings.js';
@@ -50,13 +51,26 @@ export class ReviewService {
   // ===========================================================================
 
   /**
-   * Resolve which agents to run. `all` → all enabled agents; else a single agent.
+   * Resolve which agents to run. `all` → all enabled agents (409
+   * `no_enabled_agents` when there are none); else a single agent.
    */
   async resolveTargets(
     workspaceId: string,
     opts: { agentId?: string; all?: boolean },
   ): Promise<AgentRow[]> {
-    if (opts.all) return this.agents.listEnabled(workspaceId);
+    if (opts.all) {
+      const enabled = await this.agents.listEnabled(workspaceId);
+      // AC-61: refuse before any run row is minted, so the client gets an
+      // actionable 409 instead of a silent 200 with no runs.
+      if (enabled.length === 0) {
+        throw new AppError(
+          NO_ENABLED_AGENTS,
+          'No agent is enabled in this workspace. Create or enable an agent, then run the review again.',
+          409,
+        );
+      }
+      return enabled;
+    }
     if (opts.agentId) {
       const agent = await this.agents.getById(workspaceId, opts.agentId);
       if (!agent) throw new NotFoundError('Agent not found');

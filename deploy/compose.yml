@@ -1,13 +1,20 @@
 # DevDigest — single-VM server-mode deployment (AC-60, AC-61, AC-65, AC-66).
 #
 #   cp deploy/.env.example deploy/.env      # then fill in real values
-#   docker compose -f deploy/compose.yml up -d --build
+#   deploy/dc.sh up -d --build
+#
+# Use deploy/dc.sh (not a bare `docker compose -f deploy/compose.yml …`): it
+# exports the current release (DEVDIGEST_IMAGE_TAG / DEVDIGEST_RELEASE from
+# deploy/.state/release.env, written by deploy/update.sh) before calling
+# `docker compose`. A bare compose call still works — it runs the `:local`
+# images (update.sh re-tags the current release as `:local`) and only the
+# release tag degrades to `unknown`.
 #
 # Topology:
 #   internet ─▶ proxy (Caddy, 80/443, the ONLY published service)
 #                 ├─ /api/*  ─▶ api:3001   (prefix stripped)
 #                 └─ /*      ─▶ web:3000
-#   api / migrate ─▶ postgres:5432 on the `db` network (internal: no egress, no host port)
+#   api / migrate / backup ─▶ postgres:5432 on the `db` network (internal: no egress, no host port)
 #
 # Order: postgres healthy → migrate (db:migrate && db:bootstrap) exits 0 → api
 # healthy (/health/ready) → proxy. The API itself never runs migrations.
@@ -26,6 +33,11 @@
 #                  TRIGGER, no CREATE, no `drizzle` schema. So SQL run through the
 #                  API cannot drop/disable the audit triggers, set
 #                  session_replication_role, TRUNCATE, or COPY … PROGRAM.
+#   devdigest_backup  read-only role used by `backup` (BACKUP_DB_PASSWORD). LOGIN,
+#                  not superuser, member of pg_read_all_data only,
+#                  default_transaction_read_only = on, no CREATE/TEMP. Created /
+#                  re-keyed by `migrate` (deploy/db-grants/backup-role.sql, right
+#                  after grants.sql), never by postgres init.
 #   Grants live in deploy/db-grants/grants.sql (idempotent). The ONLY path that
 #   creates / re-keys devdigest_app is `migrate`, after every
 #   `db:migrate && db:bootstrap` (fresh volume, pre-existing volumes, tables added
@@ -40,14 +52,26 @@
 # transaction; a fresh `api` starts only after `migrate` exits 0 (depends_on
 # migrate: service_completed_successfully below), so it never sees the gap.
 #
-# Rotating APP_DB_PASSWORD: put the new value in deploy/.env, then
-#   docker compose -f deploy/compose.yml up -d
-# `migrate` re-runs and ALTERs the role's password (grants.sql always re-keys the
-# role from APP_DB_PASSWORD), then `api` is recreated with the new DATABASE_URL.
+# Rotating APP_DB_PASSWORD / BACKUP_DB_PASSWORD: put the new value in
+# deploy/.env, then
+#   deploy/dc.sh up -d
+# `migrate` re-runs and ALTERs the role's password (grants.sql / backup-role.sql
+# always re-key the roles), then `api` / `backup` are recreated with the new value.
 # Rotating POSTGRES_PASSWORD (owner) is manual: ALTER ROLE devdigest PASSWORD …
 # via `docker compose exec postgres psql -U devdigest`, then update deploy/.env.
 
 name: devdigest-server
+
+# Bounded log rotation for EVERY service (AC-45): at most LOG_MAX_FILE files of
+# LOG_MAX_SIZE each per container (default 5 × 10m). max-file must be a string.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: ${LOG_MAX_SIZE:-10m}
+    max-file: "${LOG_MAX_FILE:-5}"
+
+# Every service also declares deploy.resources.limits (AC-46); defaults are the
+# spec's Non-functional table, each overridable as <SVC>_MEM_LIMIT / <SVC>_CPUS.
 
 x-hardening: &hardening
   restart: unless-stopped
@@ -77,6 +101,12 @@ x-api-env: &api-env
   REPO_INTEL_ENABLED: ${REPO_INTEL_ENABLED:-true}
   # Forwarded client IP/scheme are trusted ONLY from the proxy's static IP below.
   TRUST_PROXY: 172.28.0.10
+  # Opt-in error reporting (empty DSN = off). Treat the DSN as sensitive; it
+  # reaches the api at runtime only. The release is the deployed git sha
+  # (exported by deploy/dc.sh), `unknown` when absent.
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+  SENTRY_RELEASE: ${DEVDIGEST_RELEASE:-unknown}
 
 services:
   proxy:
@@ -102,15 +132,26 @@ services:
         condition: service_healthy
       api:
         condition: service_healthy
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: ${PROXY_MEM_LIMIT:-256m}
+          cpus: "${PROXY_CPUS:-0.5}"
 
   web:
     <<: *hardening
-    image: devdigest-web:local
+    image: devdigest-web:${DEVDIGEST_IMAGE_TAG:-local}
     build:
       context: ..
       dockerfile: deploy/web.Dockerfile
       args:
         NEXT_PUBLIC_API_BASE: /api
+        # PUBLIC build-time values, inlined into the browser bundle. Only the
+        # public web DSN (SENTRY_WEB_DSN) — the api's SENTRY_DSN never goes here.
+        NEXT_PUBLIC_SENTRY_DSN: ${SENTRY_WEB_DSN:-}
+        NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+        NEXT_PUBLIC_SENTRY_RELEASE: ${DEVDIGEST_RELEASE:-unknown}
     networks:
       - edge
     healthcheck:
@@ -119,10 +160,16 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: ${WEB_MEM_LIMIT:-512m}
+          cpus: "${WEB_CPUS:-1.0}"
 
   api:
     <<: *hardening
-    image: devdigest-api:local
+    image: devdigest-api:${DEVDIGEST_IMAGE_TAG:-local}
     build:
       context: ..
       dockerfile: deploy/api.Dockerfile
@@ -134,6 +181,10 @@ services:
       db: {}
     deploy:
       replicas: 1
+      resources:
+        limits:
+          memory: ${API_MEM_LIMIT:-2g}
+          cpus: "${API_CPUS:-1.5}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -147,21 +198,24 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    logging: *logging
 
   migrate:
     <<: *hardening
-    image: devdigest-api:local
+    image: devdigest-api:${DEVDIGEST_IMAGE_TAG:-local}
     restart: "no"
     command: ["sh", "-c", "pnpm db:migrate && pnpm db:bootstrap && node /opt/devdigest/db-grants/apply-grants.mjs"]
     # Least privilege: db:migrate and db:bootstrap read only DATABASE_URL (they
     # never load the app config), so no Google client secret, master key or
     # other API setting is handed to this container. The grants step also reads
-    # APP_DB_PASSWORD (to create / re-key the runtime role).
+    # APP_DB_PASSWORD and BACKUP_DB_PASSWORD (to create / re-key the runtime and
+    # backup roles).
     # The ONLY service besides postgres that uses the owner role.
     environment:
       NODE_ENV: production
       DATABASE_URL: postgres://devdigest:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/devdigest
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in deploy/.env}
+      BACKUP_DB_PASSWORD: ${BACKUP_DB_PASSWORD:?set BACKUP_DB_PASSWORD in deploy/.env}
     volumes:
       - ./db-grants:/opt/devdigest/db-grants:ro
     networks:
@@ -169,6 +223,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: ${MIGRATE_MEM_LIMIT:-1g}
+          cpus: "${MIGRATE_CPUS:-1.0}"
 
   postgres:
     image: pgvector/pgvector:0.8.1-pg16
@@ -201,6 +261,64 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: ${POSTGRES_MEM_LIMIT:-1g}
+          cpus: "${POSTGRES_CPUS:-1.0}"
+
+  # Nightly local pg_dump as the read-only devdigest_backup role (see "Database
+  # roles"). Same image as postgres (pg_dump major == server major), only on the
+  # internal `db` network, no published port, no secret but its own DB password
+  # (written to a 0600 passfile in /tmp by the script, then unset).
+  # Dumps land in BACKUP_DIR (default deploy/backups, git-ignored) — the host dir
+  # must be writable by uid 999 (`sudo install -d -m 0700 -o 999 -g 999 …`).
+  # `deploy/dc.sh run --rm -T backup dump pre-update <sha7>` makes an on-demand dump.
+  backup:
+    image: pgvector/pgvector:0.8.1-pg16
+    entrypoint: ["sh", "/opt/devdigest/backup/devdigest-backup.sh"]
+    command: ["daemon"]
+    user: "999:999"
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=16m
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: devdigest
+      PGUSER: devdigest_backup
+      BACKUP_DB_PASSWORD: ${BACKUP_DB_PASSWORD:?set BACKUP_DB_PASSWORD in deploy/.env}
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-03:15}
+      BACKUP_RETAIN: ${BACKUP_RETAIN:-14}
+      BACKUP_RETAIN_PRE_UPDATE: ${BACKUP_RETAIN_PRE_UPDATE:-5}
+      TZ: UTC
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backups
+      - ./backup:/opt/devdigest/backup:ro
+    networks:
+      - db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "sh", "/opt/devdigest/backup/devdigest-backup.sh", "health"]
+      interval: 5m
+      timeout: 10s
+      retries: 1
+      start_period: 30s
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: ${BACKUP_MEM_LIMIT:-512m}
+          cpus: "${BACKUP_CPUS:-0.5}"
 
 networks:
   # Proxy ↔ web ↔ api. Not internal: Caddy needs ACME egress, the API needs
@@ -209,7 +327,7 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/24
-  # api/migrate ↔ postgres only. No egress, Postgres never on `edge`.
+  # api/migrate/backup ↔ postgres only. No egress, Postgres never on `edge`.
   db:
     internal: true
 

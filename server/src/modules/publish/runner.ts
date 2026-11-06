@@ -10,10 +10,13 @@
 import type { PublishRunInput } from './executor.js';
 import type { PublishLogger } from './ports.js';
 import { errorCode } from './reconciler.js';
+import { isReportable, type ErrorReporter } from '../../platform/error-reporting.js';
 
 export interface PublishRunnerDeps {
   executor: { run: (input: PublishRunInput) => Promise<void> };
   log: PublishLogger;
+  /** Internal failures are reported (AC-34); upstream/expected ones are not. */
+  reporter?: ErrorReporter;
 }
 
 export class PublishRunner {
@@ -35,11 +38,20 @@ export class PublishRunner {
       .then(() => this.deps.executor.run(input))
       .catch((err: unknown) => {
         this.deps.log.error({ publicationId: id, code: errorCode(err) }, 'publish task failed');
+        this.report(err);
       })
       .finally(() => {
         this.live.delete(id);
       });
     this.live.set(id, task);
+  }
+
+  private report(err: unknown): void {
+    try {
+      if (this.deps.reporter && isReportable(err)) this.deps.reporter.capture(err, { jobKind: 'publish' });
+    } catch {
+      // reporting must never affect the task (AC-42)
+    }
   }
 
   /** Whether this process is still running the publication (the reconciler skips it). */

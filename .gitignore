@@ -23,3 +23,7 @@ test-results/
 
 # emdash worktree config (local)
 .emdash.json
+
+# server-mode deployment runtime state (deploy/update.sh) and local DB dumps
+deploy/backups/
+deploy/.state/

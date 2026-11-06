@@ -24,12 +24,26 @@
 # all capabilities but the entrypoint minimum; persistent volumes are mounted;
 # the Caddyfile sets HSTS + nosniff/Referrer-Policy/X-Frame-Options/CSP;
 # Dockerfiles use pinned base images, a non-root user and no secret ARG/ENV.
+# Production readiness additions: the read-only `backup` service (AC-49: no
+# ports, `db` network only, devdigest_backup user, no foreign secret, same
+# Postgres major as `postgres`, restart / no-new-privileges / healthcheck);
+# bounded log rotation and memory + CPU limits on every service (AC-45/46);
+# the api's SENTRY_DSN never reaches the web build; the backup role SQL; a CSP
+# that restricts connect-src must allow the web DSN origin (AC-44); every
+# setting the runbook's `## Settings reference` names exists in .env.example and
+# every .env.example setting has its metadata comment line (AC-8).
+#
+# Test-only overrides (used by deploy/tests/check-compose.test.sh):
+#   COMPOSE_FILE_OVERRIDE  CADDYFILE_OVERRIDE  RUNBOOK_OVERRIDE  ENV_EXAMPLE_OVERRIDE
 # Exit 0 = all checks pass.
 
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMPOSE="$DIR/compose.yml"
+COMPOSE="${COMPOSE_FILE_OVERRIDE:-$DIR/compose.yml}"
+CADDY="${CADDYFILE_OVERRIDE:-$DIR/Caddyfile}"
+RUNBOOK="${RUNBOOK_OVERRIDE:-$DIR/../docs/deployment.md}"
+ENV_EXAMPLE="${ENV_EXAMPLE_OVERRIDE:-$DIR/.env.example}"
 ENV_FILE="${1:-$DIR/.env.example}"
 
 command -v docker >/dev/null || { echo "FAIL: docker not found" >&2; exit 1; }
@@ -48,7 +62,7 @@ process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   const fails = [];
   const check = (ok, msg) => { if (!ok) fails.push(msg); else console.log("  ok  " + msg); };
 
-  for (const name of ["proxy", "web", "api", "migrate", "postgres"])
+  for (const name of ["proxy", "web", "api", "migrate", "postgres", "backup"])
     check(Boolean(s[name]), `service "${name}" exists`);
 
   // Only the proxy publishes ports, and only 80/443.
@@ -133,6 +147,35 @@ process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   check(pgDrop.includes("ALL"), "postgres cap_drop: ALL");
   check(JSON.stringify(pgAdd) === JSON.stringify(["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]), `postgres cap_add is the entrypoint minimum (got: ${pgAdd.join(",")})`);
 
+  // backup service (AC-49): read-only dumps, internal network only, own role only.
+  const b = s.backup ?? {};
+  const benv = b.environment ?? {};
+  check(!(b.ports?.length), "backup has no published ports");
+  check(JSON.stringify(nets("backup")) === JSON.stringify(["db"]), `backup only on network "db" (got: ${nets("backup").join(",")})`);
+  check(benv.PGUSER === "devdigest_backup" && benv.PGUSER !== pgUser && benv.PGUSER !== apiUser, `backup PGUSER is the read-only devdigest_backup role, not the owner or runtime role (got: ${benv.PGUSER})`);
+  const bSecretKeys = Object.keys(benv).filter((k) => /SECRET|MASTER_KEY|TOKEN|API_KEY|PASSWORD|DSN/.test(k));
+  check(bSecretKeys.every((k) => k === "BACKUP_DB_PASSWORD"), `backup env has no secret-like key but BACKUP_DB_PASSWORD (got: ${bSecretKeys.join(",")})`);
+  const pgMajor = (img) => { const m = /-pg(\d+)$/.exec(String(img ?? "")) ?? /^(?:[^\/]+\/)*postgres:(\d+)/.exec(String(img ?? "")); return m ? m[1] : null; };
+  const bMajor = pgMajor(b.image), sMajor = pgMajor(s.postgres?.image);
+  check(bMajor !== null && bMajor === sMajor, `backup image has the postgres major version (got: ${bMajor} vs ${sMajor})`);
+  check(b.restart === "unless-stopped", "backup restart: unless-stopped");
+  check((b.security_opt ?? []).includes("no-new-privileges:true"), "backup no-new-privileges");
+  check(Array.isArray(b.healthcheck?.test) && b.healthcheck.test.length > 0 && b.healthcheck.disable !== true, "backup has a healthcheck");
+
+  // Bounded log rotation (AC-45) + memory and CPU limits (AC-46) on every service.
+  // `config --format json` renders memory as bytes (string) and cpus as a number.
+  for (const [name, svc] of Object.entries(s)) {
+    const lo = svc.logging?.options ?? {};
+    check(Boolean(lo["max-size"]) && Number(lo["max-file"]) > 0, `${name} log rotation: max-size + max-file (got: ${lo["max-size"]} / ${lo["max-file"]})`);
+    const lim = svc.deploy?.resources?.limits ?? {};
+    check(Number(lim.memory) > 0 && Number(lim.cpus) > 0, `${name} resource limits: memory + cpus (got: ${lim.memory} / ${lim.cpus})`);
+  }
+
+  // Sentry: the api DSN never reaches the web build (bundle) or migrate.
+  const webArgs = s.web?.build?.args ?? {};
+  check(!("SENTRY_DSN" in webArgs) && !("SENTRY_DSN" in (s.web?.environment ?? {})), "web build args have no SENTRY_DSN");
+  check(Object.keys(menv).every((k) => !/DSN/.test(k)), "migrate env has no DSN key");
+
   if (fails.length) {
     for (const f of fails) console.error("  FAIL " + f);
     process.exit(1);
@@ -172,6 +215,12 @@ else echo "  ok  grants.sql: no default table privileges (new tables fail closed
 if grep -Eq "PASSWORD '[^']" "$GRANTS"; then
   echo "  FAIL hard-coded password literal in grants.sql" >&2; exit 1
 else echo "  ok  no hard-coded password in grants.sql"; fi
+# Read-only backup role (devdigest_backup), applied by apply-grants.mjs after grants.sql.
+BACKUP_ROLE="$DIR/db-grants/backup-role.sql"
+[ -f "$BACKUP_ROLE" ] && echo "  ok  db-grants/backup-role.sql present" || { echo "  FAIL db-grants/backup-role.sql missing" >&2; exit 1; }
+for p in 'pg_read_all_data' 'default_transaction_read_only' 'replace-?me' '^[A-Za-z0-9_-]{32,}$'; do
+  grep -Fq "$p" "$BACKUP_ROLE" && echo "  ok  backup-role.sql: $p" || { echo "  FAIL backup-role.sql lacks: $p" >&2; exit 1; }
+done
 
 # Secret values (see header). Reads the RENDERED compose config, prints names only.
 case "${CHECK_SECRETS:-auto}" in
@@ -192,6 +241,7 @@ process.stdin.on("data", (c) => (raw += c)).on("end", () => {
     GOOGLE_CLIENT_ID: s.api?.environment?.GOOGLE_CLIENT_ID ?? "",
     GOOGLE_CLIENT_SECRET: s.api?.environment?.GOOGLE_CLIENT_SECRET ?? "",
     SECRETS_MASTER_KEY: s.api?.environment?.SECRETS_MASTER_KEY ?? "",
+    BACKUP_DB_PASSWORD: s.backup?.environment?.BACKUP_DB_PASSWORD ?? "",
   };
   const fails = [];
   const check = (ok, msg) => { if (!ok) fails.push(msg); else console.log("  ok  " + msg); };
@@ -201,6 +251,9 @@ process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   check(pwOf(s.migrate?.environment?.DATABASE_URL ?? "") === v.POSTGRES_PASSWORD, "migrate DATABASE_URL carries POSTGRES_PASSWORD unmangled (URL-safe)");
   check(v.APP_DB_PASSWORD !== v.POSTGRES_PASSWORD, "APP_DB_PASSWORD differs from POSTGRES_PASSWORD");
   check(pwOf(s.api?.environment?.DATABASE_URL ?? "") === v.APP_DB_PASSWORD, "api DATABASE_URL carries APP_DB_PASSWORD unmangled (URL-safe)");
+  check(/^[A-Za-z0-9_-]{32,}$/.test(v.BACKUP_DB_PASSWORD), "BACKUP_DB_PASSWORD is >= 32 chars of [A-Za-z0-9_-] (openssl rand -hex 24)");
+  check(v.BACKUP_DB_PASSWORD !== v.POSTGRES_PASSWORD && v.BACKUP_DB_PASSWORD !== v.APP_DB_PASSWORD, "BACKUP_DB_PASSWORD differs from POSTGRES_PASSWORD and APP_DB_PASSWORD");
+  check((s.migrate?.environment?.BACKUP_DB_PASSWORD ?? "") === v.BACKUP_DB_PASSWORD, "migrate and backup get the same BACKUP_DB_PASSWORD");
   if (fails.length) { for (const f of fails) console.error("  FAIL " + f); process.exit(1); }
 });
 '
@@ -226,10 +279,14 @@ for f in "$DIR/api.Dockerfile" "$DIR/web.Dockerfile"; do
     echo "  FAIL $n: copies a whole package dir or a .env file" >&2; fail=1
   else echo "  ok  $n copies explicit paths only (no .env)"; fi
 done
+# The api's runtime SENTRY_DSN is interpolated only into the api env (x-api-env),
+# never into a build arg (a build arg ends up in the browser bundle).
+if [ "$(grep -Ec '[$][{]SENTRY_DSN([:}?-]|$)' "$COMPOSE")" -le 1 ] && ! grep -Eq '^(ARG|ENV)[[:space:]]+SENTRY_DSN' "$DIR/web.Dockerfile"; then
+  echo "  ok  SENTRY_DSN is never a web build arg"
+else echo "  FAIL SENTRY_DSN is referenced outside the api env / in web.Dockerfile" >&2; fail=1; fi
 [ "$fail" -eq 0 ] || exit 1
 
 echo "▸ Caddyfile checks"
-CADDY="$DIR/Caddyfile"
 grep -q '^{\$PUBLIC_HOSTNAME} {' "$CADDY" && echo "  ok  site address is {\$PUBLIC_HOSTNAME}" || { echo "  FAIL site address" >&2; exit 1; }
 grep -q 'handle_path /api/\*' "$CADDY" && grep -q 'reverse_proxy api:3001' "$CADDY" && echo "  ok  /api/* → api:3001 (prefix stripped)" || { echo "  FAIL api route" >&2; exit 1; }
 grep -q 'reverse_proxy web:3000' "$CADDY" && echo "  ok  default → web:3000" || { echo "  FAIL web route" >&2; exit 1; }
@@ -251,5 +308,46 @@ echo "  ok  CSP (frame-ancestors/base-uri/object-src/form-action, no script/styl
 if grep -Eq '^[[:space:]]*(auto_https[[:space:]]+off|http://)' "$CADDY"; then
   echo "  FAIL automatic HTTPS disabled" >&2; exit 1
 else echo "  ok  automatic HTTPS + HTTP→HTTPS redirect left on"; fi
+# AC-44: a CSP that restricts connect-src must allow the web DSN's ingest origin
+# (default-src is already rejected above). The DSN value is never printed.
+WEB_DSN_ORIGIN="$(printf '%s' "$RENDERED" | node -e '
+let raw = "";
+process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+  const dsn = JSON.parse(raw).services?.web?.build?.args?.NEXT_PUBLIC_SENTRY_DSN ?? "";
+  if (!dsn) return;
+  try { const u = new URL(dsn); process.stdout.write(u.protocol === "https:" ? u.origin : "invalid"); }
+  catch { process.stdout.write("invalid"); }
+});
+')"
+case "$CSP_LINE" in
+  *connect-src*)
+    if [ -z "$WEB_DSN_ORIGIN" ]; then echo "  ok  CSP connect-src set, no web DSN configured"
+    elif [ "$WEB_DSN_ORIGIN" != "invalid" ] && case "$CSP_LINE" in *"$WEB_DSN_ORIGIN"*) true ;; *) false ;; esac; then
+      echo "  ok  CSP connect-src allows the web DSN origin"
+    else echo "  FAIL CSP (Content-Security-Policy connect-src) does not allow the SENTRY_WEB_DSN https origin" >&2; exit 1; fi ;;
+  *) echo "  ok  CSP does not restrict connect-src (web DSN reachable)" ;;
+esac
+
+echo "▸ settings / runbook checks (AC-8)"
+[ -f "$ENV_EXAMPLE" ] || { echo "  FAIL .env.example not found" >&2; exit 1; }
+# Every KEY= line needs `# <secret|non-secret> <required|optional> default: <value|none>` directly above it.
+MISSING_META="$(awk '
+  /^[A-Z][A-Z0-9_]*=/ { if (prev !~ /^# \[?(secret|non-secret)\]? \[?(required|optional)\]? default: [^ ]/) { sub(/=.*/, ""); print } }
+  { prev = $0 }
+' "$ENV_EXAMPLE" | tr '\n' ' ')"
+if [ -z "$MISSING_META" ]; then echo "  ok  every .env.example setting has its secret/required/default comment line"
+else echo "  FAIL .env.example settings without the metadata comment line directly above: $MISSING_META" >&2; exit 1; fi
+if [ ! -f "$RUNBOOK" ]; then
+  echo "  note runbook $(basename "$RUNBOOK") absent — runbook settings check skipped"
+else
+  RUNBOOK_NAMES="$(awk '/^## /{ insec = ($0 ~ /^## Settings reference[[:space:]]*$/) ; next } insec' "$RUNBOOK" \
+    | sed -nE 's/^\|[[:space:]]*`([A-Z][A-Z0-9_]*)`[[:space:]]*\|.*/\1/p' \
+    | grep -Ev '^(DEVDIGEST_RELEASE|DEVDIGEST_IMAGE_TAG)$' | sort -u || true)"
+  [ -n "$RUNBOOK_NAMES" ] || { echo "  FAIL $(basename "$RUNBOOK") has no settings rows under \"## Settings reference\"" >&2; exit 1; }
+  missing=""
+  for n in $RUNBOOK_NAMES; do grep -Eq "^${n}=" "$ENV_EXAMPLE" || missing="$missing $n"; done
+  if [ -z "$missing" ]; then echo "  ok  every setting in the runbook's Settings reference exists in .env.example ($(printf '%s\n' $RUNBOOK_NAMES | wc -l | tr -d ' ') names)"
+  else echo "  FAIL runbook settings missing from .env.example:$missing" >&2; exit 1; fi
+fi
 
 echo "✔ all deployment checks passed"

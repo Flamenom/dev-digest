@@ -10,3 +10,10 @@
  * model's context.
  */
 export const REVIEW_STRATEGY = 'single-pass' as const;
+
+/**
+ * Error code for a run-all-enabled-agents request when the workspace has no
+ * enabled agent (AC-61). A plain constant, not a shared contract (Rec1): the
+ * client keeps its own copy in `RunReviewDropdown/constants.ts`.
+ */
+export const NO_ENABLED_AGENTS = 'no_enabled_agents' as const;

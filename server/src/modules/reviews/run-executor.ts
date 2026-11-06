@@ -2,6 +2,7 @@ import type { Container } from '../../platform/container.js';
 import type { IntentDetail, Provider, Review, RunTrace, UnifiedDiff } from '@devdigest/shared';
 import { reviewPullRequest, countBlockers } from '@devdigest/reviewer-core';
 import { RunLogger } from '../../platform/run-logger.js';
+import { isReportable } from '../../platform/error-reporting.js';
 import * as schema from '../../db/schema.js';
 import type { AgentRow } from '../../db/rows.js';
 import type { ReviewRepository, FindingRow, PullRow, ReviewRow } from './repository.js';
@@ -121,6 +122,8 @@ export class ReviewRunExecutor {
     } catch (err) {
       runLog.error(`Failed to load PR diff: ${(err as Error).message}`);
       await failAll(`Failed to load PR diff: ${(err as Error).message}`);
+      // One report for the shared pre-work failure, not one per queued run.
+      this.report(err, jobs[0]?.runId);
       return;
     }
 
@@ -190,7 +193,17 @@ export class ReviewRunExecutor {
           { runId, agent: agent.name, err: (err as Error).message, durationMs: Date.now() - agentStart },
           `review: agent "${agent.name}" ${cancelled ? 'cancelled' : 'failed'}`,
         );
+        if (!cancelled) this.report(err, runId);
       }
+    }
+  }
+
+  /** AC-34 — report an internal run failure (never a cancel or an upstream error). Never throws. */
+  private report(err: unknown, runId: string | undefined): void {
+    try {
+      if (isReportable(err)) this.container.errorReporter.capture(err, { jobKind: 'review_run', runId });
+    } catch {
+      // reporting must never affect the run (AC-42)
     }
   }
 

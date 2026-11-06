@@ -2,6 +2,10 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp } from './app.js';
 import { loadConfig, type AppConfig } from './platform/config.js';
 import { ConfigError } from './platform/errors.js';
+import { redactSecret } from './platform/redact.js';
+
+/** Max wait for the crash report to leave before exiting (AC-43). */
+const CRASH_FLUSH_MS = 2_000;
 
 /**
  * A boot-time configuration failure (invalid settings, AC-1/3/4; another
@@ -27,6 +31,34 @@ function exitOnConfigError(err: unknown): never {
   throw err;
 }
 
+/**
+ * AC-34 — report uncaught exceptions / unhandled rejections, then keep today's
+ * crash semantics (log + exit 1). Installed ONLY when a reporter is active, so
+ * with no DSN the process behaves exactly as before (Node's defaults, AC-32).
+ */
+function installCrashReporting(app: FastifyInstance): void {
+  const reporter = app.container.errorReporter;
+  let crashing = false;
+  const crash = (kind: 'uncaughtException' | 'unhandledRejection') => async (err: unknown) => {
+    if (crashing) return;
+    crashing = true;
+    try {
+      reporter.capture(err, { jobKind: kind });
+      await reporter.flush(CRASH_FLUSH_MS);
+    } catch {
+      // the port never throws; belt and braces — the exit below must happen
+    }
+    try {
+      const message = redactSecret(err instanceof Error ? err.message : String(err));
+      app.log.fatal({ err: message }, kind);
+    } finally {
+      process.exit(1);
+    }
+  };
+  process.on('uncaughtException', crash('uncaughtException'));
+  process.on('unhandledRejection', crash('unhandledRejection'));
+}
+
 /** Production/dev entrypoint. `pnpm dev` runs `tsx watch src/server.ts`. */
 async function main() {
   let config: AppConfig;
@@ -37,6 +69,8 @@ async function main() {
   } catch (err) {
     exitOnConfigError(err);
   }
+
+  if (app.container.errorReporterActive) installCrashReporting(app);
 
   // Graceful shutdown: on SIGTERM/SIGINT close the server, which runs the
   // onClose hooks (drains in-flight requests/SSE, closes the postgres pool).

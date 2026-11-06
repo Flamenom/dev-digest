@@ -6,6 +6,7 @@
 
 import { useEffect } from "react";
 import { ErrorState } from "@devdigest/ui";
+import { reportRenderError } from "@/lib/monitoring";
 
 export default function RouteError({
   error,
@@ -18,6 +19,8 @@ export default function RouteError({
     // Surface the real error for local debugging — the boundary UI only shows
     // a generic message (error.message may contain internals).
     console.error(error);
+    // Opt-in Sentry (no-op when the build has no DSN).
+    reportRenderError(error);
   }, [error]);
 
   return (

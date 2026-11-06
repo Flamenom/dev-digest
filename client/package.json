@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@sentry/browser": "11.11.0",
     "@tanstack/react-query": "^5.62.8",
     "js-tiktoken": "^1.0.21",
     "lucide-react": "^0.469.0",

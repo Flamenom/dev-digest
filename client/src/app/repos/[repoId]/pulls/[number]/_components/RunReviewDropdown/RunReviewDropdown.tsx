@@ -8,8 +8,11 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Button, Dropdown, type DropdownItemDef } from "@devdigest/ui";
 import { useAgents } from "@/lib/hooks/agents";
+import { useCan } from "@/lib/hooks/permissions";
 import { useRunReview } from "@/lib/hooks/reviews";
-import { DROPDOWN_WIDTH } from "./constants";
+import { useToast } from "@/lib/toast";
+import { CREATE_AGENT_HREF, DROPDOWN_WIDTH } from "./constants";
+import { agentMenuItems, isNoEnabledAgentsError, runAllItem, zeroStateItem } from "./helpers";
 
 export function RunReviewDropdown({
   prId,
@@ -34,7 +37,10 @@ export function RunReviewDropdown({
   const t = useTranslations("prReview");
   const router = useRouter();
   const { data: agents } = useAgents();
+  const { isAdmin, isPending: sessionPending } = useCan();
+  const toast = useToast();
   const run = useRunReview();
+  const loaded = agents !== undefined;
   const all = agents ?? [];
   const hasEnabled = all.some((a) => a.enabled);
 
@@ -43,22 +49,30 @@ export function RunReviewDropdown({
     try {
       const res = await run.mutateAsync({ prId, ...opts });
       onRunsStarted?.(res.runs.map((r) => r.run_id));
+    } catch (err) {
+      // The dropdown already blocks "Run all" with no enabled agent; this covers
+      // a stale list (agent disabled elsewhere) the server rejects with 409.
+      if (isNoEnabledAgentsError(err)) toast.error(t("runReview.noEnabledAgentsError"));
+      else throw err;
     } finally {
       onRunSettled?.();
     }
   };
 
-  // List EVERY agent (not just enabled) so they're always visible; a specific
-  // agent can be run regardless of its enabled flag. "Run all" still targets
-  // only enabled agents.
-  const agentItems: DropdownItemDef[] = all.length
-    ? all.map((a) => ({
-        label: a.name,
-        icon: "Cpu" as const,
-        hint: a.enabled ? a.model : `${a.model} · disabled`,
-        onClick: () => kick({ agentId: a.id }),
-      }))
-    : [{ label: "No agents yet — create one", icon: "Plus", muted: true, onClick: () => router.push("/agents") }];
+  // While the agents list or the session probe is in flight, render no
+  // zero-state entry (no flash of the wrong/role-less hint). "Run all" still
+  // targets only enabled agents.
+  const agentItems = agentMenuItems(
+    all,
+    (agentId) => kick({ agentId }),
+    zeroStateItem({
+      pending: !loaded || sessionPending,
+      isAdmin,
+      adminLabel: t("runReview.noAgentsAdmin"),
+      memberLabel: t("runReview.noAgentsMember"),
+      onCreate: () => router.push(CREATE_AGENT_HREF),
+    }),
+  );
 
   const items: DropdownItemDef[] = [
     // Merged/closed PRs can still be reviewed (informational only); lead with a
@@ -69,15 +83,15 @@ export function RunReviewDropdown({
           { divider: true } as DropdownItemDef,
         ]
       : []),
-    {
+    runAllItem({
+      hasEnabled,
+      loaded,
       label: t("runReview.runAll"),
-      icon: "Play",
-      ...(hasEnabled ? {} : { muted: true }),
-      onClick: () => kick({ all: true }),
-    },
+      disabledReason: t("runReview.noEnabledAgents"),
+      onRun: () => kick({ all: true }),
+    }),
     { divider: true },
-    ...agentItems,
-    { divider: true },
+    ...(agentItems.length ? [...agentItems, { divider: true }] : []),
     { label: t("runReview.configureAgents"), icon: "Settings", muted: true, onClick: () => router.push("/agents") },
   ];
 
