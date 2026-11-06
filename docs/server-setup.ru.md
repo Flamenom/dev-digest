@@ -89,12 +89,16 @@ $ . /etc/os-release
 $ sudo install -m 0755 -d /etc/apt/keyrings
 $ sudo curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
 $ sudo chmod a+r /etc/apt/keyrings/docker.asc
-$ gpg --show-keys /etc/apt/keyrings/docker.asc
+$ gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc \
+    | awk -F: '/^fpr/ { print $10; exit }' \
+    | grep -qx 9DC858229FC7DD38854AE2D88D81803C0EBFCD88 \
+    && echo "docker key: OK" \
+    || { echo "docker key: MISMATCH"; sudo rm -f /etc/apt/keyrings/docker.asc; }
 ```
 
-Сверь отпечаток ключа: он должен быть
-`9DC8 5822 9FC7 DD38 854A  E2D8 8D81 803C 0EBF CD88`. Если не совпадает —
-остановись и разберись, дальше не иди.
+Проверка автоматическая: ожидаемый отпечаток —
+`9DC8 5822 9FC7 DD38 854A  E2D8 8D81 803C 0EBF CD88` (официальный ключ Docker).
+Если напечаталось `MISMATCH` — ключ удалён, **остановись и разберись**, дальше не иди.
 
 ```sh
 $ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable" \
@@ -106,11 +110,16 @@ $ sudo usermod -aG docker "$USER"
 ```
 
 **Node.js 22 LTS** — нужен только скриптам `check-compose.sh` и `update.sh`, не
-контейнерам (apt-репозиторий NodeSource, пакеты проверяются по его ключу):
+контейнерам (apt-репозиторий NodeSource). Честно о гарантиях: apt проверяет
+пакеты подписью NodeSource, но сам ключ NodeSource мы получаем только по HTTPS —
+отдельного отпечатка, как у Docker, здесь не сверяем. Выведи отпечаток и запиши
+его: если при переустановке он изменится, это повод остановиться и разобраться.
 
 ```sh
-$ curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-    | sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+$ tmpk=$(mktemp)
+$ curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o "$tmpk"
+$ gpg --show-keys --with-fingerprint "$tmpk"      # запиши отпечаток
+$ sudo gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg "$tmpk" && rm -f "$tmpk"
 $ echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
     | sudo tee /etc/apt/sources.list.d/nodesource.list > /dev/null
 $ sudo apt-get update && sudo apt-get install -y nodejs
@@ -142,8 +151,9 @@ $ cat ~/.ssh/devdigest_deploy.pub
    запустит то, что он отдаст:
 
 ```sh
-$ ssh-keyscan -t ed25519 github.com 2>/dev/null > /tmp/github_hostkey
-$ ssh-keygen -lf /tmp/github_hostkey
+$ hk=$(mktemp)                                   # приватный временный файл (0600)
+$ ssh-keyscan -t ed25519 github.com 2>/dev/null > "$hk"
+$ ssh-keygen -lf "$hk"
 ```
 
    Отпечаток должен быть ровно `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`
@@ -153,7 +163,7 @@ $ ssh-keygen -lf /tmp/github_hostkey
 
 ```sh
 $ mkdir -p ~/.ssh && chmod 700 ~/.ssh
-$ cat /tmp/github_hostkey >> ~/.ssh/known_hosts && rm /tmp/github_hostkey
+$ cat "$hk" >> ~/.ssh/known_hosts && rm -f "$hk"
 ```
 
 4. Пропиши ключ для github.com на VM:
@@ -226,15 +236,16 @@ $ chmod 600 deploy/.env
 Эта функция записывает значение в `.env`, не выводя его на экран и не передавая
 его аргументом командной строки: значение уходит в `awk` через переменную
 окружения, поэтому его не видно в `ps`. Временный файл создаётся с правами 600
-(`umask 077`):
+(`umask 077`) и удаляется при любом исходе, даже если `awk` упадёт (`trap`):
 
 ```sh
 $ set_env() (
     umask 077
+    trap 'rm -f deploy/.env.tmp' EXIT
     K="$1" V="$2" awk 'BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"] }
                        index($0, k "=") == 1 { print k "=" v; next }
                        { print }' deploy/.env > deploy/.env.tmp \
-      && cat deploy/.env.tmp > deploy/.env && rm -f deploy/.env.tmp
+      && cat deploy/.env.tmp > deploy/.env
   )
 
 $ set_env POSTGRES_PASSWORD  "$(openssl rand -hex 24)"
@@ -495,7 +506,7 @@ $ deploy/update.sh
 - [ ] DNS `<домен>` → `<IP>`, без прокси Cloudflare
 - [ ] VM: обновления, swap, ufw (22, 80, 443/tcp, 443/udp)
 - [ ] Docker ≥ 24, Compose ≥ 2.24, Node 22
-- [ ] Пакеты Docker и NodeSource из apt-репозиториев, отпечаток ключа Docker сверен
+- [ ] Пакеты Docker и NodeSource из apt-репозиториев, проверка ключа Docker → `OK`, отпечаток ключа NodeSource записан
 - [ ] Ключ хоста GitHub сверен с официальным отпечатком
 - [ ] Read-only deploy key, репозиторий в `/opt/devdigest`, ветка `main` защищена
 - [ ] Google OAuth-клиент (Internal, redirect URI)
