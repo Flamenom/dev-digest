@@ -58,6 +58,7 @@ is shared via **tsconfig path aliases**, not npm.
 - **`specs/2026-10-20-gitlab-comments.md`** — when touching GitLab comment posting (read/post/reply GitLab diff discussions via `PrCommentsService`, `api`-scope token health gate + notice, quick-action neutralisation, google-mode attribution footer, head-moved 409, no-retry writes on both hosts, `pr_comment.create` audit).
 - **`specs/2026-10-21-gitlab-publish-findings.md`** — when touching publish to GitLab (publish module, draft notes, marker, review head_sha, PublishFindings UI).
 - **`specs/2026-10-23-gitlab-publish-outdated-findings.md`** — when touching publishing from an outdated review run (deprecated notes, MR diff versions anchoring, general-note fallback, `acknowledge_deprecated`, publish-plan route; supersedes D-1/D-2/AC-12 of the base spec).
+- **`specs/2026-11-06-production-readiness.md`** — when touching the single-VM google-mode deployment (`deploy/`: update/rollback and smoke scripts, nightly backup service, log rotation/resource limits, Sentry for API/web, `docs/deployment.md` runbook, zero-agents empty state / `no_enabled_agents`).
 - **`server/CLAUDE.md` · `client/CLAUDE.md` · `reviewer-core/CLAUDE.md` · `e2e/CLAUDE.md`** — auto-load per folder; read before editing that package.
 - **`INSIGHTS.md`** (root, or the package's own `<package>/INSIGHTS.md`) — on unexpected behavior,
   before debugging: known gotchas are recorded there.
